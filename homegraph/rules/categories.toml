@@ -1,0 +1,55 @@
+# Category assignment. Read after every exclusion layer has declined.
+#
+# The categories are mutually exclusive and exhaustive by construction: the
+# first four are decided by extension, and `misc` is the complement. That is
+# also the risk -- a gap in the first four does not fail loudly, it quietly
+# becomes junk in M4. CP-5's cross-validation exists for exactly that.
+
+[image]
+# Extension only. The image-directory restriction lives in ONE place --
+# [image_boundary] in exclusions.toml -- and deliberately not here as well.
+#
+# It was in both at first, and CP-0's negative control caught it: with the
+# boundary duplicated in the category step, switching every exclusion layer off
+# left the image count unchanged at 135, so the control could never fire. A
+# second copy of a rule reads as defence in depth and behaves as a gate that
+# cannot say no. A `.docx` sitting inside the image directory is still a
+# document, because a document extension is not an image extension.
+extensions = [
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif",
+  "svg", "ico", "avif",
+]
+
+[markdown]
+extensions = ["md", "markdown", "mdx"]
+
+[document]
+# One subtype per extension: `doctype` is a first-class dimension, so this
+# mapping is also what the census and the `--type` search filter read.
+[document.doctypes]
+pdf = "pdf"
+docx = "docx"
+doc = "docx"
+odt = "odt"
+pptx = "pptx"
+ppt = "pptx"
+odp = "pptx"
+xlsx = "xlsx"
+xls = "xlsx"
+ods = "xlsx"
+rtf = "odt"
+epub = "epub"
+tex = "tex"
+
+[code]
+extensions = [
+  "py", "pyi", "js", "mjs", "cjs", "ts", "tsx", "jsx", "mts", "cts",
+  "sh", "bash", "zsh", "fish", "sql", "rs", "go", "rb", "lua", "pl", "php",
+  "c", "h", "cpp", "cc", "hpp", "java", "kt", "kts", "scala", "swift",
+  "r", "jl", "vim", "el", "pine",
+]
+
+[misc]
+# The complement. Subtypes are refined by M4 with libmagic; corpus.py only
+# decides membership, because deciding more would mean opening files.
+default_subtype = "unknown"

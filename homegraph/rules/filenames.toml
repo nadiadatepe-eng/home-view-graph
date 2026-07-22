@@ -1,0 +1,75 @@
+# M2 filename grammar. The whole of what this model can know.
+#
+# Since no image file is ever opened, the filename plus stat() is the entire
+# signal. That sounds thin until you read the corpus: dates, series, versions,
+# resolutions, DPI and semantic collections are all encoded in these names.
+#
+# The plan expected one date format. There are six, and two of them are
+# ambiguous with each other -- see [dates.yymmdd_vs_ddmmyy].
+
+[dates]
+# Tried in this order. First match with a plausible date wins.
+order = ["iso_dt", "iso", "ddmmyyyy", "yymmdd", "monthname", "year"]
+
+iso_dt = '(?<![\d])(\d{4})-(\d{2})-(\d{2})[ _](\d{2})-(\d{2})-(\d{2})(?![\d])'
+iso = '(?<![\d])(\d{4})-(\d{2})-(\d{2})(?![\d])'
+ddmmyyyy = '(?<![\d])(\d{2})(\d{2})(\d{4})(?![\d])'
+yymmdd = '(?<![\d])(\d{2})(\d{2})(\d{2})(?![\d])'
+year = '(?<![\d])(19|20)(\d{2})(?![\d])'
+
+# 6-digit dates are read as YYMMDD first. When that yields a date in the
+# future or an impossible month, the same digits are re-read as DDMMYY.
+# `Hector_270519_25_1.jpeg` is the case: YYMMDD gives 2027-05-19, which has
+# not happened; DDMMYY gives 2019-05-27, which matches the Troja-2021 folder.
+# Without the fallback the graph would date a 2019 work to 2027 and nothing
+# would look wrong.
+yymmdd_vs_ddmmyy = true
+future_cutoff_days = 0
+
+# 9+ consecutive digits where a date belongs. `161212025` is almost certainly
+# a mistyped 16122025. Flagged, never guessed, and the node is kept either way.
+malformed = '(?<![\d])(\d{9,})(?![\d])'
+
+month_names = [
+  "januar", "februar", "mars", "april", "mai", "juni", "juli", "august",
+  "september", "oktober", "november", "desember",
+  "january", "february", "march", "may", "june", "july",
+  "aug", "sept", "sep", "oct", "okt", "nov", "dec", "des", "jan", "feb", "mar",
+  "apr", "jun", "jul",
+]
+
+[markers]
+# Read before indices, so their digits are not mistaken for series numbers.
+resolution = '(?<![\d])(\d{3,5})[xX](\d{3,5})(?![\d])'
+dpi = '(?<![\d])(\d{2,4})\s*dpi'
+copy = ["_copy", "-copy", "_kopi", " copy", "_copy2"]
+variants = ["small", "ny", "hdpi", "ldpi", "thumb", "web", "print", "final"]
+
+[series]
+# A trailing number is an index. `_003` is index 3, not the string "003" --
+# otherwise 03122025_1 / _2 / _3 do not sort and do not group.
+# The lookahead admits a space because consumed tokens are blanked, not
+# deleted -- after `_small` is blanked out, `_011` is followed by spaces rather
+# than by end-of-string. Without the space, every index that happened to sit
+# before a variant or a month name silently disappeared.
+index = '[_\-#](\d{1,4})(?=$|[_\-. ])'
+roman = '[_\-](I{1,3}V?|IV|VI{0,3}|IX|X)(?=$|[_\-. ])'
+nr = '_?nr(\d{1,3})(?=$|[_\-. ])'
+
+# Two names belong to the same series when everything before the index is the
+# same. `03122025_1` and `03122025_2` group; `05122025_2` does not join them,
+# which CP-4 asserts, because a series gate that cannot exclude is not a gate.
+group_on = "stem"
+
+[collections]
+# Subdirectories under the image root are semantic groupings, free of charge --
+# m2_build derives a collection node from the path relative to the image root
+# it was found under. That relative path is the whole rule, so there is nothing
+# to configure and no directory name to hardcode.
+#
+# A `project_tags` table used to sit here, mapping specific subdirectory names
+# to project labels. It named one person's folders, it was read by nothing, and
+# a dead rule that only works on its author's machine is the worst of both. If
+# per-collection tagging comes back it belongs in ~/.homegraph/config.toml,
+# where the names describe the machine they are true of.
+derive_from = "relative path under the image root"

@@ -1,0 +1,42 @@
+# The inventory snapshot is 74.7 MB of real filesystem paths -- every project
+# name, document title and profile directory on the machine that produced it.
+# It is a test fixture, not source, and it must never be committed.
+tests/gold/inventory-*.tsv
+tests/gold/candidates*.tsv
+
+# The four answer keys written against the real corpus. Each names actual
+# files -- artwork titles, document authors, wiki page names -- and each is
+# needed ONLY by HOMEGRAPH_REAL_CORPUS=1. The default synthetic corpus carries
+# its own keys, declared in tests/fixtures/synthetic.py, which is source.
+tests/gold/gold-set.tsv
+tests/gold/cp2-links.tsv
+tests/gold/cp3-documents.tsv
+tests/gold/cp4-filenames.tsv
+
+# The rest of the real-corpus apparatus, held out for the same reason and not
+# a smaller one. `real_corpus.py` holds each checkpoint's thresholds and the
+# paths they are measured at; the samplers name the project directories they
+# drew from. All four are needed only by HOMEGRAPH_REAL_CORPUS=1, every
+# checkpoint refuses with a clear message when they are absent, and nothing in
+# the default synthetic path touches them.
+tests/gold/real_corpus.py
+tests/gold/sample_gold.py
+tests/gold/sample_gold_round2.py
+tests/gold/sample_gold_round3.py
+
+# Generated stores, scratch space and rendered graphs
+.homegraph/
+*.db
+*.db-wal
+*.db-shm
+graph.html
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,143 @@
+# Exclusion layers, evaluated in the order listed here.
+#
+# On a lived-in home directory exclusion is not preparation for the work, it is
+# the work: the survey this was written against held 588 589 files, and no
+# random draw at any realistic root level returned the owner's own code. Every
+# layer below was written against a file that a seeded, rule-blind sample
+# actually produced -- see tests/gold/FASIT.md.
+#
+# Order matters and is deliberate:
+#   secrets  -> first, and not overridable by the allowlist
+#   allow    -> deliberate exceptions, skips the remaining layers
+#   L3 cache -> broadest, cheapest, matches at any depth
+#   L1 deps  -> vendored dependency trees
+#   L2 state -> application state
+#   L4 repo  -> cloned third-party repositories (needs git, so it runs late)
+#   symlink  -> not in the plan; added because the sample produced one
+#   image    -> image extensions outside the image root(s) are EXCLUDED,
+#               never demoted
+
+[secrets]
+# Layer 5. Never indexed, counted as `redacted`. Never opened, not even to
+# confirm -- the filename is the whole basis.
+names = [
+  ".env", ".netrc", ".pgpass", ".npmrc", ".git-credentials",
+  "credentials.json", "auth.json", ".Xauthority", ".ICEauthority",
+]
+globs = [
+  ".env.*", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+  "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore",
+]
+# NOT covered, and known to be: `.bash_history` routinely contains tokens
+# pasted into a shell. It is classified `misc` because that is what these rules
+# actually do. Flagged in FASIT.md rather than silently reclassified -- an
+# answer key that quietly hides a gap is worse than no answer key.
+
+[allow]
+# Allowlist wins over every layer below it (never over `secrets`). Empty on
+# purpose: each entry is a hole in the partition proof and must be argued for.
+paths = []
+globs = []
+
+[cache]
+# Layer 3. Matches at ANY depth, not just the top level.
+dirs = [
+  ".cache", "Cache", "cache", "caches", "Cache_Data", "CacheStorage",
+  "tmp", "temp", ".tmp", ".temp", ".thumbnails", "thumbs", "Thumbs",
+  ".Trash", "Trash", ".trash",
+  ".ruff_cache", ".mypy_cache", ".pytest_cache", ".tox", "__pycache__",
+  ".gradle", ".nyc_output",
+]
+globs = [
+  "*.tmp", "*.temp", "*.swp", "*.swo", "*.bak", "*~",
+  ".DS_Store", "Thumbs.db", "*.part", "*.crdownload",
+  "*.lock", "*-wal", "*-shm", "*.pyc", "*.pyo",
+]
+# NOT covered, and known to be: a shell-history backup carrying a date suffix,
+# e.g. `<history>.bak-20260620`. The glob is `*.bak`; a dated backup suffix
+# slips straight through. Labelled `misc` in the gold set for that reason, and
+# planted in the synthetic corpus so the gap stays visible rather than becoming
+# folklore.
+
+[dependencies]
+# Layer 1.
+dirs = [
+  "node_modules", ".venv", "venv", "site-packages", "dist-packages",
+  ".git", "vendor", "bower_components", ".bundle", "Pods",
+  ".yarn", ".pnpm-store", "eggs", ".eggs",
+]
+
+[app_state]
+# Layer 2. The plan lists .config/.var/.npm/.local/share. The sample added the
+# rest: `.claude/file-history/...@v2` is JavaScript source -- a saved snapshot
+# of a file that also exists live, so indexing it means duplicate code nodes.
+prefixes = [
+  "{root}/.config/", "{root}/.var/", "{root}/.npm/",
+  "{root}/.local/share/", "{root}/.local/state/",
+  "{root}/.themes/", "{root}/.icons/", "{root}/.fonts/",
+  "{root}/.vscode/", "{root}/.mozilla/", "{root}/.pki/",
+  "{root}/.unsloth/", "{root}/snap/",
+]
+# `.claude/` and `.codex/` hold BOTH machine state and real content (agent
+# definitions, memory, plans), so they are excluded per subdirectory rather
+# than wholesale.
+prefixes_scoped = [
+  "{root}/.claude/file-history/", "{root}/.claude/session-env/",
+  "{root}/.claude/shell-snapshots/", "{root}/.claude/tasks/",
+  "{root}/.claude/sessions/", "{root}/.claude/cache/",
+  "{root}/.claude/paste-cache/", "{root}/.claude/telemetry/",
+  "{root}/.claude/daemon/", "{root}/.claude/jobs/",
+  "{root}/.claude/ide/", "{root}/.claude/backups/",
+  "{root}/.claude/uploads/", "{root}/.claude/downloads/",
+  "{root}/.codex/shell_snapshots/", "{root}/.codex/ipc/",
+  "{root}/.codex/plugins/cache/",
+]
+# Machine-generated identity artifacts at the home top level. Deliberately
+# narrow: `.bashrc`, `.gtkrc-2.0` and `.xsession-errors` are user config and
+# logs, and stay in M4.
+home_files = [".face", ".esd_auth", ".dmrc", ".sudo_as_admin_successful"]
+
+[vendored_repos]
+# Layer 4. A git repository whose origin belongs to someone else is a
+# dependency that happens to sit in a document directory.
+# Triggered by a third-party handbook repository cloned into a documents
+# folder: 294 MB, 210 MB of it CSV, none of it written by the user.
+# An explicit on/off switch, because emptying `own_owners` does not disable
+# this layer -- it inverts it. With no owners listed, every repository that has
+# an origin becomes someone else's, including the user's own publications.
+# CP-0's negative control was still excluding 448 files for exactly that
+# reason, which made "all rules off" quietly untrue.
+enabled = true
+# EMPTY ON PURPOSE, and it stays empty in anything that ships. These are
+# account names, and an account name in a rule file is one person's identity
+# baked into everyone's installation. Yours go in ~/.homegraph/config.toml
+# under [vendored_repos].own_owners; see userconfig.py.
+own_owners = []
+no_origin_is_own = true          # a purely local repo is the user's own work
+keep_toplevel_globs = ["*.md"]   # the README is why the repo was cloned
+
+[symlinks]
+# Not in the plan. Added because the sample produced
+# `.local/share/icons/WhiteSur/apps/scalable/mpk3-settings.svg`, a symlink.
+# Following them would double-count targets and can escape {root} entirely.
+exclude = true
+
+[image_boundary]
+# Decision 2. Image files outside the image root(s) are EXCLUDED, NOT demoted
+# to M4 -- otherwise 54 000 icons move from one bucket to another and nothing
+# improves. Catches an extensionless JPEG avatar only via
+# [app_state].home_files, since it carries no extension at all.
+#
+# THE BOUNDARY LIVES HERE AND NOWHERE ELSE. It was in the category step too at
+# first; every gate was green and CP-0's negative control sat frozen, because
+# the second copy went on enforcing after the first was switched off. See
+# DECISIONS.md §2.
+#
+# `{image_roots}` is a list placeholder: config.substitute() replaces it with
+# the `image` role from ~/.homegraph/config.toml. It is deliberately NOT a
+# directory name. A shipped name would only ever be correct on machines whose
+# desktop language matches the author's, and would fail silently everywhere
+# else -- an empty image model that reports success. An empty list here is the
+# honest version of that: no image root, so no image files, M2 absent, and
+# mesh labels its answers `partial` and names the model that is missing.
+roots = "{image_roots}"

@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""Apply a filesystem diff to a built model, instead of rebuilding it.
+
+`incremental.py` already answers *what changed*. This is the half that was
+missing: what to do about it.
+
+The claim is narrow and it is the only one worth making --
+
+    a store that was built on corpus A and updated to corpus B must be
+    indistinguishable from a store built on corpus B from scratch.
+
+Anything weaker than that gives you a graph whose contents depend on how you
+got there, and nobody can reason about such a thing. CP-8 checks it as a set
+comparison over nodes and edges, not as a count: counts are equal when one node
+has been swapped for another, which is precisely the failure an incremental
+path produces.
+
+Five outcomes, and each costs something different:
+
+    added      built
+    changed    forgotten, then built
+    touched    one UPDATE of the stored mtime. New mtime, identical bytes --
+               a formatter or a sync tool. No reparse, no re-embed.
+    unchanged  nothing at all
+    removed    forgotten
+
+**Removal deletes, and it deletes history.** The alternative -- a tombstone, or
+a node whose `last_seen` stops advancing, which is what the edge table does for
+relations -- was considered and rejected. It cannot coexist with the
+equivalence claim above: a full rebuild of B has no node for a file that is not
+in B, so keeping one would make `update` and `build` diverge permanently and
+irreversibly. The temporal layer already discards daily observations after 90
+days; discarding a deleted file's history is that same policy applied to a file
+rather than to a date. It is a real loss and it is written here rather than
+discovered later: after `update`, `edges_as_of()` cannot show you a relation
+that only a deleted file participated in.
+
+**Deleting a node deletes its edges**, and not by a new mechanism: `edges.src`
+and `edges.dst` are `ON DELETE CASCADE` with `PRAGMA foreign_keys = ON`, and
+`Store.delete_node` additionally removes the FTS row, which has no foreign keys
+of its own. A dangling endpoint is not possible; an orphaned FTS row is, which
+is why CP-1 looks for them.
+
+**M4 is refused, not approximated.** Its cold-state rollup is an aggregation
+over the whole corpus -- one node standing for many files -- so applying a
+per-file diff to it produces rollup rows that no longer reconcile with the
+files they claim to summarise. CP-5's cross-validation would catch that, which
+is the point: the honest move is to say so and rebuild, rather than to ship an
+update path whose arithmetic quietly stops adding up.
+"""
+from __future__ import annotations
+
+import hashlib
+import inspect
+import json
+import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from . import incremental
+
+
+class NotBuilt(RuntimeError):
+    """There is nothing to update. Refused rather than silently built."""
+
+
+class ConfigChanged(RuntimeError):
+    """The layout changed, so this is not a file diff. Refused."""
+
+
+class CannotUpdate(RuntimeError):
+    """This model has no correct incremental path. Named, not approximated."""
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    label: str          # the corpus category this model owns
+    kind: str           # the `kind` its file-backed nodes carry
+    use_hash: bool      # False for M2: hashing means reading
+    # Models whose extraction depends on the rest of the corpus need a wider
+    # rebuild set than the files that changed. M3 does, because its wikilink
+    # index is global; M1 and M2 read one file at a time and do not.
+    affected: Callable[..., list[str]] | None = None
+
+
+def _m1(store, paths, as_of):
+    from .models.m1_build import build
+    return build(store, paths, as_of)
+
+
+def _m2(store, paths, as_of):
+    from .models.m2_build import build
+    return build(store, paths, as_of)
+
+
+def _m3(store, paths, as_of, all_paths=None):
+    from .models.m3_build import build
+    # The name index has to see the WHOLE corpus even when three files are
+    # being rebuilt. Without that a partial build declares every link broken --
+    # the targets are real, they were just not in the batch.
+    return build(store, paths, as_of, index_paths=all_paths or paths)
+
+
+def _m3_affected(store, changes, all_paths):
+    """Files whose link resolution can change because other files came or went.
+
+    M3 resolves `[[name]]` against a flat index over the whole corpus, so
+    adding or removing a file changes the answer for every file that links to
+    that NAME -- both ways: a new page makes a broken link resolve, and a
+    deleted page makes a resolved link break. Rebuilding only the files that
+    changed on disk leaves those neighbours holding an edge a full rebuild
+    would not produce.
+
+    Two sources, and they are not the same:
+
+      * anything with a `WIKILINKS_TO` edge to a node carrying one of the
+        affected page names, resolved or broken;
+      * anything whose body mentions one of the affected paths, which is what
+        `MENTIONS_PATH` and relative links resolve against.
+
+    This is a heuristic, and it is labelled one. What makes it safe to ship is
+    that CP-8 does not take its word for anything: it compares the updated
+    store against a full rebuild as sets. If the expansion is too narrow the
+    equivalence gate goes red, which is exactly how the missing index
+    population was found.
+
+    Called BEFORE anything is forgotten -- the edges it reads belong to the
+    nodes about to be deleted.
+    """
+    from .models.m3_markdown import page_name
+
+    moved = list(changes.added) + list(changes.removed)
+    if not moved:
+        return []
+    names = {page_name(p) for p in moved}
+    extra = set()
+    for row in store.db.execute(
+            "SELECT s.node_key src, d.node_key dst FROM edges e "
+            "JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst "
+            "WHERE e.rel = 'WIKILINKS_TO'"):
+        dst = row["dst"]
+        name = (dst[len("wikilink:"):] if dst.startswith("wikilink:")
+                else page_name(dst))
+        if name in names:
+            extra.add(row["src"])
+    for row in store.db.execute(
+            "SELECT node_key, body FROM nodes "
+            "WHERE body IS NOT NULL AND kind = 'file'"):
+        if any(p in row["body"] for p in moved):
+            extra.add(row["node_key"])
+    current = set(all_paths)
+    return sorted((extra & current) - set(changes.added)
+                  - set(changes.changed) - set(changes.removed))
+
+
+SPECS = {
+    "m1": ModelSpec("m1", "document", "document", True),
+    # use_hash=False is not an optimisation. Hashing an image means opening it,
+    # and M2's entire safety argument is that it never does.
+    "m2": ModelSpec("m2", "image", "image", False),
+    "m3": ModelSpec("m3", "markdown", "file", True, _m3_affected),
+}
+BUILDERS = {"m1": _m1, "m2": _m2, "m3": _m3}
+
+# Named so the refusal can explain itself, rather than reporting "unknown
+# model" for something that exists and is deliberately excluded.
+NO_INCREMENTAL = {
+    "m4": "M4's cold-state rollup aggregates the whole corpus into single "
+          "nodes, so a per-file diff cannot be applied to it without breaking "
+          "the reconciliation CP-5 checks. Rebuild M4.",
+}
+
+
+@dataclass
+class UpdateReport:
+    model: str
+    changes: dict[str, int] = field(default_factory=dict)
+    rebuilt: int = 0            # files actually parsed again
+    neighbours: int = 0         # rebuilt only because the corpus around them moved
+    forgotten: int = 0          # file nodes removed
+    pruned: int = 0             # derived nodes left with nothing pointing at them
+    restatted: int = 0          # `touched`: a stat and an UPDATE, no parse
+    nodes_before: int = 0
+    nodes_after: int = 0
+    edges_before: int = 0
+    edges_after: int = 0
+
+    def summary(self):
+        d = {"model": self.model}
+        d.update(self.changes)
+        d.update({"rebuilt": self.rebuilt, "neighbours": self.neighbours,
+                  "forgotten": self.forgotten,
+                  "pruned": self.pruned, "restatted": self.restatted,
+                  "nodes": "%d -> %d" % (self.nodes_before, self.nodes_after),
+                  "edges": "%d -> %d" % (self.edges_before, self.edges_after)})
+        return d
+
+
+# -- the config is part of the store's identity ----------------------------
+
+FINGERPRINT_KEY = "config_fingerprint"
+
+
+def fingerprint(config) -> str:
+    """A stable digest of the layout this store was built under.
+
+    Changing the image role is not a file change. It moves the boundary between
+    two models, so files that were `image` become `EXCLUDED` and vice versa,
+    and no diff over paths can see that -- the paths did not move. Left
+    unchecked, `update` would happily produce a store holding half of one
+    configuration and half of another, which would look like a build that
+    worked.
+    """
+    payload = json.dumps(
+        {"root": config.root,
+         "roles": {k: sorted(v) for k, v in sorted(config.roles.items())}},
+        sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def read_fingerprint(store) -> str | None:
+    row = store.db.execute("SELECT value FROM metadata WHERE key = ?",
+                           (FINGERPRINT_KEY,)).fetchone()
+    return row["value"] if row else None
+
+
+def write_fingerprint(store, value: str) -> None:
+    store.db.execute(
+        "INSERT INTO metadata(key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (FINGERPRINT_KEY, value))
+    store.commit()
+
+
+# -- forgetting -------------------------------------------------------------
+
+def forget(store, path: str, keep_self: bool = False) -> int:
+    """Remove a file and everything that exists only because of it.
+
+    `keep_self` is for a file that changed rather than vanished: its derived
+    nodes go, its own node stays and is overwritten in place by the rebuild.
+    Deleting and recreating it would reset `first_seen` and drop every
+    observation, which is history that the file did not lose -- it is still the
+    same file, with different contents.
+
+    Everything a build derives *from one file* carries that file's path --
+    section nodes are `<path>#<n>` with `path` set -- so one query finds them
+    all. Everything a build derives from *several* files (a tag, a wikilink
+    target, a collection, an author) is pathless and shared, and is not removed
+    here: it is removed by `prune()` if, and only if, nothing points at it any
+    more. Deciding that per file would mean this function knowing which shared
+    nodes each model invents, which is the same as reimplementing every builder.
+    """
+    keys = [r["node_key"] for r in store.db.execute(
+        "SELECT node_key FROM nodes WHERE path = ?", (path,))
+        if not (keep_self and r["node_key"] == path)]
+    for key in keys:
+        store.delete_node(key)
+    if keep_self:
+        # The node survives, so its edges are not cascaded away -- and a file
+        # that dropped a tag or a link would keep pointing at it, indefinitely
+        # and invisibly. Outbound only: an inbound edge belongs to whichever
+        # file asserted it, and that file is not being rebuilt here.
+        nid = store.node_id(path)
+        if nid is not None:
+            store.db.execute("DELETE FROM edges WHERE src = ?", (nid,))
+    return len(keys)
+
+
+def prune(store) -> int:
+    """Delete pathless nodes that nothing points at any more.
+
+    A tag whose last tagged file is gone, a wikilink target whose last linker
+    is gone, an image collection that has emptied. A pathless node with no
+    edges in either direction represents nothing; a full rebuild would never
+    have created it, so leaving it behind is exactly the divergence this
+    module exists to prevent.
+
+    Repeated until it reaches a fixed point, because removing one orphan can
+    orphan another.
+    """
+    total = 0
+    while True:
+        keys = [r["node_key"] for r in store.db.execute(
+            "SELECT node_key FROM nodes n WHERE n.path IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.src = n.id) "
+            "AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.dst = n.id)")]
+        if not keys:
+            return total
+        for key in keys:
+            store.delete_node(key)
+        total += len(keys)
+
+
+# -- the update itself ------------------------------------------------------
+
+def update(store, model: str, paths, as_of, config, *,
+           builder=None, allow_config_change: bool = False) -> UpdateReport:
+    """Bring `store` from whatever it holds to what `paths` says it should."""
+    if model in NO_INCREMENTAL:
+        raise CannotUpdate("%s: %s" % (model, NO_INCREMENTAL[model]))
+    spec = SPECS.get(model)
+    if spec is None:
+        raise CannotUpdate("unknown model %r; known: %s"
+                           % (model, ", ".join(sorted(SPECS))))
+    builder = builder or BUILDERS[model]
+
+    report = UpdateReport(model=model)
+    report.nodes_before = store.node_count()
+    report.edges_before = store.edge_count()
+    if report.nodes_before == 0:
+        # An update of nothing is not a no-op that exits 0. It is a build that
+        # never happened, and reporting success for it is the failure this
+        # project keeps designing against.
+        raise NotBuilt(
+            "%s holds no nodes -- there is nothing to update. Build it first."
+            % store.path)
+
+    want = fingerprint(config)
+    have = read_fingerprint(store)
+    if have is not None and have != want and not allow_config_change:
+        raise ConfigChanged(
+            "%s was built under a different layout (%s, now %s). Changing a "
+            "role moves the boundary between models, which no file diff can "
+            "see -- rebuild rather than update." % (store.path, have, want))
+
+    current = incremental.scan(paths)
+    changes = incremental.diff(store, current, use_hash=spec.use_hash,
+                               kinds=(spec.kind,))
+    report.changes = changes.summary()
+
+    # Computed before anything is forgotten: it reads edges belonging to the
+    # nodes that are about to be deleted.
+    extra = (list(spec.affected(store, changes, list(current)))
+             if spec.affected else [])
+    report.neighbours = len(extra)
+
+    for key in changes.removed:
+        report.forgotten += 1
+        forget(store, key)
+    # Forgotten before rebuilding, not after: a file that lost a heading must
+    # lose the section node too, and `upsert` alone would leave it behind
+    # looking exactly like a section that still exists. `keep_self` because the
+    # file itself did not vanish, and its history is not the rebuild's to drop.
+    for key in list(changes.changed) + extra:
+        forget(store, key, keep_self=True)
+
+    rebuild = sorted(set(changes.added) | set(changes.changed) | set(extra))
+    report.rebuilt = len(rebuild)
+    if rebuild:
+        # Signature inspection rather than try/except TypeError: catching the
+        # exception would also swallow a genuine TypeError raised inside the
+        # builder and then run it a second time.
+        if "all_paths" in inspect.signature(builder).parameters:
+            builder(store, rebuild, as_of, all_paths=sorted(current))
+        else:
+            builder(store, rebuild, as_of)
+
+    for key in changes.touched:
+        state = current[key]
+        # `node_key`, not `path`: section nodes carry their parent's path and
+        # no mtime of their own, and writing one into them made an updated
+        # store differ from a rebuilt one by a column nobody was looking at.
+        store.db.execute(
+            "UPDATE nodes SET mtime = ?, last_seen = ? WHERE node_key = ?",
+            (state.mtime, as_of, key))
+        report.restatted += 1
+
+    report.pruned = prune(store)
+    store.commit()
+    store.rebuild_fts()
+    write_fingerprint(store, want)
+    report.nodes_after = store.node_count()
+    report.edges_after = store.edge_count()
+    return report
+
+
+def refresh_mesh(model_paths, mesh_db, as_of):
+    """Rebuild the federation after the models beneath it moved.
+
+    Mesh mirrors every model node as a stub so cross-model edges have
+    endpoints. Those stubs are derived, so a stub for a node that no longer
+    exists is the federation answering about a world that is gone -- and it
+    would answer confidently, since the stub carries a title and a path.
+    `build_edges(prune=True)` drops every stub the mirror did not just write.
+    """
+    from .mesh import Mesh
+    with Mesh(model_paths, mesh_db=mesh_db) as mesh:
+        return mesh.build_edges(as_of, prune=True)
+
+
+def corpus_paths(root, label, config=None):
+    """The paths one model owns, straight from `corpus.classify()`.
+
+    Not a second opinion about what belongs where: the same function the build
+    used, called again. An update that selected files by a rule of its own
+    would drift from the build within one release.
+    """
+    from .corpus import Classifier
+    clf = Classifier(home=root, config=config)
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                if clf.classify(full) == label:
+                    out.append(full)
+            except OSError:
+                continue
+        for name in list(dirnames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                dirnames.remove(name)
+    return sorted(out)

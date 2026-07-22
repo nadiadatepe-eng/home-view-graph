@@ -1,0 +1,571 @@
+#!/usr/bin/env python3
+"""Command line for the corpus layer.
+
+    homegraph init [--root DIR]          look at a directory, propose roles
+    homegraph explain <path>...          which rule decided, and why
+    homegraph census [--root DIR]        counts per category and subtype
+
+`init` comes first because everything else depends on it. It scans whatever
+directory you point it at, proposes which folders hold images, documents,
+notes, code and cache, and writes `~/.homegraph/config.toml`. No structure is
+imposed: the proposal is evidence about your disk, and you can overwrite every
+line of it.
+
+Until that file exists the other commands **refuse with exit 2** and say so.
+That is the same idiom `build`/`update`/`embed` already use, and it is a
+deliberate choice: guessing a directory name would produce an empty image model
+that reports success, which is the worst of the available failures.
+
+`explain` exists because a classifier nobody can interrogate is a classifier
+nobody can argue with. When a file lands somewhere surprising, this prints the
+layer and the specific rule that put it there, so the next move is editing a
+rule rather than reading source.
+
+No command here opens a classified file. `census` and `init` walk the tree for
+names and `stat()`, nothing more -- CP-4 verifies that over `init` with an
+audit hook and with strace, the same two ways it verifies the image build.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import os
+import sys
+
+# Running this file directly -- an editor's Run button, or `python cli.py` --
+# gives it no package context, and the relative imports below fail with
+# "attempted relative import with no known parent package". That message
+# describes Python's import machinery rather than anything the reader did
+# wrong, so re-enter as a module instead of printing it: put the project root
+# on the path and hand off to `homegraph.cli`. The exit code is the child's.
+#
+# The guard is on __package__ rather than __name__, because `python -m
+# homegraph.cli` also sets __name__ to "__main__" and must NOT recurse.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from homegraph.cli import main as _main
+
+    sys.exit(_main())
+
+from . import userconfig
+from .config import home_root
+from .corpus import ALL_LABELS, Classifier
+
+
+def _walk(root):
+    """Yield (path, is_symlink) for every non-directory under root.
+
+    Does not follow symlinks -- following them would double-count targets and
+    can leave the corpus root entirely.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            yield full, os.path.islink(full)
+        # Directory symlinks show up in dirnames; classify and skip them.
+        for name in list(dirnames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                dirnames.remove(name)
+                yield full, True
+
+
+def cmd_init(args):
+    """Propose roles for a directory, then write the config the rest reads.
+
+    `--root` takes any directory. There is no expected layout and no folder is
+    created: the scan reports what is there, and an empty role is a legitimate
+    answer that makes the matching model absent rather than wrong.
+    """
+    from .scan import format_proposal, scan
+
+    root = os.path.abspath(os.path.expanduser(args.root or home_root()))
+    if not os.path.isdir(root):
+        print("not a directory: %s" % root, file=sys.stderr)
+        return 2
+
+    path = userconfig.config_path(args.config)
+    # `--force` is the only thing that may replace an existing config. `--yes`
+    # used to count too, which conflated two different permissions: "do not ask
+    # me the role questions" and "throw away the file I already have". A
+    # scripted `init --yes` would then silently overwrite -- and `own_owners`
+    # is the one field `init` cannot reconstruct, because no evidence on disk
+    # says which accounts are yours. The cheap reading of --yes cost the field
+    # that has to be filled in by hand.
+    if os.path.exists(path) and not args.force:
+        print("%s already exists. Edit it, or re-run with --force to replace "
+              "it.\n(--yes answers the role questions; it does not replace an "
+              "existing config.)" % path, file=sys.stderr)
+        return 2
+
+    prop = scan(root)
+    print(format_proposal(prop))
+    roles = {name: list(dirs) for name, dirs in prop.roles.items()}
+
+    if not args.yes:
+        print("\nAccept, or type a comma-separated replacement for any role.")
+        print("Entries are directories under the root, or absolute paths. "
+              "Empty line accepts; a single '-' clears the role.")
+        for name in userconfig.ROLES:
+            current = ", ".join(roles.get(name) or []) or "(none)"
+            try:
+                answer = input("  %-8s [%s]: " % (name, current)).strip()
+            except EOFError:
+                # Not an interactive terminal and --yes was not passed. Refuse
+                # rather than silently taking the proposal: a script that meant
+                # to accept can say so.
+                print("\nno terminal to confirm on; re-run with --yes to "
+                      "accept the proposal unattended", file=sys.stderr)
+                return 2
+            if not answer:
+                continue
+            roles[name] = ([] if answer == "-" else
+                           [p.strip() for p in answer.split(",") if p.strip()])
+
+    userconfig.write(path, root, roles)
+    print("\nwrote %s" % path)
+    for name in userconfig.ROLES:
+        print("  %-8s %s" % (name, ", ".join(roles.get(name) or []) or "(none)"))
+    if not roles.get("image"):
+        print("\nNo image role. M2 will be absent; mesh will report `partial` "
+              "and name it.")
+    return 0
+
+
+def cmd_config(args):
+    """Print the loaded config, resolved. Refuses if there is none."""
+    cfg = userconfig.load(args.config)
+    print("path   %s" % cfg.path)
+    print("root   %s" % cfg.root)
+    for name in userconfig.ROLES:
+        print("  %-8s %s" % (name, ", ".join(cfg.role_dirs(name)) or "(none)"))
+    print("own_owners     %s" % (", ".join(cfg.own_owners) or "(none)"))
+    print("generated_dirs %s" % (", ".join(cfg.generated_dirs) or "(none)"))
+    return 0
+
+
+def cmd_explain(args):
+    clf = Classifier()
+    for path in args.paths:
+        d = clf.explain(path)
+        print("%s\n    label   %s\n    subtype %s\n    layer   %s\n    rule    %s"
+              % (path, d.label, d.subtype, d.layer, d.detail))
+    return 0
+
+
+def cmd_census(args):
+    clf = Classifier()
+    by_label = collections.Counter()
+    by_subtype = collections.Counter()
+    excluded_dirs = collections.Counter()
+
+    for path, is_link in _walk(args.root):
+        d = clf.explain(path, is_symlink=is_link)
+        by_label[d.label] += 1
+        by_subtype[(d.label, d.subtype)] += 1
+        if d.label == "EXCLUDED":
+            # Attribute to the top two path components below root, which is
+            # the granularity at which a surprise is actionable.
+            rel = os.path.relpath(path, args.root)
+            excluded_dirs["/".join(rel.split(os.sep)[:2])] += 1
+
+    total = sum(by_label.values())
+    print("root:  %s" % args.root)
+    print("files: %d\n" % total)
+
+    print("%-10s %9s %7s" % ("category", "count", "share"))
+    for label in ALL_LABELS:
+        n = by_label[label]
+        print("%-10s %9d %6.2f%%" % (label, n, n / total * 100 if total else 0))
+
+    print("\n%-10s %-22s %9s" % ("category", "subtype", "count"))
+    for (label, subtype), n in sorted(by_subtype.items(),
+                                      key=lambda kv: (kv[0][0], -kv[1])):
+        print("%-10s %-22s %9d" % (label, subtype, n))
+
+    print("\ntop 20 excluded directories")
+    for name, n in excluded_dirs.most_common(20):
+        print("  %9d  %s" % (n, name))
+    return 0
+
+
+def cmd_status(args):
+    from .store import Store
+    with Store(args.db) as s:
+        st = s.status()
+        for key in ("path", "model", "schema_version", "nodes", "edges",
+                    "observations", "observations_monthly", "fts_rows",
+                    "fts_stale", "embeddings", "embeddings_enabled"):
+            print("%-22s %s" % (key, st[key]))
+        if st["fts_stale"]:
+            print("\nWARNING: the FTS index does not cover every node. "
+                  "Searches will silently under-return until rebuild_fts().")
+    return 0
+
+
+def cmd_search(args):
+    from .search import hybrid_search
+    from .store import Store
+    with Store(args.db) as s:
+        res = hybrid_search(s, " ".join(args.query), limit=args.limit)
+        for w in res.warnings:
+            print("WARNING: %s\n" % w)
+        # Printed even when empty, and the mode is printed either way: a search
+        # that found nothing and a search whose vector half never ran look
+        # identical unless you say which happened.
+        print("%d hit(s), _out_mode=%s" % (len(res), res._out_mode))
+        for hit in res.hits:
+            print("  %2d  %-8.5f %-40s %s"
+                  % (hit["rank"], hit["score"] if "score" in hit else 0.0,
+                     (hit.get("title") or "")[:40], hit.get("node_key")))
+    return 0
+
+
+def cmd_visualize(args):
+    from .visualize import render
+    report = render({n: p for n, _, p in
+                     ((s.partition("=")[0], None, s.partition("=")[2])
+                      for s in args.model)},
+                    args.out, limit_per_model=args.limit,
+                    min_degree=args.min_degree, title=args.title)
+    for key, value in report.items():
+        print("%-12s %s" % (key, value))
+    print("\nOpen it in a browser:  file://%s" % os.path.abspath(args.out))
+    return 0
+
+
+def cmd_mcp(args):
+    from .mcp_server import Server
+    models = {}
+    for spec in args.model:
+        name, _, path = spec.partition("=")
+        models[name] = path
+    Server(models, args.mesh_db).serve()
+    return 0
+
+
+def cmd_update(args):
+    """Apply a filesystem diff to already-built models.
+
+    One store per model, as everywhere else. `--mesh-db` additionally refreshes
+    the federation, because mesh mirrors model nodes and a stub for a file that
+    is gone answers confidently about a world that no longer exists.
+    """
+    from datetime import date
+
+    from . import update as up
+    from .store import Store
+
+    cfg = userconfig.load(getattr(args, "config", None))
+    root = os.path.abspath(os.path.expanduser(args.root or cfg.root))
+    as_of = args.as_of or date.today().isoformat()
+
+    models = {}
+    for spec in args.model:
+        name, _, path = spec.partition("=")
+        models[name] = path
+
+    failed = False
+    for name, path in sorted(models.items()):
+        spec = up.SPECS.get(name)
+        if spec is None:
+            print("%-6s REFUSED  %s"
+                  % (name, up.NO_INCREMENTAL.get(
+                      name, "unknown model; known: %s"
+                            % ", ".join(sorted(up.SPECS)))), file=sys.stderr)
+            failed = True
+            continue
+        if not os.path.exists(path):
+            print("%-6s REFUSED  no store at %s -- build it first"
+                  % (name, path), file=sys.stderr)
+            failed = True
+            continue
+        paths = up.corpus_paths(root, spec.label, config=cfg)
+        with Store(path, model=name) as store:
+            try:
+                report = up.update(store, name, paths, as_of, cfg,
+                                   allow_config_change=args.allow_config_change)
+            except (up.NotBuilt, up.ConfigChanged, up.CannotUpdate) as exc:
+                print("%-6s REFUSED  %s" % (name, exc), file=sys.stderr)
+                failed = True
+                continue
+        print("%-6s %s" % (name, report.summary()))
+
+    if failed:
+        # Exit 2, the same refusal code the rest of the CLI uses. A partial
+        # update that exits 0 is a partial update nobody will notice.
+        return 2
+
+    if args.mesh_db:
+        result = up.refresh_mesh(models, args.mesh_db, as_of)
+        print("mesh   %s" % result)
+    return 0
+
+
+def cmd_unbuilt(args):
+    """build/update/embed/visualize belong to the models, not the substrate.
+
+    Printing an honest refusal beats a no-op that exits 0 and looks like it
+    worked -- that is the class of failure this project keeps designing against.
+    """
+    print("`%s` is not implemented yet: it needs a model adapter from "
+          "TODO-2..TODO-6. The substrate (store, search, incremental, "
+          "temporal) is in place; nothing produces nodes for it yet."
+          % args.cmd)
+    return 2
+
+
+def cmd_md_build(args):
+    from datetime import date
+
+    from . import update as up
+    from .corpus import Classifier
+    from .models.m3_build import build
+    from .store import Store
+    clf = Classifier()
+    paths = [p for p, _ in _walk(args.root)
+             if clf.classify(p) == "markdown" and os.path.exists(p)]
+    with Store(args.db, model="m3") as s:
+        report = build(s, paths, args.as_of or date.today().isoformat())
+        s.rebuild_fts()
+        # Which layout this store was built under, so a later `update` can
+        # tell a file change from a structural one. Written here rather than
+        # only by `update`, or the first update after a build would have
+        # nothing to compare against and would silently accept a config that
+        # had changed in between.
+        up.write_fingerprint(s, up.fingerprint(clf.config))
+    for key, value in report.summary().items():
+        print("%-22s %s" % (key, value))
+    return 0
+
+
+def cmd_md_backlinks(args):
+    from .models.m3_build import backlinks
+    from .store import Store
+    with Store(args.db) as s:
+        found = backlinks(s, os.path.abspath(args.path))
+        print("%d inbound wikilink(s)" % len(found))
+        for src in found:
+            print("  %s" % src)
+    return 0
+
+
+def cmd_md_broken(args):
+    from .models.m3_build import broken_links
+    from .store import Store
+    with Store(args.db) as s:
+        names = broken_links(s)
+        # Printed with their sources: a bare list of 213 names reads as damage,
+        # when 1 365 of the occurrences come from machine-generated reports and
+        # only ~100 are a human marking something worth writing.
+        print("%d unresolved wikilink target(s)" % len(names))
+        for name in names[:args.limit]:
+            srcs = backlink_sources(s, name)
+            print("  %-44s <- %d file(s)%s"
+                  % (name[:44], len(srcs),
+                     "  e.g. %s" % os.path.basename(srcs[0]) if srcs else ""))
+    return 0
+
+
+def backlink_sources(store, name):
+    from .models.m3_build import backlinks
+    return backlinks(store, "wikilink:%s" % name)
+
+
+def _mesh(args):
+    from .mesh import Mesh
+    models = {}
+    for spec in args.model:
+        name, _, path = spec.partition("=")
+        models[name] = path
+    return Mesh(models, mesh_db=getattr(args, "mesh_db", None))
+
+
+def cmd_mesh_search(args):
+    with _mesh(args) as mesh:
+        res = mesh.search(" ".join(args.query), limit=args.limit,
+                          as_of=args.as_of, include_all=args.all)
+        for w in res.warnings:
+            print("WARNING: %s" % w)
+        # The status is printed on every search, complete or not. A partial
+        # answer that looks like a complete one is the failure this whole
+        # model is built to avoid.
+        print("\n%s -- %d hit(s) from %s"
+              % (res.status.upper(), len(res),
+                 ", ".join(res.models_queried) or "nothing"))
+        for hit in res.hits:
+            print("  %2d  %-6s %-44s %s"
+                  % (hit["rank"], hit["model"], (hit.get("title") or "")[:44],
+                     ",".join(hit["sources"])))
+    return 0 if not res.partial else 3
+
+
+def cmd_mesh_explain(args):
+    with _mesh(args) as mesh:
+        for key, value in mesh.explain(" ".join(args.query),
+                                       limit=args.limit).items():
+            print("%-18s %s" % (key, value))
+    return 0
+
+
+def cmd_mesh_neighbors(args):
+    with _mesh(args) as mesh:
+        for src, rel, dst in mesh.neighbours(args.node, depth=args.depth):
+            print("  %-52s --%s--> %s" % (src[-52:], rel, dst[-52:]))
+    return 0
+
+
+def cmd_mesh_path(args):
+    with _mesh(args) as mesh:
+        trail = mesh.path(args.src, args.dst, max_depth=args.max_depth)
+        if trail is None:
+            print("no path within %d hop(s)" % args.max_depth)
+            return 1
+        for i, node in enumerate(trail):
+            print("  %d. %s" % (i + 1, node))
+    return 0
+
+
+def cmd_mesh_build(args):
+    with _mesh(args) as mesh:
+        from datetime import date
+        report = mesh.build_edges(args.as_of or date.today().isoformat())
+        for key, value in report.items():
+            print("%-12s %s" % (key, value))
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    ap = argparse.ArgumentParser(prog="homegraph")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init", help="scan a directory and write the config")
+    p.add_argument("--root", default=None,
+                   help="any directory; defaults to your home directory")
+    p.add_argument("--yes", action="store_true",
+                   help="accept the proposal without asking; does NOT "
+                        "replace an existing config")
+    p.add_argument("--force", action="store_true",
+                   help="replace an existing config (the only flag that does)")
+    p.add_argument("--config", default=None, help="write somewhere else")
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("config", help="print the config this run would use")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_config)
+
+    p = sub.add_parser("explain", help="why a path got its label")
+    p.add_argument("paths", nargs="+")
+    p.set_defaults(func=cmd_explain)
+
+    p = sub.add_parser("census", help="counts per category and subtype")
+    p.add_argument("--root", default=home_root())
+    p.set_defaults(func=cmd_census)
+
+    p = sub.add_parser("status", help="store contents and index health")
+    p.add_argument("db")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("search", help="hybrid search, reports _out_mode")
+    p.add_argument("db")
+    p.add_argument("query", nargs="+")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("md", help="M3 markdown model")
+    msub = p.add_subparsers(dest="mdcmd", required=True)
+    q = msub.add_parser("build")
+    q.add_argument("db")
+    q.add_argument("--root", default=home_root())
+    q.add_argument("--as-of", dest="as_of", default=None)
+    q.set_defaults(func=cmd_md_build)
+    q = msub.add_parser("backlinks")
+    q.add_argument("db")
+    q.add_argument("path")
+    q.set_defaults(func=cmd_md_backlinks)
+    q = msub.add_parser("broken")
+    q.add_argument("db")
+    q.add_argument("--limit", type=int, default=20)
+    q.set_defaults(func=cmd_md_broken)
+
+    p = sub.add_parser("mesh", help="M5 federation across models")
+    xsub = p.add_subparsers(dest="meshcmd", required=True)
+    for name, fn in (("search", cmd_mesh_search), ("explain", cmd_mesh_explain),
+                     ("neighbors", cmd_mesh_neighbors), ("path", cmd_mesh_path),
+                     ("build", cmd_mesh_build)):
+        q = xsub.add_parser(name)
+        q.add_argument("--model", action="append", required=True,
+                       metavar="NAME=PATH",
+                       help="repeatable, e.g. --model m3=/path/m3.db")
+        q.add_argument("--mesh-db", dest="mesh_db", default=None)
+        if name in ("search", "explain"):
+            q.add_argument("query", nargs="+")
+            q.add_argument("--limit", type=int, default=20)
+        if name == "search":
+            q.add_argument("--as-of", dest="as_of", default=None)
+            q.add_argument("--all", action="store_true")
+        if name == "build":
+            q.add_argument("--as-of", dest="as_of", default=None)
+        if name == "neighbors":
+            q.add_argument("node")
+            q.add_argument("--depth", type=int, default=1)
+        if name == "path":
+            q.add_argument("src")
+            q.add_argument("dst")
+            q.add_argument("--max-depth", dest="max_depth", type=int, default=4)
+        q.set_defaults(func=fn)
+
+    p = sub.add_parser("visualize", help="write a self-contained HTML graph")
+    p.add_argument("--model", action="append", required=True,
+                   metavar="NAME=PATH")
+    p.add_argument("--out", default="graph.html")
+    p.add_argument("--limit", type=int, default=2000,
+                   help="max nodes per model")
+    p.add_argument("--min-degree", dest="min_degree", type=int, default=0,
+                   help="drop nodes with fewer than N edges")
+    p.add_argument("--title", default="homegraph")
+    p.set_defaults(func=cmd_visualize)
+
+    p = sub.add_parser("mcp", help="run the MCP server on stdio")
+    p.add_argument("--model", action="append", required=True,
+                   metavar="NAME=PATH")
+    p.add_argument("--mesh-db", dest="mesh_db", default=None)
+    p.set_defaults(func=cmd_mcp)
+
+    p = sub.add_parser("update",
+                       help="apply a filesystem diff to built models")
+    p.add_argument("--model", action="append", required=True,
+                   metavar="NAME=PATH",
+                   help="repeatable, e.g. --model m3=/path/m3.db")
+    p.add_argument("--root", default=None,
+                   help="defaults to the root in your config")
+    p.add_argument("--as-of", dest="as_of", default=None)
+    p.add_argument("--mesh-db", dest="mesh_db", default=None,
+                   help="also refresh the federation, pruning stale stubs")
+    p.add_argument("--allow-config-change", dest="allow_config_change",
+                   action="store_true",
+                   help="update anyway after the layout changed; the store "
+                        "will then mix two configurations")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_update)
+
+    for name in ("build", "embed"):
+        p = sub.add_parser(name, help="not implemented until TODO-2")
+        p.set_defaults(func=cmd_unbuilt)
+
+    args = ap.parse_args(argv)
+    try:
+        return args.func(args)
+    except userconfig.ConfigMissing as exc:
+        # One place, so no command can forget. Exit 2 and an instruction, not a
+        # guessed layout that would build an empty model and call it a success.
+        print("%s\n\nhomegraph does not assume where anything lives. Run:\n"
+              "    homegraph init --root <any directory>\n"
+              "and edit the file it writes if the proposal is wrong."
+              % exc, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

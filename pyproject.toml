@@ -1,0 +1,93 @@
+[project]
+name = "homegraph"
+version = "0.1.0"
+description = "A knowledge graph over your home directory, built to prove itself wrong"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = []          # stdlib only, on purpose -- see DECISIONS.md §5
+keywords = ["knowledge-graph", "sqlite", "fts5", "personal-search", "mcp"]
+classifiers = [
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Utilities",
+  "Environment :: Console",
+]
+
+[project.scripts]
+homegraph = "homegraph.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["homegraph*"]
+
+[tool.setuptools.package-data]
+homegraph = ["rules/*.toml"]
+
+[tool.mypy]
+python_version = "3.12"
+# Baseline for the whole package: catch real type errors, do not demand an
+# annotation on every helper. This already passes with zero findings, which is
+# the useful fact -- there are no type bugs here, only unannotated code.
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+
+# Strict where a wrong type would be silent AND load-bearing. Each of these
+# carries a value that everything downstream trusts without re-deriving:
+#
+#   corpus       the category label -- one function decides the partition
+#   store        node ids used as edge endpoints; lastrowid is int|None and
+#                passing the None on surfaced far away as a foreign-key error
+#   temporal     an int that means a set of dates; the bit convention is a
+#                contract M5 depends on
+#   search       fused hits, where the wrong key halves a rank invisibly
+#   incremental  the changed/touched distinction that decides re-extraction
+#
+# Deliberately NOT strict: models/, mesh.py, cli.py, visualize.py, tests/. Their errors are
+# loud -- an extractor that mishandles a type raises, and a checkpoint goes red.
+# Annotating them would document `str -> str` several hundred times and find
+# nothing, which is measured rather than assumed: plain mypy is already clean.
+[[tool.mypy.overrides]]
+module = [
+  "homegraph.corpus",
+  "homegraph.store",
+  "homegraph.temporal",
+  "homegraph.search",
+  "homegraph.incremental",
+  "homegraph.config",
+]
+# `strict = true` is a global flag; in a per-module section mypy applies it to
+# everything, which is how this first came back with 231 errors in the files it
+# was supposed to exempt. Expanded into the flags it stands for, which ARE
+# per-module.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+disallow_untyped_decorators = true
+check_untyped_defs = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Each test_cp*.py is a script first and a pytest module second. Without the
+# adapters at the bottom of each file, pytest collected all seven and ran none.
+#
+# `test_no_real_paths.py` is listed explicitly rather than by widening the
+# pattern to `test_*.py`: this narrow list is what stopped the samplers and
+# scoring scripts under tests/gold/ from being collected as tests, and a
+# pattern that silently starts collecting more files is how the "pytest ran
+# nothing" failure happened in the first place. A new checkpoint has to be
+# added here on purpose -- and if that is forgotten, it is visible as a test
+# that never appears rather than as a test that quietly passes.
+python_files = ["test_cp*.py", "test_no_real_paths.py"]
