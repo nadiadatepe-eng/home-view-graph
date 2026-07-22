@@ -77,12 +77,27 @@ class DirStats:
 
     @property
     def role(self) -> str | None:
-        """The role this directory earns, or None."""
+        """The role this directory earns, or None.
+
+        Two things this deliberately does NOT do, both of which it used to.
+
+        The share is measured against every file kept, not only the ones whose
+        extension the rules recognise. Three PDFs beside ten thousand files
+        with unknown extensions is 3/3 by the old measure and earned
+        `document` with apparent confidence; by this one it is 3/10003 and
+        earns nothing. Unknown is evidence, not absence of evidence.
+
+        A tie earns nothing either. The comparison is `<=`, so an even split
+        between two categories falls through instead of being settled by
+        `most_common`, which returns whichever was inserted first -- making the
+        proposal depend on directory iteration order. The same folder could be
+        proposed as `note` on one machine and `document` on another.
+        """
         counted = sum(self.by_category.values())
         if counted < MIN_FILES:
             return None
         category, n = self.by_category.most_common(1)[0]
-        if n / counted < MIN_SHARE:
+        if n / max(self.files, counted) <= MIN_SHARE:
             return None
         return ROLE_OF_CATEGORY.get(category)
 
@@ -184,8 +199,12 @@ def scan(root: str, ext_map: dict[str, str] | None = None) -> Proposal:
 
     roles: dict[str, list[str]] = {r: [] for r in userconfig.ROLES}
     for st in stats:
+        # `st.role` still names document/note/code, because the table below
+        # reports them as evidence about the directory. Only roles the config
+        # actually carries are proposed -- proposing one nothing reads is how
+        # `cache` came to arrive pre-filled in every config.
         role = st.role
-        if role:
+        if role in roles:
             roles[role].append(st.name)
     return Proposal(root=root, dirs=stats, roles=roles, skipped_hidden=hidden)
 

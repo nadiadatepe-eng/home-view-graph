@@ -107,6 +107,15 @@ def diff(store: "Store", current: Mapping[str, FileState], *,
                       and prior["mtime"] is not None
                       and abs(prior["mtime"] - state.mtime) <= mtime_tolerance)
         if same_cheap:
+            # One `access()` before believing the cheap check. Revoking read
+            # permission changes neither size nor mtime, so `unchanged` was the
+            # answer and the model went on serving text from a file it can no
+            # longer open -- while a full rebuild would have dropped it. This
+            # is a stat-level probe, not a read: it costs one syscall per
+            # otherwise-unchanged file and buys agreement with `build`.
+            if use_hash and not os.access(state.path, os.R_OK):
+                changes.changed.append(key)
+                continue
             changes.unchanged.append(key)
             continue
         if not use_hash:
@@ -114,7 +123,16 @@ def diff(store: "Store", current: Mapping[str, FileState], *,
             changes.changed.append(key)
             continue
         new_hash = state.content_hash or _safe_hash(state.path)
-        if new_hash is not None and new_hash == prior["content_hash"]:
+        if new_hash is None:
+            # Unreadable now, readable when it was built: a permission change
+            # leaves size and mtime alone, so the cheap check said `unchanged`
+            # and the model kept serving text it can no longer read. A full
+            # build would skip the file entirely, so calling it changed is what
+            # makes update agree with build -- the builder will skip it and the
+            # node will go, which is the same store either way.
+            changes.changed.append(key)
+            continue
+        if new_hash == prior["content_hash"]:
             changes.touched.append(key)
         else:
             changes.changed.append(key)

@@ -25,6 +25,51 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 600
 
 MUTATIONS = [
+    # -- the config must reach the extractor ----------------------------
+    #
+    # The original defect: the key was read from the file and never handed to
+    # the builder. What made it survive was that the checkpoint called
+    # `build(..., rules=...)` itself, so it tested a code path no user takes.
+    ("the config stops reaching the markdown extractor",
+     "homegraph/models/m3_build.py",
+     '    return {"generated_markers": tuple(getattr(cfg, "generated_dirs", ()) or ())}',
+     '    return {}  # mutated: config read, then dropped',
+     "rules_from_config carries the directory into the build"),
+
+    # -- config writes are atomic ---------------------------------------
+    ("the config is truncated in place again",
+     "homegraph/userconfig.py",
+     '    tmp = "%s.tmp-%d" % (path, os.getpid())',
+     '    tmp = path  # mutated: write straight over the original',
+     "the previous config survives byte-for-byte"),
+
+    ("a failed write leaves its scratch file behind",
+     "homegraph/userconfig.py",
+     '        if os.path.exists(tmp):\n            os.remove(tmp)',
+     '        pass  # mutated: leave the partial file',
+     "no scratch file is left in the config directory"),
+
+    # -- thresholds -----------------------------------------------------
+    ("the share is measured against known extensions only",
+     "homegraph/scan.py",
+     "        if n / max(self.files, counted) <= MIN_SHARE:",
+     "        if n / counted <= MIN_SHARE:  # mutated",
+     "a handful of known files among many unknown earns nothing"),
+
+    ("an exact tie is settled by insertion order again",
+     "homegraph/scan.py",
+     "        if n / max(self.files, counted) <= MIN_SHARE:",
+     "        if n / max(self.files, counted) < MIN_SHARE:  # mutated",
+     "an exact tie earns nothing rather than insertion order"),
+
+    # -- retired roles are not proposed ---------------------------------
+    ("the scanner proposes roles the config does not carry",
+     "homegraph/scan.py",
+     "        if role in roles:\n            roles[role].append(st.name)",
+     "        if role:\n            roles.setdefault(role, []).append(st.name)"
+     "  # mutated",
+     "a role nothing reads is not proposed"),
+
     # -- --yes must not imply --force -----------------------------------
     #
     # The original coupling, restored. It shipped, and it meant a scripted
@@ -57,13 +102,11 @@ MUTATIONS = [
     # `init` on a real home directory called a 42-file wiki `cache`.
     ("the pruned ratio decides the role again",
      "homegraph/scan.py",
-     '    for st in stats:\n'
-     '        role = st.role',
-     '    for st in stats:\n'
-     '        if st.mostly_pruned:  # mutated\n'
-     '            continue\n'
-     '        role = st.role',
-     "its own files decide the role"),
+     '        counted = sum(self.by_category.values())',
+     '        if self.mostly_pruned:  # mutated\n'
+     '            return None\n'
+     '        counted = sum(self.by_category.values())',
+     "its own files decide the verdict"),
 
     ("the pruned ratio stops being reported",
      "homegraph/scan.py",
@@ -167,7 +210,7 @@ MUTATIONS = [
 
     ("the scan proposes on any majority, however thin",
      "homegraph/scan.py",
-     "        if n / counted < MIN_SHARE:\n            return None",
+     "        if n / max(self.files, counted) <= MIN_SHARE:\n            return None",
      "        if False:  # mutated: a plurality of one is enough\n"
      "            return None",
      "a thin majority earns nothing"),

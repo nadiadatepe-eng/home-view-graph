@@ -200,9 +200,39 @@ def t_scan_thresholds(tmp):
         for f in files:
             open(os.path.join(tree, name, f), "w").close()
 
+    # Two directories that used to earn a confident, wrong role.
+    #
+    # `swamped` is the download folder shape: three PDFs and a thousand files
+    # the rules do not recognise. Measured against classified files only that
+    # is 3/3 and reads as a document directory.
+    #
+    # `tied` is an exact split. `most_common` breaks ties by insertion order,
+    # so the old `<` comparison made the answer depend on the order the
+    # filesystem happened to return names in.
+    os.makedirs(os.path.join(tree, "swamped"), exist_ok=True)
+    for f in ("a.pdf", "b.pdf", "c.pdf"):
+        open(os.path.join(tree, "swamped", f), "w").close()
+    for i in range(1000):
+        open(os.path.join(tree, "swamped", "blob%d.zzz" % i), "w").close()
+    os.makedirs(os.path.join(tree, "tied"), exist_ok=True)
+    for f in ("a.md", "b.md", "c.pdf", "d.pdf"):
+        open(os.path.join(tree, "tied", f), "w").close()
+
     roles = scan(tree).roles
     check("a clear majority earns a role", roles.get("image") == ["clear"],
           "image=%s" % roles.get("image"))
+    # Asserted on each directory's verdict, not on the proposal. Only `image`
+    # is a role now, so a directory that earns `document` never appears in the
+    # proposal whatever the thresholds do -- a gate phrased over `roles` here
+    # would be green for a reason that has nothing to do with what it claims.
+    verdict = {d.name: d.role for d in scan(tree).dirs}
+    check("a handful of known files among many unknown earns nothing",
+          verdict.get("swamped") is None, "swamped=%r" % verdict.get("swamped"))
+    check("an exact tie earns nothing rather than insertion order",
+          verdict.get("tied") is None, "tied=%r" % verdict.get("tied"))
+    check("the threshold directories were actually built",
+          {"swamped", "tied", "clear"} <= set(verdict),
+          "missing %s" % ({"swamped", "tied", "clear"} - set(verdict)))
     check("a thin majority earns nothing",
           all("mixed" not in (roles.get(r) or []) for r in userconfig.ROLES),
           "mixed appears in %s" % [r for r in userconfig.ROLES
@@ -282,11 +312,17 @@ def t_pruned_ratio_does_not_decide_the_role(tmp):
                                   getattr(st, "pruned", None)))
     check("the pruned ratio is still reported", bool(st and st.mostly_pruned),
           "mostly_pruned=%s" % (st and st.mostly_pruned))
-    check("its own files decide the role",
-          prop.roles.get("note") == ["notebook"],
-          "note=%s  (all roles: %s)"
-          % (prop.roles.get("note"),
-             {r: v for r, v in prop.roles.items() if v}))
+    # Asserted on the directory's own verdict rather than on the proposal.
+    # `note` is no longer a role the config carries -- only `image` is -- but
+    # the verdict is still what the table shows the user, and it is still the
+    # thing the pruned ratio must not override.
+    check("its own files decide the verdict",
+          st is not None and st.role == "note",
+          "role=%r" % (getattr(st, "role", None),))
+    check("a role nothing reads is not proposed",
+          set(prop.roles) == set(userconfig.ROLES),
+          "proposed keys %s vs roles %s"
+          % (sorted(prop.roles), sorted(userconfig.ROLES)))
 
 
 def t_retired_roles_are_named_not_ignored(tmp):
@@ -399,6 +435,105 @@ def t_generated_dirs_come_from_the_config():
           subtype_of(report, {"generated_markers": ("/graph-export/",)}))
 
 
+def t_config_write_is_atomic(tmp):
+    """A config is written whole or not at all.
+
+    The dangerous half-write is not a corrupt file -- that is refused loudly.
+    It is `root = "/h"` with no [roles]: valid TOML, loads cleanly, every role
+    empty. The next `update` then finds no images and removes the image corpus
+    while reporting success. So the failure mode to exclude is "parses, and is
+    wrong", not "does not parse".
+    """
+    path = os.path.join(tmp, "atomic.toml")
+    userconfig.write(path, tmp, {"image": ["Pictures"]})
+    before = open(path).read()
+
+    # Interrupt render() midway, exactly where a signal would land.
+    real_render = userconfig.render
+
+    def exploding_render(*a, **kw):
+        raise KeyboardInterrupt("interrupted while writing")
+
+    userconfig.render = exploding_render
+    try:
+        userconfig.write(path, tmp, {"image": ["Something-Else"]})
+        outcome = "returned normally"
+    except KeyboardInterrupt:
+        outcome = "raised"
+    except Exception as exc:                                  # noqa: BLE001
+        outcome = "raised:%s" % type(exc).__name__
+    finally:
+        userconfig.render = real_render
+
+    check("an interrupted write propagates rather than half-succeeding",
+          outcome == "raised", outcome)
+    check("the previous config survives byte-for-byte",
+          os.path.exists(path) and open(path).read() == before,
+          "file %s" % ("changed" if os.path.exists(path) else "gone"))
+    check("no scratch file is left in the config directory",
+          not [f for f in os.listdir(tmp) if ".tmp-" in f],
+          "%s" % [f for f in os.listdir(tmp) if ".tmp-" in f])
+    # And the survivor must still be usable, not merely present.
+    try:
+        reloaded = userconfig.load(path)
+        roles = list(reloaded.roles.get("image", ()))
+    except Exception as exc:                                  # noqa: BLE001
+        roles = "raised:%s" % type(exc).__name__
+    check("the survivor still loads with its roles intact",
+          roles == ["Pictures"], "%r" % (roles,))
+
+
+def t_generated_dirs_reach_the_build(tmp):
+    """The config must reach the extractor through the path a user takes.
+
+    The three checks above prove the MECHANISM works when rules are handed to
+    `subtype_of` directly. They passed for as long as the key existed while
+    every real caller -- the CLI and `update` -- built M3 with no rules at all,
+    so a configured directory still came out as `note`. A gate that exercises
+    a code path nobody runs is a new shape of empty gate: the assertion is
+    real, the subject is not.
+
+    So this one goes through `build()` the way the callers do, and through
+    `rules_from_config`, which is now the single place that turns a config into
+    extractor rules.
+    """
+    from homegraph.models.m3_build import build, rules_from_config
+    from homegraph.store import Store
+
+    gen = os.path.join(tmp, "gen-corpus", "reports")
+    os.makedirs(gen, exist_ok=True)
+    page = os.path.join(gen, "summary.md")
+    with open(page, "w") as fh:
+        fh.write("# Summary\n\nGenerated prose.\n")
+
+    cfgpath = os.path.join(tmp, "gen.toml")
+    userconfig.write(cfgpath, os.path.dirname(gen), {"image": []},
+                     generated_dirs=("/reports/",))
+    cfg = userconfig.load(cfgpath)
+
+    def subtype_after_build(rules):
+        db = os.path.join(tmp, "gen-%s.db" % bool(rules))
+        if os.path.exists(db):
+            os.remove(db)
+        try:
+            with Store(db, model="m3") as s:
+                build(s, [page], "2026-01-01", rules=rules)
+                row = s.db.execute(
+                    "SELECT subtype FROM nodes WHERE path = ?", (page,)
+                ).fetchone()
+                return row["subtype"] if row else "(no node)"
+        except Exception as exc:                              # noqa: BLE001
+            return "raised:%s" % type(exc).__name__
+
+    check("the config declares the directory",
+          cfg.generated_dirs == ("/reports/",), "%r" % (cfg.generated_dirs,))
+    check("without the config the page is an ordinary note",
+          subtype_after_build(None) == "note", subtype_after_build(None))
+    check("rules_from_config carries the directory into the build",
+          subtype_after_build(rules_from_config(cfg)) == "generated",
+          subtype_after_build(rules_from_config(cfg)))
+
+
 # -- 4. no layout is imposed -----------------------------------------------
 
 def t_same_rules_same_partition(tmp):
@@ -495,6 +630,8 @@ def main():
         t_empty_image_role(tmp, syn.ROOT)
         t_image_role_points_at_an_empty_directory(tmp, syn.ROOT)
         t_generated_dirs_come_from_the_config()
+        t_config_write_is_atomic(tmp)
+        t_generated_dirs_reach_the_build(tmp)
         no_labels, en_labels = t_same_rules_same_partition(tmp)
         t_labels_are_known(no_labels, en_labels)
     finally:

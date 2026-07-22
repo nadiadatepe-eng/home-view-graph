@@ -44,6 +44,13 @@ class BuildReport:
         self.unresolved_mentions = 0
         self.frontmatter_problems = []
         self.subtypes = collections.Counter()
+        # Files the builder was asked for and could not read. Recorded rather
+        # than passed over: during an incremental update the old edges have
+        # already been deleted by the time this happens, so a silent skip
+        # leaves a node with stale text and no relations while the run reports
+        # success. A file deleted between the diff and the build, or one whose
+        # permissions changed, lands here.
+        self.unreadable = []
 
     def summary(self):
         return {
@@ -56,6 +63,7 @@ class BuildReport:
             "ambiguous_targets": len(self.ambiguous_targets),
             "unresolved_mentions": self.unresolved_mentions,
             "frontmatter_problems": len(self.frontmatter_problems),
+            "unreadable": len(self.unreadable),
             "subtypes": dict(self.subtypes),
         }
 
@@ -73,6 +81,19 @@ def build_index(paths):
     for name in index:
         index[name].sort()
     return index
+
+
+def rules_from_config(cfg):
+    """The extractor rules an installation's config implies.
+
+    One function, called by every caller that builds M3, because the two that
+    existed -- the CLI and `update` -- both passed no rules at all. The config
+    key was written by `init`, read by `load()`, and then dropped on the floor:
+    a directory named in `[markdown].generated_dirs` still produced `note`.
+    CP-7's gate passed throughout, because it called `build(..., rules=...)`
+    directly and so tested a code path no user takes.
+    """
+    return {"generated_markers": tuple(getattr(cfg, "generated_dirs", ()) or ())}
 
 
 def build(store, paths, as_of, rules=None, report=None, index_paths=None):
@@ -95,7 +116,8 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
     for path in paths:
         try:
             data = ex.extract(path)
-        except OSError:
+        except OSError as exc:
+            report.unreadable.append((path, repr(exc)))
             continue
         extractions.append(data)
         report.files += 1

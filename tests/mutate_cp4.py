@@ -90,7 +90,7 @@ MUTATIONS = [
 
     ("the init scan proposes nothing at all",
      "homegraph/scan.py",
-     "        role = st.role\n        if role:\n            roles[role].append(st.name)",
+     "        role = st.role\n        if role in roles:\n            roles[role].append(st.name)",
      "        pass  # mutated: no role is ever proposed",
      "init scan reached the image directory"),
 

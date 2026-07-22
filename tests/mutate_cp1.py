@@ -56,7 +56,7 @@ MUTATIONS = [
 
     ("hash confirmation skipped, mtime is final",
      "homegraph/incremental.py",
-     'if new_hash is not None and new_hash == prior["content_hash"]:',
+     'if new_hash == prior["content_hash"]:',
      'if False:  # mutated: every touch counts as a change',
      "exactly 1 file reported changed"),
 

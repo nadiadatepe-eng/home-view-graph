@@ -280,6 +280,11 @@ def run(tmp, syn):
           "%d touched, %d restatted, 0 reparsed"
           % (len(touched_paths), report.restatted))
 
+    # -- interruption and unreadability ------------------------------------
+    t_interrupted_update_commits_nothing(tmp)
+    t_unreadable_is_not_unchanged(tmp)
+    t_vanishing_file_is_reported(tmp)
+
     # -- refusals ---------------------------------------------------------
     t_refusals(tmp, root, cfg, paths_b)
     t_mesh_forgets(tmp, root, cfg)
@@ -287,6 +292,150 @@ def run(tmp, syn):
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
     return 1 if failed else 0
+
+
+def t_interrupted_update_commits_nothing(tmp):
+    """Ctrl-C during a rebuild leaves the store as it was, not half-done.
+
+    The dangerous window is between forgetting a changed file's edges and
+    writing the new ones. `Store.__exit__` committed unconditionally, so an
+    interrupt there persisted the deletion without the replacement -- and for
+    a file with no sections the node and FTS counts do not move, so `status`
+    reported a healthy store. Not a crash: a quiet, plausible wrong answer.
+    """
+    from homegraph.models import m3_build
+    from homegraph.store import Store
+
+    work = os.path.join(tmp, "interrupt")
+    os.makedirs(work, exist_ok=True)
+    page = os.path.join(work, "page.md")
+    with open(page, "w") as fh:
+        fh.write("# Page\n\nLinks to [[other]].\n")
+    other = os.path.join(work, "other.md")
+    with open(other, "w") as fh:
+        fh.write("# Other\n")
+
+    db = os.path.join(tmp, "interrupt.db")
+    with Store(db, model="m3") as s:
+        m3_build.build(s, [page, other], "2026-01-01")
+        s.rebuild_fts()
+    with Store(db) as s:
+        before = (s.node_count(), s.edge_count())
+
+    # Rewrite the page, then interrupt partway through applying the change.
+    with open(page, "w") as fh:
+        fh.write("# Page\n\nNo links any more.\n")
+    real_build = m3_build.build
+
+    def build_then_interrupt(store, paths, as_of, **kw):
+        up.forget(store, paths[0], keep_self=True)
+        raise KeyboardInterrupt("interrupted mid-rebuild")
+
+    m3_build.build = build_then_interrupt
+    try:
+        with Store(db, model="m3") as s:
+            m3_build.build(s, [page], "2026-01-02")
+        outcome = "no exception"
+    except KeyboardInterrupt:
+        outcome = "raised"
+    except Exception as exc:                                  # noqa: BLE001
+        outcome = "raised:%s" % type(exc).__name__
+    finally:
+        m3_build.build = real_build
+
+    with Store(db) as s:
+        after = (s.node_count(), s.edge_count())
+
+    check("the interrupt propagates", outcome == "raised", outcome)
+    check("an interrupted update commits nothing",
+          after == before, "before %s, after %s" % (before, after))
+
+
+def t_vanishing_file_is_reported(tmp):
+    """A file that disappears between the diff and the build is not a success.
+
+    The window is real: `incremental.scan()` lists a changed file, `update`
+    deletes its outgoing edges, and the builder then cannot read it. The old
+    behaviour was `except OSError: continue` -- so the node kept the text it
+    had, lost every relation it used to assert, and the run reported success.
+    If the file comes back before anyone looks, nothing in the store says the
+    graph is wrong.
+    """
+    from homegraph import incremental
+    from homegraph.models import m3_build
+    from homegraph.store import Store
+
+    work = os.path.join(tmp, "vanish")
+    os.makedirs(work, exist_ok=True)
+    page = os.path.join(work, "here.md")
+    with open(page, "w") as fh:
+        fh.write("# Here\n\nSee [[gone]].\n")
+
+    db = os.path.join(tmp, "vanish.db")
+    with Store(db, model="m3") as s:
+        m3_build.build(s, [page], "2026-01-01")
+        s.rebuild_fts()
+
+    # Change it, then delete it after the diff has been taken.
+    with open(page, "w") as fh:
+        fh.write("# Here\n\nRewritten.\n")
+    current = incremental.scan([page], use_hash=True)
+    os.remove(page)
+
+    with Store(db, model="m3") as s:
+        changes = incremental.diff(s, current, kinds=["file"])
+        rep = m3_build.build(s, list(changes.changed), "2026-01-02",
+                             index_paths=[page])
+
+    check("the vanished file was in the rebuild set",
+          list(changes.changed) == [page], "%r" % (changes.changed,))
+    check("the builder reports what it could not read",
+          [p for p, _ in rep.unreadable] == [page], "%r" % (rep.unreadable,))
+    check("the count reaches the summary",
+          rep.summary().get("unreadable") == 1,
+          "%r" % rep.summary().get("unreadable"))
+
+
+def t_unreadable_is_not_unchanged(tmp):
+    """A file that can no longer be read is not 'unchanged'.
+
+    Revoking read permission leaves size and mtime alone, so the cheap check
+    called it unchanged and the model kept serving the text it had. A full
+    rebuild skips the file, so the two diverge -- and the update reports
+    success while holding content it can no longer verify.
+    """
+    from homegraph import incremental
+    from homegraph.models import m3_build
+    from homegraph.store import Store
+
+    work = os.path.join(tmp, "perm")
+    os.makedirs(work, exist_ok=True)
+    page = os.path.join(work, "secret.md")
+    with open(page, "w") as fh:
+        fh.write("# Secret\n\nReadable for now.\n")
+
+    db = os.path.join(tmp, "perm.db")
+    with Store(db, model="m3") as s:
+        m3_build.build(s, [page], "2026-01-01")
+        s.rebuild_fts()
+
+    os.chmod(page, 0o000)
+    try:
+        readable = os.access(page, os.R_OK)
+        current = incremental.scan([page], use_hash=True)
+        with Store(db) as s:
+            changes = incremental.diff(s, current, kinds=["file"])
+        verdict = ("changed" if page in changes.changed else
+                   "unchanged" if page in changes.unchanged else
+                   "touched" if page in changes.touched else "absent")
+    finally:
+        os.chmod(page, 0o644)
+
+    # Running as root would make the premise false rather than the code wrong.
+    check("the fixture is genuinely unreadable", not readable,
+          "still readable (running as root?)" if readable else "chmod 000 held")
+    check("an unreadable file is reported as changed, not unchanged",
+          verdict == "changed", verdict)
 
 
 def t_refusals(tmp, root, cfg, paths):

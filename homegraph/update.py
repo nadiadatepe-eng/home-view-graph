@@ -94,12 +94,13 @@ def _m2(store, paths, as_of):
     return build(store, paths, as_of)
 
 
-def _m3(store, paths, as_of, all_paths=None):
-    from .models.m3_build import build
+def _m3(store, paths, as_of, all_paths=None, cfg=None):
+    from .models.m3_build import build, rules_from_config
     # The name index has to see the WHOLE corpus even when three files are
     # being rebuilt. Without that a partial build declares every link broken --
     # the targets are real, they were just not in the batch.
-    return build(store, paths, as_of, index_paths=all_paths or paths)
+    return build(store, paths, as_of, index_paths=all_paths or paths,
+                 rules=rules_from_config(cfg) if cfg is not None else None)
 
 
 def _m3_affected(store, changes, all_paths):
@@ -185,6 +186,11 @@ class UpdateReport:
     nodes_after: int = 0
     edges_before: int = 0
     edges_after: int = 0
+    # Files the builder was asked to rebuild and could not read -- deleted or
+    # chmod'd between the diff and the build. Their old edges are already gone
+    # by then, so a silent skip leaves a node holding stale text with no
+    # relations, and the run still reports success. Surfaced instead.
+    unreadable: list = field(default_factory=list)
 
     def summary(self):
         d = {"model": self.model}
@@ -194,6 +200,8 @@ class UpdateReport:
                   "pruned": self.pruned, "restatted": self.restatted,
                   "nodes": "%d -> %d" % (self.nodes_before, self.nodes_after),
                   "edges": "%d -> %d" % (self.edges_before, self.edges_after)})
+        if self.unreadable:
+            d["unreadable"] = len(self.unreadable)
         return d
 
 
@@ -352,10 +360,22 @@ def update(store, model: str, paths, as_of, config, *,
         # Signature inspection rather than try/except TypeError: catching the
         # exception would also swallow a genuine TypeError raised inside the
         # builder and then run it a second time.
-        if "all_paths" in inspect.signature(builder).parameters:
-            builder(store, rebuild, as_of, all_paths=sorted(current))
-        else:
-            builder(store, rebuild, as_of)
+        # The config travels with the build. `generated_dirs` used to be read
+        # from the file and then never handed to the extractor, so a directory
+        # the user had configured still produced the default subtype -- through
+        # this path AND through the CLI, while the checkpoint that "proved" it
+        # worked called the builder directly with rules of its own.
+        kwargs = {}
+        params = inspect.signature(builder).parameters
+        if "all_paths" in params:
+            kwargs["all_paths"] = sorted(current)
+        if "cfg" in params:
+            kwargs["cfg"] = config
+        build_report = builder(store, rebuild, as_of, **kwargs)
+        # `getattr`, because a caller may pass its own builder -- CP-8 does --
+        # and a builder that reports nothing must not look like one that read
+        # everything.
+        report.unreadable = list(getattr(build_report, "unreadable", ()) or ())
 
     for key in changes.touched:
         state = current[key]

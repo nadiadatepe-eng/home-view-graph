@@ -324,12 +324,30 @@ class Store:
     def commit(self) -> None:
         self.db.commit()
 
-    def close(self) -> None:
-        self.db.commit()
+    def close(self, commit: bool = True) -> None:
+        if commit:
+            self.db.commit()
+        else:
+            self.db.rollback()
         self.db.close()
 
     def __enter__(self) -> "Store":
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    def __exit__(self, exc_type: object, *rest: object) -> None:
+        """Commit on a clean exit, roll back on any exception.
+
+        This used to commit unconditionally. An update interrupted between
+        `forget(..., keep_self=True)` and `rebuild_fts()` therefore committed
+        the half it had done: edges deleted, new ones not yet written, FTS
+        holding the previous text. For a markdown file with no sections or
+        tags the node and FTS counts are unchanged by that, so `status`
+        reported `fts_stale=False` over a store that was neither current nor
+        consistent -- the failure looked like success from every angle
+        available to the user.
+
+        KeyboardInterrupt is a BaseException and reaches here as `exc_type`
+        like any other, which is the case that matters: Ctrl-C during a long
+        rebuild is the realistic way this happens.
+        """
+        self.close(commit=exc_type is None)

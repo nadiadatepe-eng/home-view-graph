@@ -26,6 +26,37 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- a file that vanishes mid-build must be reported ----------------
+    ("an unreadable file is skipped in silence again",
+     "homegraph/models/m3_build.py",
+     "        except OSError as exc:\n"
+     "            report.unreadable.append((path, repr(exc)))\n"
+     "            continue",
+     "        except OSError:\n            continue  # mutated: silent skip",
+     "the builder reports what it could not read"),
+
+    ("the skip is recorded but never surfaced",
+     "homegraph/models/m3_build.py",
+     '            "unreadable": len(self.unreadable),',
+     "",
+     "the count reaches the summary"),
+
+    # -- an interrupted update must commit nothing ----------------------
+    ("an interrupted update commits its half",
+     "homegraph/store.py",
+     "        self.close(commit=exc_type is None)",
+     "        self.close(commit=True)  # mutated: commit whatever was done",
+     "an interrupted update commits nothing"),
+
+    # -- unreadable is not unchanged ------------------------------------
+    ("a file that can no longer be read counts as unchanged",
+     "homegraph/incremental.py",
+     "            if use_hash and not os.access(state.path, os.R_OK):\n"
+     "                changes.changed.append(key)\n"
+     "                continue",
+     "            pass  # mutated: trust size and mtime alone",
+     "an unreadable file is reported as changed, not unchanged"),
+
     # -- the five axes ---------------------------------------------------
     ("removed files are ignored entirely",
      "homegraph/update.py",
@@ -49,12 +80,7 @@ MUTATIONS = [
      "        if not use_hash:\n"
      "            # M2's path: the cheap check is the only check, by design.\n"
      "            changes.changed.append(key)\n"
-     "            continue\n"
-     "        new_hash = state.content_hash or _safe_hash(state.path)\n"
-     "        if new_hash is not None and new_hash == prior[\"content_hash\"]:\n"
-     "            changes.touched.append(key)\n"
-     "        else:\n"
-     "            changes.changed.append(key)",
+     "            continue",
      "        changes.unchanged.append(key)  # mutated: a change is no change",
      "the diff matches the declared change"),
 

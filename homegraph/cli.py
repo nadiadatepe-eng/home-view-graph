@@ -290,6 +290,18 @@ def cmd_update(args):
                 failed = True
                 continue
         print("%-6s %s" % (name, report.summary()))
+        if report.unreadable:
+            # Named files, not just a count, and stderr with a non-zero exit:
+            # these nodes now hold text from before the update and none of the
+            # relations they used to assert, because the old edges were deleted
+            # before the read failed. Reporting success here would be the
+            # quietest wrong answer this command can give.
+            print("%-6s WARNING  %d file(s) could not be read during the "
+                  "rebuild; their nodes are stale. Rebuild this model."
+                  % (name, len(report.unreadable)), file=sys.stderr)
+            for path, why in report.unreadable[:5]:
+                print("         %s  %s" % (path, why), file=sys.stderr)
+            failed = True
 
     if failed:
         # Exit 2, the same refusal code the rest of the CLI uses. A partial
@@ -320,13 +332,14 @@ def cmd_md_build(args):
 
     from . import update as up
     from .corpus import Classifier
-    from .models.m3_build import build
+    from .models.m3_build import build, rules_from_config
     from .store import Store
     clf = Classifier()
     paths = [p for p, _ in _walk(args.root)
              if clf.classify(p) == "markdown" and os.path.exists(p)]
     with Store(args.db, model="m3") as s:
-        report = build(s, paths, args.as_of or date.today().isoformat())
+        report = build(s, paths, args.as_of or date.today().isoformat(),
+                       rules=rules_from_config(clf.config))
         s.rebuild_fts()
         # Which layout this store was built under, so a later `update` can
         # tell a file change from a structural one. Written here rather than

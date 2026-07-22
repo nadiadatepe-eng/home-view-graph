@@ -49,18 +49,34 @@ DEFAULT_CONFIG = os.path.join("~", ".homegraph", "config.toml")
 # are recorded because `init` can see them and a later model will want them;
 # they are listed here rather than invented per caller so that a typo in the
 # config is a visible unknown role rather than a silently ignored line.
-ROLES = ("image", "document", "note", "code")
+ROLES = ("image",)
 
-# `cache` was here and is gone. Nothing ever read it: exclusion is decided by
-# `[cache]` and `[dependencies]` in rules/exclusions.toml, which `corpus.py`
-# loads directly. A role the user fills in and no code consults is exactly the
-# "line the user believes" this module refuses to allow for a typo, and it was
-# worse than a typo -- `init` proposed it, so the config arrived pre-filled
-# with a lie. Named on removal rather than dropped, so an existing config says
-# what happened instead of failing as an unrecognised key.
+# Four roles were here and are gone. Every one of them was a line the user
+# filled in and no code consulted.
+#
+# `cache` went first: exclusion is decided by `[cache]` and `[dependencies]` in
+# rules/exclusions.toml, which `corpus.py` loads directly. The other three were
+# kept afterwards on the grounds that they were "reserved for a later model"
+# and documented as such -- which turned out to be the same defect wearing a
+# label. External review put it plainly: with `note = []` a markdown file is
+# still built, because the CLI classifies the whole root and only `image` is
+# ever handed to the rules. Documenting that a line does nothing does not stop
+# the reader believing it does.
+#
+# `image` stays because it is load-bearing: it supplies `{image_roots}` to the
+# rule files, and emptying it demonstrably moves the image count to zero. When
+# a model needs one of the others, it comes back with a consumer attached.
+#
+# Named on removal rather than dropped, so a config written by an older `init`
+# explains itself instead of failing as an unrecognised key.
+_RESERVED = ("declared but never consulted -- the models classify the whole "
+             "root, and only `image` reaches the rules; delete the line")
 RETIRED_ROLES = {
     "cache": "exclusion is decided by rules/exclusions.toml, not by a role; "
              "delete the line",
+    "document": _RESERVED,
+    "note": _RESERVED,
+    "code": _RESERVED,
 }
 
 
@@ -226,7 +242,28 @@ def render(root: str, roles: dict[str, list[str]],
 def write(path: str, root: str, roles: dict[str, list[str]],
           own_owners: tuple[str, ...] = (),
           generated_dirs: tuple[str, ...] = ()) -> str:
+    # Written to a sibling and renamed, never truncated in place. `open(path,
+    # "w")` destroys the old file before the new one exists, and a process that
+    # dies partway leaves *valid* TOML: `root = "/h"` with no [roles] section
+    # parses cleanly, every role comes back empty, and the next `update` finds
+    # no images and deletes the image corpus as a successful run. A config that
+    # is half-written has to be no config at all.
+    #
+    # Same directory so the rename stays on one filesystem, where it is atomic;
+    # /tmp could be a different mount and os.replace would fall back to a copy.
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(render(root, roles, own_owners, generated_dirs))
+    tmp = "%s.tmp-%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(render(root, roles, own_owners, generated_dirs))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # BaseException, not Exception: KeyboardInterrupt is the realistic way
+        # this is interrupted, and leaving the scratch file behind would make
+        # the next run's directory listing lie about what configs exist.
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return path

@@ -224,10 +224,15 @@ def _plaintext_band():
     ns = {}
     try:
         exec(compile(open(path, encoding="utf-8").read(), path, "exec"), ns)
-    except Exception:                                     # noqa: BLE001
-        return None
+    except Exception as exc:                              # noqa: BLE001
+        # NOT swallowed. Returning None here made "the file is not on this
+        # machine" and "the file is here and broken" the same outcome, and the
+        # strongest privacy band switched itself off with an INFO line. It
+        # happened for real: a config change made this module raise on import,
+        # and the band went quiet on the one machine it protects.
+        return "raised:%s: %s" % (type(exc).__name__, exc)
     pats = ns.get("PERSONAL_PATTERNS")
-    return list(pats) if pats else None
+    return list(pats) if pats else []
 
 
 def _created_dirs():
@@ -264,7 +269,7 @@ def t_no_personal_identifiers(files):
         # this file is exempt from that one and only that one.
         if rel != SELF and rel not in AUTHORSHIP:
             offenders += _hits(text, GENERIC, rel)
-            if plaintext:
+            if isinstance(plaintext, list) and plaintext:
                 offenders += _hits(text, plaintext, rel)
 
     # The digest band has to be able to fire. A hash set that matches nothing
@@ -283,11 +288,13 @@ def t_no_personal_identifiers(files):
         print("INFO  plaintext band absent: no real-corpus material on this "
               "machine (digest band still ran over every file)")
     else:
-        # Present but empty means the file exists and declares nothing, which
-        # is a broken pre-publish guard rather than a clean one. Loaded, so it
-        # can fail.
-        check("the plaintext band has patterns to search for", bool(plaintext),
-              "%d pattern(s)" % len(plaintext))
+        # Three outcomes, and only one of them is fine. Present and populated
+        # passes; present but empty, or present and unloadable, fails -- a
+        # pre-publish guard that cannot run is not a guard that found nothing.
+        check("the plaintext band loaded and has patterns",
+              isinstance(plaintext, list) and bool(plaintext),
+              plaintext if isinstance(plaintext, str)
+              else "%d pattern(s)" % len(plaintext))
     # Without this the loop above proves nothing when the file list is empty.
     # `all()` over nothing is True, and so is "no offenders in no files".
     check("the publishable tree is non-empty", len(files) > 20,
