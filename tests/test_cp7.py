@@ -383,20 +383,20 @@ def t_image_role_points_at_an_empty_directory(tmp, root):
 
 def t_generated_dirs_come_from_the_config():
     """A machine-specific directory name is config, not a shipped rule."""
-    path = "/anywhere/graphify-out/wiki/Feature_Extraction.md"
+    path = "/anywhere/graph-export/wiki/Feature_Extraction.md"
     check("an unconfigured generated directory is an ordinary note",
           subtype_of(path) == "note", subtype_of(path))
     check("a configured generated directory changes the subtype",
-          subtype_of(path, {"generated_markers": ("/graphify-out/",)})
+          subtype_of(path, {"generated_markers": ("/graph-export/",)})
           == "generated",
-          subtype_of(path, {"generated_markers": ("/graphify-out/",)}))
+          subtype_of(path, {"generated_markers": ("/graph-export/",)}))
     # The shipped filename marker must survive the config being set, or
     # configuring one directory silently stops recognising reports elsewhere.
     report = "/anywhere/else/GRAPH_REPORT.md"
     check("configuring a directory does not disable the shipped marker",
-          subtype_of(report, {"generated_markers": ("/graphify-out/",)})
+          subtype_of(report, {"generated_markers": ("/graph-export/",)})
           == "generated",
-          subtype_of(report, {"generated_markers": ("/graphify-out/",)}))
+          subtype_of(report, {"generated_markers": ("/graph-export/",)}))
 
 
 # -- 4. no layout is imposed -----------------------------------------------

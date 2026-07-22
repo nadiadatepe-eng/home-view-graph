@@ -19,8 +19,8 @@ year = '(?<![\d])(19|20)(\d{2})(?![\d])'
 
 # 6-digit dates are read as YYMMDD first. When that yields a date in the
 # future or an impossible month, the same digits are re-read as DDMMYY.
-# `Hector_270519_25_1.jpeg` is the case: YYMMDD gives 2027-05-19, which has
-# not happened; DDMMYY gives 2019-05-27, which matches the Troja-2021 folder.
+# `Statue_270519_25_1.jpeg` is the case: YYMMDD gives 2027-05-19, which has
+# not happened; DDMMYY gives 2019-05-27, which matches the Series-2021 folder.
 # Without the fallback the graph would date a 2019 work to 2027 and nothing
 # would look wrong.
 yymmdd_vs_ddmmyy = true

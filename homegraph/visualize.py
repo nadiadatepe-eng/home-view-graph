@@ -61,8 +61,11 @@ def _layout(nodes, edges, iterations=180, seed=20260722, width=1600.0):
     slot = {m: i for i, m in enumerate(models)}
     pos = []
     for i, node in enumerate(nodes):
-        angle = 2 * math.pi * (slot[node["model"]] + rng.random()) / max(
-            len(models), 1)
+        # `max(..., 1)` guarded a division that cannot see zero: `_layout`
+        # returns early when there are no nodes, and every node carries a
+        # model, so `models` is non-empty here.
+        angle = (2 * math.pi * (slot[node["model"]] + rng.random())
+                 / len(models))
         radius = width * 0.35 * (0.35 + 0.65 * rng.random())
         pos.append([math.cos(angle) * radius, math.sin(angle) * radius])
 
@@ -71,7 +74,7 @@ def _layout(nodes, edges, iterations=180, seed=20260722, width=1600.0):
         adjacency[a].append(b)
         adjacency[b].append(a)
 
-    k = width / math.sqrt(max(n, 1))
+    k = width / math.sqrt(n)          # n == 0 returned above
     cell = k * 2.0
     temp = width * 0.1
 

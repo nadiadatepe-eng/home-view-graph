@@ -17,7 +17,7 @@ threat model, and a full build takes about a second instead of hours.
 
 The filenames carry more than expected. `03122025_1.png` is a date and a series
 index. `161212025_44_3360x2100.png` is a mistyped date, an index and a
-resolution. `Hector_270519_25_1.jpeg` is a date that only parses correctly if
+resolution. `Statue_270519_25_1.jpeg` is a date that only parses correctly if
 you notice the obvious reading puts it in the future. The grammar lives in
 rules/filenames.toml; this module is the machinery that applies it.
 """

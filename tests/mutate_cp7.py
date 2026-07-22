@@ -215,7 +215,7 @@ MUTATIONS = [
     ("a machine-specific directory name is shipped in the package again",
      "homegraph/models/m3_markdown.py",
      'GENERATED_MARKERS = ("GRAPH_REPORT.md",)',
-     'GENERATED_MARKERS = ("GRAPH_REPORT.md", "/graphify-out/")  # mutated',
+     'GENERATED_MARKERS = ("GRAPH_REPORT.md", "/graph-export/")  # mutated',
      "an unconfigured generated directory is an ordinary note"),
 
     # -- the scanner must not become a second classifier -----------------

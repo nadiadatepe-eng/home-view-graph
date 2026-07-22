@@ -117,7 +117,7 @@ Exclusion is not preparation for the work, it is the work.
 |---|---|---|
 | Layer 3 globs `*.bak` but not dated backups | a shell-history backup with a `.bak-YYYYMMDD` suffix | `.bash_history.bak-20260620` |
 | Layer 2 lists `.config`/`.var`/`.npm`/`.local/share` but not the agent tool's own state directory | a saved file-history snapshot that libmagic reports as **JavaScript source** — a copy of a file that also exists live, so indexing it produces duplicate code nodes | `[app_state].prefixes_scoped` |
-| No rule covers machine-generated prose | a graph report written by a wiki-generation tool — labelled `markdown` in the key, since nothing excludes it | `graphify-out/GRAPH_REPORT.md` |
+| No rule covers machine-generated prose | a graph report written by a wiki-generation tool — labelled `markdown` in the key, since nothing excludes it | `graph-export/GRAPH_REPORT.md` |
 | No symlink policy anywhere in the plan | an SVG inside an unpacked icon theme that is a symlink | `icons/link.svg` |
 
 And one security hole: `.bash_history` is labelled `misc` because that is what

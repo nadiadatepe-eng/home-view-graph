@@ -211,11 +211,11 @@ FILENAME_FASIT = [
     ("Bilder/Art/26072020_5_ny.jpeg",
      "2020-07-26", "ddmmyyyy", "5", "-", "-", "n", "ny", True,
      "'ny' is a variant marker, not a word in a title"),
-    ("Bilder/Art/Troja-2021/Hector_270519_25_1.jpeg",
+    ("Bilder/Art/Series-2021/Statue_270519_25_1.jpeg",
      "2019-05-27", "ddmmyy", "25,1", "-", "-", "n", "-", True,
      "AMBIGUOUS: as YYMMDD this is 2027-05-19, in the future relative to "
      "AS_OF. Only DDMMYY yields a real date"),
-    ("Bilder/Art/Troja-2021/City_190430_150dpi.jpeg",
+    ("Bilder/Art/Series-2021/Bridge_190430_150dpi.jpeg",
      "2019-04-30", "yymmdd", "-", "-", "150", "n", "-", True,
      "150 is DPI, not an index; the date is unambiguous YYMMDD"),
     ("Bilder/Art/Earlier works/Captivity#2.jpeg",
@@ -238,7 +238,7 @@ FILENAME_FASIT = [
 IMAGE_COLLECTIONS = {
     "Art": 4,
     "Art/Experiments-2025": 8,
-    "Art/Troja-2021": 2,
+    "Art/Series-2021": 2,
     "Art/Earlier works": 3,
     "Skjermbilder": 1,
 }
@@ -368,15 +368,15 @@ MISC_TOTAL = 8 + 40 + 3
 # `03122025_9.png` is named in experiments.md and does not exist; a graph that
 # invents a nearest match is worse than one with a gap.
 FIGURE_FOR_PAIRS = frozenset({
-    ("notes/art/troja-analysis.md", "Bilder/Art/Troja-2021/Hector_270519_25_1.jpeg"),
-    ("notes/art/troja-analysis.md", "Bilder/Art/Troja-2021/City_190430_150dpi.jpeg"),
-    ("notes/art/troja-analysis.md", "Bilder/Art/Earlier works/Captivity#2.jpeg"),
-    ("notes/art/troja-analysis.md", "Bilder/Art/Earlier works/Lodestar(2018).jpeg"),
-    ("notes/art/troja-analysis.md",
+    ("notes/art/series-analysis.md", "Bilder/Art/Series-2021/Statue_270519_25_1.jpeg"),
+    ("notes/art/series-analysis.md", "Bilder/Art/Series-2021/Bridge_190430_150dpi.jpeg"),
+    ("notes/art/series-analysis.md", "Bilder/Art/Earlier works/Captivity#2.jpeg"),
+    ("notes/art/series-analysis.md", "Bilder/Art/Earlier works/Lodestar(2018).jpeg"),
+    ("notes/art/series-analysis.md",
      "Bilder/Art/Earlier works/Stardust-1_desember_2020.jpg"),
-    ("notes/art/troja-analysis.md",
+    ("notes/art/series-analysis.md",
      "Bilder/Art/Experiments-2025/03122025_1.png"),
-    ("notes/art/troja-analysis.md",
+    ("notes/art/series-analysis.md",
      "Bilder/Art/Experiments-2025/03122025_2.png"),
     ("notes/art/experiments.md", "Bilder/Art/Experiments-2025/05122025_2.png"),
     ("notes/art/experiments.md", "Bilder/Art/26072020_5_ny.jpeg"),
@@ -395,7 +395,7 @@ FIGURE_FOR_PHANTOM = ("notes/art/experiments.md", "03122025_9.png")
 DECLARED_ROLES = {
     "image": ["Bilder"],
     "document": ["Documents"],
-    "note": ["docs", "graphify-out", "notes", "wiki"],
+    "note": ["docs", "graph-export", "notes", "wiki"],
     "code": [],
     "cache": [],
 }
@@ -509,10 +509,10 @@ def build(root, clean=True):
          ".mdx, not .md -- the extension list has to cover it")
     _write(root, "proj/README.md", "# Project\n")
     case("markdown", "readme", False, "proj/README.md", "readme subtype")
-    _write(root, "graphify-out/GRAPH_REPORT.md",
+    _write(root, "graph-export/GRAPH_REPORT.md",
            "# Report\n\n" + "".join("- [[_COMMUNITY_Cluster %d]]\n" % i
                                     for i in range(12)))
-    case("markdown", "generated", True, "graphify-out/GRAPH_REPORT.md",
+    case("markdown", "generated", True, "graph-export/GRAPH_REPORT.md",
          "machine-written; its 12 unresolved links must not drown the one "
          "human marker")
     _write(root, "notes/bad-frontmatter.md",
@@ -590,14 +590,14 @@ def build(root, clean=True):
     #
     # M5's FIGURE_FOR needs prose that names an image file, and the negative
     # case needs prose that names one which does not exist.
-    _write(root, "notes/art/troja-analysis.md",
-           "# Troja, 2021\n\n"
-           "The sequence reads best in order: Hector_270519_25_1.jpeg opens it,\n"
-           "City_190430_150dpi.jpeg closes it. Earlier work worth rereading\n"
+    _write(root, "notes/art/series-analysis.md",
+           "# Series, 2021\n\n"
+           "The sequence reads best in order: Statue_270519_25_1.jpeg opens it,\n"
+           "Bridge_190430_150dpi.jpeg closes it. Earlier work worth rereading\n"
            "alongside: Captivity#2.jpeg, Lodestar(2018).jpeg and\n"
            "Stardust-1_desember_2020.jpg. The two studies 03122025_1.png and\n"
            "03122025_2.png came out of the same afternoon.\n")
-    case("markdown", "note", True, "notes/art/troja-analysis.md",
+    case("markdown", "note", True, "notes/art/series-analysis.md",
          "names seven image files in prose; every one must become a FIGURE_FOR "
          "edge and no more")
     _write(root, "notes/art/experiments.md",

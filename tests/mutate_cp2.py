@@ -3,8 +3,8 @@
 
 CP-1's mutation run found three checks that tested nothing. CP-2 already had a
 fourth before this file ran: the known-answer rows compare basenames, so they
-could not distinguish `wiki/raw/llm-wiki-idea.md` from
-`wiki/wiki/summaries/llm-wiki-idea.md` and "nearest wins" resolution was
+could not distinguish `wiki/raw/shared-note.md` from
+`wiki/wiki/summaries/shared-note.md` and "nearest wins" resolution was
 unasserted. That check now exists; these mutations decide whether it and the
 rest actually bite.
 

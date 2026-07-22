@@ -200,7 +200,10 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
             continue
 
         body = os.path.basename(path)
-        if detected == "sqlite" and st.st_size <= LARGE_FILE:
+        # No size conjunct: this branch is the `else` of `st.st_size >
+        # LARGE_FILE` above, so the limit is already settled. Repeating it
+        # here read as a second, independent guard and was neither.
+        if detected == "sqlite":
             tables = sqlite_schema(path)
             report.sqlite_files += 1
             if tables:

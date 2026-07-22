@@ -112,8 +112,8 @@ def resolve_target(target, src_path, index):
     """Pick which file a `[[target]]` means when several share the name.
 
     A flat wikilink namespace over a whole home directory collides constantly:
-    `llm-wiki-idea` exists as both `wiki/raw/llm-wiki-idea.md` (source material)
-    and `wiki/wiki/summaries/llm-wiki-idea.md` (the curated page). Sorting the
+    `shared-note` exists as both `wiki/raw/shared-note.md` (source material)
+    and `wiki/wiki/summaries/shared-note.md` (the curated page). Sorting the
     candidates and taking the first picked `raw/` -- alphabetically reasonable,
     semantically wrong, and silent.
 

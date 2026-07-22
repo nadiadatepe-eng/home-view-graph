@@ -166,7 +166,10 @@ def hybrid_search(store: "Store", query: str, limit: int = 20,
             warnings.append(
                 "embeddings are configured but the index is empty; the vector "
                 "path did not run.")
-        mode = "fts" if lex else "fts"
+        # Both arms of the old conditional said "fts". Whether the lexical
+        # side found anything is already carried by `hits`; inventing a
+        # branch that cannot differ only made the mode look computed.
+        mode = "fts"
         return SearchResult(hits=_ranked(lex), out_mode=mode, warnings=warnings)
 
     fused = rrf_fuse({"fts": lex, "vector": vec}, limit=limit)

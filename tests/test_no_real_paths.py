@@ -274,9 +274,20 @@ def t_no_personal_identifiers(files):
                           CANARY_DIGEST)
     check("the digest band can fire", len(canary) == 1,
           "canary produced %d hit(s)" % len(canary))
-    check("plaintext band ran" if plaintext else
-          "plaintext band absent (real-corpus material not on this machine)",
-          True, "%d pattern(s)" % len(plaintext or []))
+    # Status, not a check. This was written as `check(..., True, ...)`, which
+    # reported PASS whether the optional band ran, was absent, or produced no
+    # usable patterns -- a green line standing in for three different facts.
+    # A check that is true by construction is worse than no line at all,
+    # because it adds to the count that gets quoted.
+    if plaintext is None:
+        print("INFO  plaintext band absent: no real-corpus material on this "
+              "machine (digest band still ran over every file)")
+    else:
+        # Present but empty means the file exists and declares nothing, which
+        # is a broken pre-publish guard rather than a clean one. Loaded, so it
+        # can fail.
+        check("the plaintext band has patterns to search for", bool(plaintext),
+              "%d pattern(s)" % len(plaintext))
     # Without this the loop above proves nothing when the file list is empty.
     # `all()` over nothing is True, and so is "no offenders in no files".
     check("the publishable tree is non-empty", len(files) > 20,

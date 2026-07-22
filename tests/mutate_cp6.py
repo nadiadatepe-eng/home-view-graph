@@ -17,6 +17,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- what the removed dead guards used to stand in front of -----------
+    #
+    # `_layout` had `max(len(models), 1)` and `max(n, 1)` around two divisions.
+    # Neither could fire: the early return excludes zero. Removing them was
+    # only safe if that return is real, so break it and watch.
+    ("the empty-graph early return is removed",
+     "homegraph/visualize.py",
+     "    n = len(nodes)\n    if n == 0:\n        return []",
+     "    n = len(nodes)\n    if False:  # mutated: fall through on zero\n"
+     "        return []",
+     "an empty graph lays out to nothing"),
+
+    # The mesh basename index used to be guarded by `if row["path"]`, which the
+    # query's own WHERE clause made unreachable. The invariant now lives in the
+    # SQL alone, so the SQL is what a mutation must break.
+    ("the mesh mirror stops filtering out path-less nodes",
+     "homegraph/mesh.py",
+     '"subtype, datelist_int FROM nodes WHERE path IS NOT NULL"',
+     '"subtype, datelist_int FROM nodes"',
+     "a node with no path is not mirrored into mesh"),
+
     # A model that silently drops files raises nothing anywhere. The only place
     # the loss surfaces is the cross-model arithmetic, which is why that gate
     # needs a mutation of its own rather than inheriting one.

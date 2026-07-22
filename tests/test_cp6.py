@@ -379,12 +379,33 @@ def t_figure_for(tmp):
             os.path.join(notedir, n) for n in os.listdir(notedir)), AS_OF)
         s.rebuild_fts()
 
+    # A node with no path, planted in a model store. The mirror selects
+    # `WHERE path IS NOT NULL`, and that clause is now the only thing keeping
+    # such a node out -- the `if row["path"]` beside it was unreachable and has
+    # been removed. Nothing in either fixture produces a path-less node, so
+    # without planting one here the clause is untested and could be deleted
+    # with every gate still green.
+    with Store(m3db, model="m3") as s:
+        s.db.execute("INSERT INTO nodes (node_key, kind, subtype, title, body,"
+                     " path, first_seen, last_seen) VALUES"
+                     " ('pathless', 'virtual', 'm3/-', 'no path', '',"
+                     " NULL, ?, ?)", (AS_OF, AS_OF))
+        s.db.commit()
+
     meshdb = os.path.join(tmp, "fig_mesh.db")
     with Mesh({"m2": m2db, "m3": m3db}, mesh_db=meshdb) as mesh:
         try:
             report = mesh.build_edges(AS_OF)
+            with Store(meshdb) as _m:
+                mirrored_pathless = [
+                    r["node_key"] for r in _m.db.execute(
+                        "SELECT node_key FROM nodes "
+                        "WHERE node_key LIKE '%pathless%'")]
         except Exception as exc:                                # noqa: BLE001
             report = {"edges": {}, "raised": repr(exc)}
+            mirrored_pathless = "raised:%s" % type(exc).__name__
+        check("a node with no path is not mirrored into mesh",
+              mirrored_pathless == [], "%r" % (mirrored_pathless,))
         check("FIGURE_FOR links a note to the image it names",
               report["edges"].get("FIGURE_FOR", 0) >= 1,
               "%d edge(s)%s" % (report["edges"].get("FIGURE_FOR", 0),
@@ -445,8 +466,14 @@ def t_no_false_edges(tmp, paths, spec):
                  [os.path.basename(b) for _, b in
                   sorted(spec["figure_for"] - got)][:3]))
     else:
-        check("FIGURE_FOR is exactly the declared set", True,
-              "no declared pair list for the real corpus; count gate only")
+        # No check at all here, rather than one that passes by construction.
+        # This branch used to emit "FIGURE_FOR is exactly the declared set"
+        # with a hard-coded True: a check whose name claims an exact-set
+        # property, printed as PASS, having compared nothing. Absent evidence
+        # has to look absent. The count gate above still runs and is the only
+        # thing the real corpus supports.
+        print("SKIP  FIGURE_FOR exact-set check: no declared pair list for "
+              "the real corpus (the count gate above still applies)")
 
     # Drawn from nodes that DO have edges. Ten arbitrary nodes on a sparse
     # graph cannot be connected no matter what mesh.path() does, so the old
@@ -516,6 +543,18 @@ def t_visualise(tmp, paths, spec):
     minute to generate is not a fast visualisation.
     """
     from homegraph.visualize import _layout, render
+
+    # The empty graph, checked first. `_layout` divides by the node count and
+    # by the number of models, and both used to be wrapped in `max(..., 1)` --
+    # guards that could not fire, because the early return already excluded
+    # zero. Removing them puts the whole claim on that return, so it has to be
+    # exercised rather than assumed.
+    try:
+        empty = _layout([], [], iterations=5)
+    except Exception as exc:                                    # noqa: BLE001
+        empty = "raised:%s" % type(exc).__name__
+    check("an empty graph lays out to nothing, without dividing by it",
+          empty == [], "%r" % (empty,))
 
     out = os.path.join(tmp, "graph.html")
     t0 = time.time()

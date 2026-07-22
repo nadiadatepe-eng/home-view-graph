@@ -32,7 +32,6 @@ import sqlite3
 
 from .search import RRF_K, fts_query
 from .store import Store
-from .temporal import cohort_overlap
 
 
 class ModelUnavailable(Exception):
@@ -256,9 +255,13 @@ class Mesh:
                                  subtype="%s/%s" % (model, row["subtype"] or ""),
                                  path=row["path"], title=row["title"],
                                  body=row["title"] or "", as_of=as_of)
-                if row["path"]:
-                    by_basename[os.path.basename(row["path"])].append(
-                        (model, row["node_key"]))
+                # No `if row["path"]` here: the query already says
+                # `WHERE path IS NOT NULL`, so the branch could not be taken.
+                # The invariant lives in the SQL, one place, and the mutation
+                # harness breaks it there rather than in a dead guard that
+                # made the code look more careful than it was.
+                by_basename[os.path.basename(row["path"])].append(
+                    (model, row["node_key"]))
 
         removed = 0
         if prune:
@@ -360,10 +363,15 @@ class Mesh:
             for other in members[1:]:
                 if other[0] == first[0]:
                     continue
-                if cohort_overlap(mask, mask) >= min_days:
-                    mesh.upsert_edge("%s::%s" % first, "%s::%s" % other,
-                                     "TEMPORAL_COHORT", as_of)
-                    report["TEMPORAL_COHORT"] += 1
+                # `cohort_overlap(mask, mask)` was checked here and is the
+                # same bit count the loop already filtered on above -- a
+                # value compared against itself, which is the shape that hid
+                # a dead cross-validation in CP-5. Members of `by_mask` share
+                # one mask by construction, so the overlap is settled before
+                # this point and the edge is unconditional.
+                mesh.upsert_edge("%s::%s" % first, "%s::%s" % other,
+                                 "TEMPORAL_COHORT", as_of)
+                report["TEMPORAL_COHORT"] += 1
 
     # -- graph queries -----------------------------------------------------
 
