@@ -208,7 +208,6 @@ def build(store, paths, as_of, parser=None, report=None, roots=None):
                 report.edges["SERIES_MEMBER"] += 1
 
     _link_copies(store, infos, as_of, report)
-    store.commit()
     return report
 
 

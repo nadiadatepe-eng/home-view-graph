@@ -156,7 +156,6 @@ def build(store, paths, as_of, report: DocBuildReport | None = None) -> DocBuild
                 report.edges["CITES"] += 1
 
     _same_author(store, as_of, report)
-    store.commit()
     return report
 
 

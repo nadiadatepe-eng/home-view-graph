@@ -19,10 +19,11 @@ vacuously, because it is unusually easy to make it so:
     measures the machine's mood. What `update` promises is that it does not
     reparse files that did not change, so the gate counts files reparsed.
 
-Timestamps are excluded from the comparison, deliberately and with a separate
-gate to cover the exclusion: `first_seen` is exactly what an update preserves
-and a rebuild cannot, so demanding it be equal would demand that update lose
-the history it exists to keep. That it *is* preserved is checked on its own.
+`first_seen` is excluded from the comparison deliberately and has a separate
+gate: update preserves it while a rebuild cannot. `last_seen`, by contrast,
+states that an edge was observed in corpus B and is therefore compared. The
+datelist payload is historical and excluded, but its anchor is compared: masks
+with different anchors cannot be used for the same cohort calculation.
 
 Run:
     python3 tests/test_cp8.py
@@ -55,11 +56,11 @@ def check(name, ok, detail=""):
     return ok
 
 
-# Everything except the two timestamps. `activity_datelist`/`datelist_int` are
-# also excluded: they encode WHEN a node was observed, which is history, and
-# history is the thing update keeps and a rebuild does not have.
+# Everything except history timestamps. `activity_datelist`/`datelist_int` are
+# excluded because update retains history that a rebuild cannot have; the
+# anchor is retained because it defines what every bit in the mask means.
 NODE_COLS = ("node_key", "kind", "subtype", "path", "title", "body",
-             "size", "mtime", "content_hash")
+             "size", "mtime", "content_hash", "datelist_anchor")
 
 
 def nodes_of(db):
@@ -70,24 +71,31 @@ def nodes_of(db):
 
 def edges_of(db):
     with Store(db) as s:
-        return {(r["src_key"], r["rel"], r["dst_key"]) for r in s.db.execute(
-            "SELECT s.node_key src_key, e.rel, d.node_key dst_key FROM edges e "
+        # first_seen is history that update preserves, but a living edge must
+        # be seen at B.  Include last_seen so `edges_as_of(B)` semantics are
+        # part of, rather than hidden outside, the equivalence claim.
+        return {(r["src_key"], r["rel"], r["dst_key"], r["last_seen"])
+                for r in s.db.execute(
+            "SELECT s.node_key src_key, e.rel, d.node_key dst_key, e.last_seen FROM edges e "
             "JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst")}
 
 
 def first_seen_of(db):
-    """File nodes only.
+    """Persistent file and shared nodes, but not per-file parse products.
 
     A section of a file that changed IS new -- it was deleted with the rest of
     the old parse and written again -- so demanding it keep a first_seen would
     demand that update pretend the old heading is the new one. The claim is
-    about files: a file that still exists is the same file, whatever its
-    contents now say.
+    about persistent identities: a file or a pathless shared node such as
+    `tag:links` that survives must keep its history. Sections are parse
+    products and are intentionally excluded because a changed file replaces
+    them. Shared nodes are included specifically so a delete/recreate cycle
+    cannot silently reset their history.
     """
     with Store(db) as s:
         return {r["node_key"]: r["first_seen"] for r in s.db.execute(
             "SELECT node_key, first_seen FROM nodes "
-            "WHERE path IS NOT NULL AND node_key = path")}
+            "WHERE (path IS NOT NULL AND node_key = path) OR path IS NULL")}
 
 
 def markdown_paths(root, cfg):
@@ -283,6 +291,7 @@ def run(tmp, syn):
     # -- interruption and unreadability ------------------------------------
     t_interrupted_update_commits_nothing(tmp)
     t_unreadable_is_not_unchanged(tmp)
+    t_expired_edges_stay_expired(tmp)
     t_vanishing_file_is_reported(tmp)
 
     # -- refusals ---------------------------------------------------------
@@ -322,26 +331,32 @@ def t_interrupted_update_commits_nothing(tmp):
     with Store(db) as s:
         before = (s.node_count(), s.edge_count())
 
-    # Rewrite the page, then interrupt partway through applying the change.
+    # Rewrite the page, then interrupt after the *real* builder has applied
+    # it.  The old test replaced the builder with a non-committing fake, so it
+    # could not see the production commit that defeated Store.__exit__.
     with open(page, "w") as fh:
         fh.write("# Page\n\nNo links any more.\n")
-    real_build = m3_build.build
+    with Store(db, model="m3") as s:
+        up.write_fingerprint(s, up.fingerprint(
+            userconfig.UserConfig(path="", root=work, roles={})))
 
-    def build_then_interrupt(store, paths, as_of, **kw):
-        up.forget(store, paths[0], keep_self=True)
-        raise KeyboardInterrupt("interrupted mid-rebuild")
+    real_rebuild_fts = Store.rebuild_fts
 
-    m3_build.build = build_then_interrupt
+    def interrupt_after_real_build(store):
+        raise KeyboardInterrupt("interrupted after the real builder")
+
+    Store.rebuild_fts = interrupt_after_real_build
     try:
         with Store(db, model="m3") as s:
-            m3_build.build(s, [page], "2026-01-02")
+            up.update(s, "m3", [page, other], "2026-01-02",
+                      userconfig.UserConfig(path="", root=work, roles={}))
         outcome = "no exception"
     except KeyboardInterrupt:
         outcome = "raised"
     except Exception as exc:                                  # noqa: BLE001
         outcome = "raised:%s" % type(exc).__name__
     finally:
-        m3_build.build = real_build
+        Store.rebuild_fts = real_rebuild_fts
 
     with Store(db) as s:
         after = (s.node_count(), s.edge_count())
@@ -349,6 +364,75 @@ def t_interrupted_update_commits_nothing(tmp):
     check("the interrupt propagates", outcome == "raised", outcome)
     check("an interrupted update commits nothing",
           after == before, "before %s, after %s" % (before, after))
+
+
+def t_expired_edges_stay_expired(tmp):
+    """Advancing `last_seen` must not resurrect a link that was removed.
+
+    Two opposing requirements meet here, and satisfying one alone is easy.
+
+    An edge still asserted in B has to reach B's date, or `edges_as_of(B)`
+    drops a link that plainly exists. But the schema's own mechanism for a
+    REMOVED link is an edge whose `last_seen` stopped advancing -- so an
+    unscoped `UPDATE edges SET last_seen` brings deleted links back, and the
+    equivalence gate cannot see it, because both stores hold the same edge set
+    and differ only in a column that set comparison ignores.
+
+    That is exactly what a first fix did here: `edges_as_of` went from two
+    edges to three, and every checkpoint stayed green.
+    """
+    from homegraph.models import m3_build
+    from homegraph.store import Store
+
+    work = os.path.join(tmp, "expiry")
+    os.makedirs(work, exist_ok=True)
+    a, b = os.path.join(work, "a.md"), os.path.join(work, "b.md")
+    with open(a, "w") as fh:
+        fh.write("# A\n\nSee [[b]].\n")
+    with open(b, "w") as fh:
+        fh.write("# B\n")
+
+    db = os.path.join(tmp, "expiry.db")
+    with Store(db, model="m3") as s:
+        m3_build.build(s, [a, b], "2026-01-01")
+        s.rebuild_fts()
+    # The documented way a link disappears: rebuild once the link is gone. The
+    # edge is not deleted, it stops advancing.
+    with open(a, "w") as fh:
+        fh.write("# A\n\nNo link now.\n")
+    with Store(db, model="m3") as s:
+        m3_build.build(s, [a, b], "2026-03-01")
+        s.rebuild_fts()
+
+    def wikilink_last_seen():
+        with Store(db) as s:
+            row = s.db.execute("SELECT last_seen FROM edges "
+                               "WHERE rel = 'WIKILINKS_TO'").fetchone()
+            return row["last_seen"] if row else None
+
+    check("the removed link expired rather than vanished",
+          wikilink_last_seen() == "2026-01-01", "%r" % wikilink_last_seen())
+
+    cfgp = os.path.join(tmp, "expiry.toml")
+    userconfig.write(cfgp, work, {"image": []})
+    cfg = userconfig.load(cfgp)
+    with open(b, "a") as fh:
+        fh.write("\nmore\n")            # give the update something to do
+    try:
+        with Store(db, model="m3") as s:
+            up.update(s, "m3", [a, b], "2026-06-01", cfg,
+                      allow_config_change=True)
+        outcome = "ok"
+    except Exception as exc:                                  # noqa: BLE001
+        outcome = "raised:%s" % type(exc).__name__
+
+    with Store(db) as s:
+        as_of_new = len(s.edges_as_of("2026-06-01"))
+    check("the update ran", outcome == "ok", outcome)
+    check("an expired edge is not revived by the update",
+          wikilink_last_seen() == "2026-01-01", "%r" % wikilink_last_seen())
+    check("time travel still excludes the removed link",
+          as_of_new == 2, "%d edge(s) as of the new date" % as_of_new)
 
 
 def t_vanishing_file_is_reported(tmp):
@@ -432,8 +516,11 @@ def t_unreadable_is_not_unchanged(tmp):
         os.chmod(page, 0o644)
 
     # Running as root would make the premise false rather than the code wrong.
-    check("the fixture is genuinely unreadable", not readable,
-          "still readable (running as root?)" if readable else "chmod 000 held")
+    if readable:
+        print("SKIP  the fixture is genuinely unreadable             "
+              "running as root; os.access() bypasses chmod 000")
+        return
+    check("the fixture is genuinely unreadable", True, "chmod 000 held")
     check("an unreadable file is reported as changed, not unchanged",
           verdict == "changed", verdict)
 

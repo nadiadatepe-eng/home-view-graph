@@ -281,7 +281,9 @@ class Store:
         self.db.execute(
             "INSERT OR REPLACE INTO metadata(key, value) "
             "VALUES ('fts_built_at', ?)", (today(),))
-        self.db.commit()
+        # This is postprocessing inside the caller's unit of work.  Committing
+        # here would make a later interruption leave new graph rows with a
+        # partially rebuilt index; `Store.__exit__` owns the commit boundary.
         return self.fts_count()
 
     def fts_count(self) -> int:

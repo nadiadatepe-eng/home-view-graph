@@ -238,7 +238,6 @@ def write_fingerprint(store, value: str) -> None:
         "INSERT INTO metadata(key, value) VALUES (?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (FINGERPRINT_KEY, value))
-    store.commit()
 
 
 # -- forgetting -------------------------------------------------------------
@@ -387,8 +386,37 @@ def update(store, model: str, paths, as_of, config, *,
             (state.mtime, as_of, key))
         report.restatted += 1
 
+    # An edge that remains asserted in corpus B was observed in B, even when
+    # its source file did not change: `edges_as_of()` filters on `last_seen >=
+    # when`, so leaving it at A makes a still-present wikilink vanish from a
+    # query for B's date.
+    #
+    # The scope matters more than the update. Advancing EVERY edge resurrects
+    # the ones that are supposed to be expired -- schema note: "a removed
+    # wikilink is an edge whose last_seen has stopped advancing" -- so a link
+    # deleted before this run came back, and `edges_as_of` counted it again.
+    # Rebuilt files are not the problem; their edges were just written with
+    # `as_of`. The files that need this are the ones nothing reparsed, and for
+    # those the only evidence of what they still assert is the timestamp of
+    # their own last parse: the newest `last_seen` among their outgoing edges.
+    # Anything older than that was already expired then and stays expired.
+    #
+    # first_seen is never touched. That is history.
+    store.db.execute(
+        "UPDATE edges SET last_seen = ? "
+        "WHERE last_seen = (SELECT MAX(e2.last_seen) FROM edges e2 "
+        "                   WHERE e2.src = edges.src)", (as_of,))
+
+    # The bitmask's integer is meaningful only together with its anchor.  A
+    # full build anchors each file at B; retain update history, but re-encode
+    # it at B so cohort comparisons never combine masks for different days.
+    # Pathless derived nodes deliberately have no datelist and stay NULL.
+    from .temporal import refresh_datelist
+    for row in store.db.execute(
+            "SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"):
+        refresh_datelist(store, row["id"], as_of)
+
     report.pruned = prune(store)
-    store.commit()
     store.rebuild_fts()
     write_fingerprint(store, want)
     report.nodes_after = store.node_count()

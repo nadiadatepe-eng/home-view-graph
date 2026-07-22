@@ -206,7 +206,6 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
             else:
                 report.unresolved_mentions += 1
 
-    store.commit()
     return report
 
 

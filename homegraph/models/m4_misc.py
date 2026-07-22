@@ -257,5 +257,4 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
                           "BELONGS_TO_APP", as_of)
         report.edges["BELONGS_TO_APP"] += 1
 
-    store.commit()
     return report

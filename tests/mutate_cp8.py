@@ -26,6 +26,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- expiry survives the last_seen advance --------------------------
+    #
+    # The first fix for the last_seen divergence advanced every edge. That
+    # revives links the schema had expired, and no set comparison can see it:
+    # both stores hold the same edges and differ only in a column.
+    ("every edge is advanced, reviving expired links",
+     "homegraph/update.py",
+     '        "UPDATE edges SET last_seen = ? "\n'
+     '        "WHERE last_seen = (SELECT MAX(e2.last_seen) FROM edges e2 "\n'
+     '        "                   WHERE e2.src = edges.src)", (as_of,))',
+     '        "UPDATE edges SET last_seen = ?", (as_of,))  # mutated',
+     "an expired edge is not revived by the update"),
+
+    ("still-asserted edges are left at the old date",
+     "homegraph/update.py",
+     "    store.db.execute(\n"
+     '        "UPDATE edges SET last_seen = ? "',
+     "    store.db.execute(\n"
+     '        "SELECT ? WHERE 0 "  # mutated: last_seen never advances',
+     "updated edges equal a full rebuild's"),
+
     # -- a file that vanishes mid-build must be reported ----------------
     ("an unreadable file is skipped in silence again",
      "homegraph/models/m3_build.py",
@@ -46,6 +67,13 @@ MUTATIONS = [
      "homegraph/store.py",
      "        self.close(commit=exc_type is None)",
      "        self.close(commit=True)  # mutated: commit whatever was done",
+     "an interrupted update commits nothing"),
+
+    ("the real model builder commits before update finishes",
+     "homegraph/models/m3_build.py",
+     "    return report\n\n\ndef _safe_hash",
+     "    store.commit()  # mutated: split update's transaction\n"
+     "    return report\n\n\ndef _safe_hash",
      "an interrupted update commits nothing"),
 
     # -- unreadable is not unchanged ------------------------------------
@@ -130,6 +158,13 @@ MUTATIONS = [
      "            pass  # mutated: stale outbound edges survive the rewrite",
      "updated edges equal a full rebuild's"),
 
+    ("datelist masks retain their old anchor",
+     "homegraph/update.py",
+     '    for row in store.db.execute(\n'
+     '            "SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"):',
+     "    for row in []:  # mutated: masks anchored at A are compared at B",
+     "updated nodes equal a full rebuild's"),
+
     ("a changed file keeps the sections it no longer has",
      "homegraph/update.py",
      "    for key in list(changes.changed) + extra:\n"
@@ -168,6 +203,15 @@ MUTATIONS = [
      "        forget(store, key, keep_self=True)",
      "    for key in list(changes.changed) + extra:\n"
      "        forget(store, key)  # mutated: the file is deleted and recreated",
+     "surviving nodes keep their first_seen"),
+
+    ("shared nodes are pruned between forget and rebuild",
+     "homegraph/update.py",
+     "    rebuild = sorted(set(changes.added) | set(changes.changed) "
+     "| set(extra))",
+     "    report.pruned = prune(store)  # mutated: resets shared identities\n"
+     "    rebuild = sorted(set(changes.added) | set(changes.changed) "
+     "| set(extra))",
      "surviving nodes keep their first_seen"),
 
     ("a touched file's mtime is written into its sections too",
