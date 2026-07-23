@@ -111,6 +111,43 @@ MUTATIONS = [
      "            return list(lists[value])",
      "image count matches the independent baseline"),
 
+    # The per-layer control's own reason for existing. Switching [symlinks]
+    # off is invisible to every count-based gate -- the corpus stays the same
+    # size, the partition still holds -- because the layer's files land in
+    # other categories or are caught by another layer. Only "does this layer
+    # uniquely own anything" can see it, and before the fixture gained a
+    # symlink with no second reason, not even that could.
+    ("the symlink layer switched off",
+     "homegraph/rules/exclusions.toml",
+     "exclude = true",
+     "exclude = false  # mutated: symlinks are ordinary files",
+     "every exclusion layer uniquely owns files"),
+
+    # The duplicated invariant, arriving through a different door than the
+    # image boundary did: layer 3 grows to cover everything layer 1 covered.
+    # Both still work, every count is unchanged, and layer 1 is now dead code
+    # that no output depends on.
+    ("the dependency directories duplicated into the cache layer",
+     "homegraph/rules/exclusions.toml",
+     'dirs = [\n  ".cache", "Cache", "cache", "caches", "Cache_Data", "CacheStorage",',
+     'dirs = [  # mutated: layer 3 swallows layer 1\n'
+     '  "node_modules", ".venv", "venv", "site-packages", "dist-packages",\n'
+     '  ".git", "vendor", "bower_components", ".bundle", "Pods",\n'
+     '  ".yarn", ".pnpm-store", "eggs", ".eggs",\n'
+     '  ".cache", "Cache", "cache", "caches", "Cache_Data", "CacheStorage",',
+     "every exclusion layer uniquely owns files"),
+
+    # An exclusion that belongs to no layer. Every knob in the rule files can
+    # be turned off and this one path stays excluded, so the null control can
+    # never reach zero -- which is the only gate that looks.
+    ("an exclusion hardcoded into explain(), owned by no layer",
+     "homegraph/corpus.py",
+     "        if p in self._allow_paths or _match_any(p, self._allow_globs):",
+     "        if '/.icons/' in p:  # mutated: hardcoded, no layer owns it\n"
+     '            return Decision(EXCLUDED, "cache", "L3_cache", "hardcoded")\n'
+     "        if p in self._allow_paths or _match_any(p, self._allow_globs):",
+     "switching off every layer excludes almost nothing"),
+
     ("secrets layer switched off",
      "homegraph/rules/exclusions.toml",
      'names = [\n  ".env", ".netrc", ".pgpass", ".npmrc", ".git-credentials",',

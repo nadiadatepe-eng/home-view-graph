@@ -239,6 +239,32 @@ def render(root: str, roles: dict[str, list[str]],
     return "\n".join(lines)
 
 
+def _fsync_dir(path: str) -> None:
+    """Flush a directory's own metadata, so a rename into it survives a crash.
+
+    Errors are swallowed, and that is the deliberate reading rather than the
+    lazy one. By the time this is called `os.replace` has already returned: the
+    config file exists, is complete, and is the one the next run will read.
+    Raising here would report a failed write for a write that succeeded, and
+    the caller's cleanup would then look for a scratch file that has already
+    been renamed away. Durability is the thing being attempted; correctness of
+    the return value is the thing being protected.
+
+    Opening a directory read-only is POSIX; on Windows it fails outright, which
+    is why the open is inside the guard rather than only the fsync.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def write(path: str, root: str, roles: dict[str, list[str]],
           own_owners: tuple[str, ...] = (),
           generated_dirs: tuple[str, ...] = ()) -> str:
@@ -259,6 +285,16 @@ def write(path: str, root: str, roles: dict[str, list[str]],
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        # The bytes were fsync'd above; the rename was not. Atomic and durable
+        # are different properties: `os.replace` guarantees no reader ever sees
+        # a half-written config, and guarantees nothing at all about which of
+        # the two names survives a power cut. The directory entry can still be
+        # in the page cache with every byte of the new file safely on disk, and
+        # the machine comes back with the OLD config and a NEW store built from
+        # it -- a mismatch `update` reads as a config change and refuses on,
+        # which is the good outcome. The bad one is a first-ever config that
+        # vanishes while the store it produced remains.
+        _fsync_dir(os.path.dirname(path) or ".")
     except BaseException:
         # BaseException, not Exception: KeyboardInterrupt is the realistic way
         # this is interrupted, and leaving the scratch file behind would make

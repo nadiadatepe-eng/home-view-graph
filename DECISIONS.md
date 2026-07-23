@@ -356,6 +356,87 @@ Writing this found three things that were already broken and silent:
 
 ---
 
+## 17 · The readability probe races, and the race is bounded rather than closed
+
+`incremental.diff` calls `os.access(path, R_OK)` on files whose size and mtime
+both match, because revoking read permission changes neither and `update` would
+otherwise keep serving text from a file it can no longer open — while a full
+`build` would have dropped it. The two must agree, so the probe stays.
+
+It is a time-of-check/time-of-use race and cannot be made not to be one. There
+is no atomic "will this still be readable when the builder gets there"; only
+the open itself answers that, and opening every unchanged file is the rebuild
+the fast path exists to avoid. Two smaller lies come with it: `os.access` asks
+about the real uid while the open uses the effective one, and as root it
+returns True for `chmod 000`, so the branch never fires in a root run. CP-8
+prints that rather than skipping it silently.
+
+The decision is to bound the damage instead of claiming it is closed:
+
+- A false `changed` costs one wasted reparse. The builder opens the file and
+  lands where `build` lands.
+- A false `unchanged` leaves one stale node until the next run.
+- CP-8 compares `update` against a full build, so drift that persists is
+  caught rather than assumed away.
+
+A race here degrades performance, not the answer. That is the whole reason it
+is acceptable, and the reason it is written down instead of fixed: a future
+reader who "fixes" it by opening the file has traded the fast path for nothing.
+
+---
+
+## 18 · Every exclusion layer must uniquely own files
+
+CP-0's negative control switches all the rules off at once and shows the image
+count exploding. That answers *do the rules do anything*, which is a question
+about the pile. It cannot answer *does this layer do anything* — and a layer
+whose files are all caught by some other layer as well is dead weight that
+every gate reports as green. Deleting it would change no output, so nothing
+would notice, least of all a reviewer, because the layer reads as correct.
+
+So each of the seven layers is now switched off alone, and each must uniquely
+own at least a declared number of files. This is decision 2 seen from the other
+side: there, one rule lived in two places and the control could not move; here,
+a layer contributes nothing the rest of the stack was not already doing.
+
+It found one on its first run. `[symlinks]` owned zero. The corpus's only
+symlink was `icons/link.svg` — an image outside the image root, so the boundary
+excluded it either way — and the fixture's own comment claimed that case tested
+"the symlink layer and nothing else". The rules were fine; the corpus could not
+see them. A second symlink with no second reason, `notes/mirror-of-plan.md`,
+fixed the fixture.
+
+The measured floors are in `test_cp0.py`. Three layers sit at 1 because the
+fixture plants exactly one vendored repo, one image outside the boundary and
+one solo symlink; raising those would be a claim about the fixture author
+rather than about the rules.
+
+---
+
+## 19 · The config write is atomic *and* durable, and only one of those failed loudly
+
+`userconfig.write` renders to a sibling file, fsyncs it, and `os.replace`s it
+into position, so no reader ever sees a half-written config — decision 15
+explains why a half-written one is worse than a corrupt one. That is atomicity.
+It is not durability: the rename lives in the parent directory's metadata, and
+until that is flushed the machine can come back with every byte of the new file
+safely on disk and the old name still in place.
+
+The parent directory is now fsynced too. Errors from it are swallowed, which is
+the deliberate reading and not the lazy one: by that point `os.replace` has
+returned, the config exists and is complete, and raising would report a failed
+write for a write that succeeded — while the cleanup handler went looking for a
+scratch file that has already been renamed away. Durability is what is being
+attempted; the honesty of the return value is what is being protected. A file
+fsync that fails still propagates, because there the bytes really may not be
+there.
+
+CP-7 watches which descriptors get fsynced. That is weaker than the thing it
+stands for — the real event is a power cut, and there is no way to stage one —
+so the gate is named for the syscall rather than for the disk.
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

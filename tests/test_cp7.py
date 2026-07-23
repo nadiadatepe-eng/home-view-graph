@@ -75,6 +75,48 @@ def _labels(root, config_path):
     return out
 
 
+def _decisions(root, config_path):
+    """{relative path: (label, subtype, layer)} for every file under root.
+
+    The label alone is not the partition, only its shadow. Two corpora can
+    agree on every label while disagreeing about which rule produced it -- a
+    file excluded as `cache` under one layout and as `dependency` under the
+    other reads as identical, and the claim CP-7 makes is that renaming the
+    directories changes nothing about how the rules apply.
+
+    `detail` is deliberately not compared: it carries the matched directory
+    name, which is exactly what the English variant renames. Comparing it
+    would fail for the one reason that is not a defect.
+
+    How much stronger this is than the label comparison was measured, not
+    assumed. Renaming a third directory in the English corpus -- `.icons`,
+    which the shipped [app_state] layer names and the image boundary also
+    covers -- left all 857 labels identical and moved 240 paths from
+    `L2_app_state` to `image_boundary`. The label gate stayed green through
+    it. That rename was then reverted, because renaming a directory the rules
+    name by design is a different corpus rather than the same corpus in
+    another language, and CP-7's claim is about the role mechanism.
+
+    So this gate is strictly stronger and known to be reachable, and no
+    mutation in mutate_cp7.py can currently reach it: the two corpora differ
+    only in the image directories, where nothing but the category step can
+    produce a label. An honest statement of its coverage is that it is a
+    tripwire for future layout changes, not a proven gate today.
+    """
+    from tests.fixtures.synthetic import inventory
+    cfg = userconfig.load(config_path)
+    clf = Classifier(home=root, config=cfg)
+    out = {}
+    for path, is_link in inventory(root):
+        try:
+            d = clf.explain(path, is_symlink=is_link)
+            got = (d.label, d.subtype, d.layer)
+        except Exception as exc:                                # noqa: BLE001
+            got = ("raised:%s" % type(exc).__name__, "-", "-")
+        out[os.path.relpath(path, root)] = got
+    return out
+
+
 # -- 1. refusal ------------------------------------------------------------
 
 def t_refuses_without_config(tmp):
@@ -483,6 +525,74 @@ def t_config_write_is_atomic(tmp):
           roles == ["Pictures"], "%r" % (roles,))
 
 
+def t_config_write_is_durable(tmp):
+    """Atomic is not durable, and the write claims both.
+
+    `t_config_write_is_atomic` proves no reader sees a half-written config.
+    It cannot see the other half of the promise: `os.replace` publishes the new
+    name inside the parent directory, and until that directory's own metadata
+    is flushed the rename lives in the page cache. A power cut there loses the
+    rename while keeping every fsync'd byte of the file it renamed -- the
+    config reverts, the store built from it does not.
+
+    Checked by watching which file descriptors get fsync'd, because the real
+    event is a power cut and there is no way to stage one. So this gate is
+    about the syscall being issued, not about the disk. Weaker than the thing
+    it stands for, and named accordingly.
+    """
+    import stat as stat_mod
+
+    target = os.path.join(tmp, "durable", "config.toml")
+    synced = []
+    real_fsync = os.fsync
+
+    def spy(fd):
+        try:
+            st = os.fstat(fd)
+            synced.append((stat_mod.S_ISDIR(st.st_mode), st.st_ino))
+        except OSError:
+            pass
+        return real_fsync(fd)
+
+    os.fsync = spy
+    try:
+        userconfig.write(target, tmp, {"image": ["Pictures"]})
+    finally:
+        os.fsync = real_fsync
+
+    parent = os.path.dirname(target)
+    check("the config's bytes are fsynced before the rename",
+          any(not is_dir for is_dir, _ in synced),
+          "%d fsync(s), %d on a file"
+          % (len(synced), sum(1 for d, _ in synced if not d)))
+    check("the rename is fsynced too, not only the bytes",
+          any(is_dir and ino == os.stat(parent).st_ino
+              for is_dir, ino in synced),
+          "%d fsync(s) on a directory"
+          % sum(1 for d, _ in synced if d))
+    # A directory fsync that raises must not turn a completed write into a
+    # reported failure: the file is already in place by then.
+    def angry(fd):
+        # Only the directory. A file fsync that fails means the bytes may not
+        # be on disk, and that one SHOULD propagate -- swallowing it is how a
+        # write reports success for a config that is not there.
+        if stat_mod.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(22, "EINVAL on this filesystem")
+        return real_fsync(fd)
+
+    second = os.path.join(tmp, "durable", "config2.toml")
+    os.fsync = angry
+    try:
+        userconfig.write(second, tmp, {"image": ["Pictures"]})
+        outcome = "returned"
+    except Exception as exc:                                    # noqa: BLE001
+        outcome = "raised:%s" % type(exc).__name__
+    finally:
+        os.fsync = real_fsync
+    check("a filesystem that refuses fsync does not fail the write",
+          outcome == "returned" and os.path.exists(second), outcome)
+
+
 def t_generated_dirs_reach_the_build(tmp):
     """The config must reach the extractor through the path a user takes.
 
@@ -574,6 +684,32 @@ def t_same_rules_same_partition(tmp):
                                    "" if not differing else "  %s"
                                    % differing[:2]))
 
+    # Same comparison one level down: not just the label, but the layer that
+    # produced it. Labels agreeing while layers diverge is a real outcome --
+    # move a directory and an earlier layer can start claiming files a later
+    # one used to own, with every count unchanged. The gate above would stay
+    # green through that, and so would the census.
+    no_dec = _decisions(no_root, syn._config_for(no_root))
+    en_dec = _decisions(en_root, syn._config_for(en_root))
+    translated_dec = {syn._rename(rel, syn.ENGLISH_DIRS): d
+                      for rel, d in no_dec.items()}
+    layer_diff = sorted(
+        (k, translated_dec.get(k), en_dec.get(k))
+        for k in set(translated_dec) | set(en_dec)
+        if translated_dec.get(k) != en_dec.get(k))
+    check("renaming the directories changes no deciding rule", not layer_diff,
+          "%d path(s) decided differently%s"
+          % (len(layer_diff),
+             "" if not layer_diff else "  %s" % (layer_diff[:2],)))
+    # The finer comparison must be strictly harder than the coarse one, or it
+    # is decoration. Every label difference is a decision difference; a run
+    # where the labels diverge and the decisions do not means `_decisions` is
+    # not reading what it claims to read.
+    check("the rule comparison subsumes the label comparison",
+          len(layer_diff) >= len(differing),
+          "%d decision diffs vs %d label diffs"
+          % (len(layer_diff), len(differing)))
+
     # And each still matches its own declared key, so "identical" cannot mean
     # "identically wrong".
     wrong_no = [(rel, want) for want, _s, _h, rel, _w in no_cases
@@ -631,6 +767,7 @@ def main():
         t_image_role_points_at_an_empty_directory(tmp, syn.ROOT)
         t_generated_dirs_come_from_the_config()
         t_config_write_is_atomic(tmp)
+        t_config_write_is_durable(tmp)
         t_generated_dirs_reach_the_build(tmp)
         no_labels, en_labels = t_same_rules_same_partition(tmp)
         t_labels_are_known(no_labels, en_labels)

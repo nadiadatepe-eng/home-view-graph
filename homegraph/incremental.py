@@ -113,6 +113,32 @@ def diff(store: "Store", current: Mapping[str, FileState], *,
             # longer open -- while a full rebuild would have dropped it. This
             # is a stat-level probe, not a read: it costs one syscall per
             # otherwise-unchanged file and buys agreement with `build`.
+            #
+            # It is also a time-of-check/time-of-use race, unavoidably, and the
+            # right answer is to bound the damage rather than to pretend it is
+            # closed. Three ways it lies:
+            #
+            #   1. Permissions can change between this call and the builder's
+            #      open(), in either direction. There is no atomic "is this
+            #      still readable when I get there" -- only opening it is, and
+            #      opening every unchanged file is the full rebuild this exists
+            #      to avoid.
+            #   2. `os.access` asks about the REAL uid; the open will use the
+            #      effective one. Under setuid they differ, and the probe then
+            #      answers a question nobody asked.
+            #   3. As root it is nearly always True, chmod 000 included, so on
+            #      a root run this branch never fires. test_cp8.py says so out
+            #      loud rather than skipping quietly.
+            #
+            # What keeps it safe is that both outcomes are recoverable and
+            # neither is silent. A false `changed` costs one wasted reparse,
+            # and the builder -- which does open the file -- reaches the same
+            # conclusion `build` would. A false `unchanged` leaves one stale
+            # node until the next run, which the next run fixes, and the
+            # equivalence gate in CP-8 compares `update` against a full build
+            # so a drift that persists is caught rather than assumed away.
+            # This is a fast path with a correct slow path behind it; a race
+            # here degrades performance, not the answer.
             if use_hash and not os.access(state.path, os.R_OK):
                 changes.changed.append(key)
                 continue

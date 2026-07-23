@@ -43,6 +43,28 @@ MUTATIONS = [
      '    tmp = path  # mutated: write straight over the original',
      "the previous config survives byte-for-byte"),
 
+    # -- and durable, which is a separate promise -----------------------
+    #
+    # Nothing about the atomic gates above can see this: the file is complete,
+    # the scratch file is gone, the survivor loads. The rename simply is not
+    # on disk yet, and only a power cut can tell the difference.
+    ("the rename is published but never flushed",
+     "homegraph/userconfig.py",
+     '        _fsync_dir(os.path.dirname(path) or ".")',
+     '        pass  # mutated: the directory entry stays in the page cache',
+     "the rename is fsynced too, not only the bytes"),
+
+    # The other direction. A filesystem that refuses to fsync a directory --
+    # some network mounts, some containers -- would turn every successful
+    # config write into a reported failure, and the config is already there.
+    ("a refused directory fsync fails the whole write",
+     "homegraph/userconfig.py",
+     "    try:\n        os.fsync(fd)\n    except OSError:\n        pass\n    finally:\n        os.close(fd)",
+     "    try:  # mutated: an unflushable directory is now a failed write\n"
+     "        os.fsync(fd)\n"
+     "    finally:\n        os.close(fd)",
+     "a filesystem that refuses fsync does not fail the write"),
+
     ("a failed write leaves its scratch file behind",
      "homegraph/userconfig.py",
      '        if os.path.exists(tmp):\n            os.remove(tmp)',

@@ -217,6 +217,94 @@ roots = ["/"]
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _classify_all(clf, rows):
+    """Label counts, with every call wrapped so a raising mutation cannot kill
+    the process before a gate says no."""
+    def one(path, is_link):
+        try:
+            return clf.classify(path, is_symlink=is_link)
+        except Exception:                                       # noqa: BLE001
+            return "raised"
+    return collections.Counter(one(p, is_link) for p, is_link in rows)
+
+
+# Turning a layer off, one layer at a time. These reach past the TOML into the
+# loaded attributes on purpose: the alternative is serialising seven variant
+# rule files, and what is under test here is the rule engine's layering, not
+# the loader. The loader has its own gates -- `{image_roots}` expansion and the
+# role lookup are both mutated in mutate_cp0.py.
+LAYERS_OFF = {
+    "secrets": lambda c: (setattr(c, "_secret_names", set()),
+                          setattr(c, "_secret_globs", [])),
+    "cache": lambda c: (setattr(c, "_cache_dirs", set()),
+                        setattr(c, "_cache_globs", [])),
+    "dependencies": lambda c: setattr(c, "_dep_dirs", set()),
+    "app_state": lambda c: (setattr(c, "_state_prefixes", ()),
+                            setattr(c, "_state_scoped", ()),
+                            setattr(c, "_home_files", set())),
+    "vendored_repos": lambda c: setattr(c, "_vendored_roots", []),
+    "symlinks": lambda c: setattr(c, "_exclude_symlinks", False),
+    # Not an empty tuple: empty means "no image corpus on this machine" and
+    # excludes every image, which would make the layer look MORE load-bearing
+    # when switched off. "/" is the boundary genuinely disabled.
+    "image_boundary": lambda c: setattr(c, "_image_roots", ("/",)),
+}
+
+
+def cp0_layer_independence(rows, baseline, spec, home):
+    """Every exclusion layer must uniquely own at least one file.
+
+    The all-layers-off control answers "do the rules do anything", which is a
+    question about the pile. It cannot answer "does THIS layer do anything",
+    and the difference is not academic: a layer whose files are all caught by
+    some other layer as well is dead weight that every gate reports as green.
+    Deleting it would change no output, so no test would notice -- and neither
+    would a reviewer, because the layer is plainly written and plainly correct.
+
+    This is the duplicated-invariant failure seen from the other side. There
+    the same rule lived in two places and the control could not move; here a
+    layer contributes nothing the rest of the stack was not already doing.
+
+    Measured, not assumed: the first run of this gate found [symlinks] owning
+    zero files. The corpus's only symlink was `icons/link.svg`, an image
+    outside the image root, so the boundary excluded it either way -- and the
+    fixture's own comment claimed that case tested "the symlink layer and
+    nothing else". A second symlink with no second reason fixed the fixture,
+    not the rules.
+    """
+    owned = {}
+    for layer, disable in LAYERS_OFF.items():
+        clf = Classifier(home=home)
+        clf.vendored_roots            # discover before anyone empties the list
+        disable(clf)
+        without = _classify_all(clf, rows)
+        owned[layer] = baseline[EXCLUDED] - without[EXCLUDED]
+
+    floor = spec["layer_floor"]
+    thin = sorted(k for k, v in owned.items() if v < floor.get(k, 1))
+    check("every exclusion layer uniquely owns files", not thin,
+          "  ".join("%s %d" % (k, v) for k, v in sorted(owned.items()))
+          + ("" if not thin else "  BELOW FLOOR: %s" % thin))
+    # The instrument, checked against itself. Everything above rests on the
+    # claim that LAYERS_OFF really disables the layer it names; a lambda that
+    # missed an attribute -- `_secret_names` cleared but `_secret_globs` left
+    # standing -- would under-report that layer's ownership and the gate would
+    # read as green. Applying all seven has to land where the TOML-driven null
+    # control lands, near zero. It also catches an exclusion hardcoded into
+    # explain() that belongs to no layer and that nothing can switch off.
+    every = Classifier(home=home)
+    every.vendored_roots
+    for disable in LAYERS_OFF.values():
+        disable(every)
+    none_left = _classify_all(every, rows)
+    check("switching off every layer excludes almost nothing",
+          none_left[EXCLUDED] < len(rows) * 0.02,
+          "%d of %d still excluded (%.2f%%)"
+          % (none_left[EXCLUDED], len(rows),
+             none_left[EXCLUDED] / len(rows) * 100))
+    return owned
+
+
 def cp0_one_place_only(clf):
     """The Bilder/ boundary must live in exactly one layer.
 
@@ -387,9 +475,17 @@ def corpus(inv=None):
         rows = read_inventory(inv or DEFAULT_INVENTORY)
         clf = Classifier()
         spec = {"name": "real", "image_roots": clf.config.role_dirs("image"),
+                "home": None,
                 "noise_floor": 0.70,
                 "control_factors": {"image": 300, "markdown": 8,
-                                    "code": 80, "misc": 100}}
+                                    "code": 80, "misc": 100},
+                # One file is the weakest floor that still means something:
+                # "this layer decides something no other layer would". A real
+                # home directory will be far above it for most layers, and
+                # real_corpus.py can raise them -- but a default of 1 keeps the
+                # gate from silently passing on a corpus that never declared
+                # any floor at all.
+                "layer_floor": {k: 1 for k in LAYERS_OFF}}
         spec.update(_real_spec("CP0"))
         return rows, clf, spec
 
@@ -401,7 +497,16 @@ def corpus(inv=None):
     spec = {"name": "synthetic", "image_roots": clf.config.role_dirs("image", base=ROOT),
             "images": declared,
             "images_why": "declared by the fixture, not counted from classify",
+            "home": ROOT,
             "noise_floor": 0.70,
+            # Measured 3 / 124 / 322 / 61 / 1 / 1 / 1, halved and floored at
+            # one. The three that measure 1 are structural: the fixture plants
+            # exactly one vendored repo, one image outside the boundary, and
+            # one symlink with no second reason. Raising those floors would be
+            # a claim about how many the fixture author planted.
+            "layer_floor": {"secrets": 1, "cache": 60, "dependencies": 160,
+                            "app_state": 30, "vendored_repos": 1,
+                            "symlinks": 1, "image_boundary": 1},
             # Measured 14.4x / 2.8x / 7.7x / 4.9x; the thresholds sit at
             # roughly half so the gate is about the rules rather than about
             # the fixture author's exact file counts.
@@ -427,6 +532,7 @@ def main(inv=None):
     cp0_image_gate(clf, rows, counts, spec)
     cp0_cache_gate(clf)
     cp0_negative_control(rows, counts, spec)
+    cp0_layer_independence(rows, counts, spec, spec["home"])
     cp0_idempotent(clf, rows)
     cp0_one_place_only(clf)
     cp0_secrets(clf)

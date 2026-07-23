@@ -403,6 +403,15 @@ DECLARED_ROLES = {
 # Renaming applied by build_english(). Path components only, so a file whose
 # NAME is Norwegian stays Norwegian -- filenames are data, and the point is
 # that no directory name is baked into a rule.
+# Only the directories a user's config names. Adding `.icons` here was tried
+# and reverted: the shipped [app_state] layer names `.icons` on purpose, the
+# way it names `.cache`, so renaming it does not produce the same corpus under
+# another layout -- it produces a different corpus. CP-7's claim is that the
+# ROLE mechanism imposes no layout, not that every shipped rule is free of
+# directory names. What the experiment showed is recorded in test_cp7.py's
+# `_decisions`, because the result is worth keeping even though the rename is
+# not: the two corpora agreed on all 857 labels while 240 paths were decided
+# by different layers.
 ENGLISH_DIRS = {"Bilder": "Pictures", "Skjermbilder": "Screenshots"}
 
 
@@ -702,6 +711,24 @@ def build(root, clean=True):
     case("EXCLUDED", "symlink", True, "icons/link.svg",
          "a symlink, and an image outside Bilder/ -- two reasons")
 
+    # And one the symlink layer is the ONLY reason to exclude. The case above
+    # says "two reasons" and means it: switch [symlinks] off and `link.svg` is
+    # still excluded, by the image boundary, so the corpus count does not move
+    # and the layer's contribution is invisible. Every other exclusion layer
+    # uniquely owns files; this one owned none, which is why the per-layer
+    # control in CP-0 could not have proven the symlink policy does anything.
+    #
+    # A .md link inside notes/ has no second reason: markdown is included, the
+    # directory is included, and the only thing standing between it and a
+    # `markdown` label is [symlinks].
+    solo = os.path.join(root, "notes/mirror-of-plan.md")
+    os.makedirs(os.path.dirname(solo), exist_ok=True)
+    if not os.path.lexists(solo):
+        os.symlink(os.path.join(root, "notes/memory/plan.md"), solo)
+    case("EXCLUDED", "symlink", True, "notes/mirror-of-plan.md",
+         "a symlink and nothing else -- included directory, included "
+         "extension, no second layer behind it")
+
     # -- the noise layer ---------------------------------------------------
     #
     # Not padding. Without it the negative control has nothing to unmask: on a
@@ -779,16 +806,22 @@ def build_english(root, clean=True, mapping=None):
                            mapping[os.path.basename(old)])
         os.rename(old, new)
 
-    # The symlink's target still names the old directory. Left as-is it would
+    # A symlink's target still names the old directory. Left as-is it would
     # merely be dangling, which it already is -- but a dangling link that names
     # a directory this corpus no longer has is a confusing artefact, and the
-    # symlink case must keep testing the symlink layer and nothing else.
-    link = os.path.join(root, "icons/link.svg")
-    if os.path.islink(link):
-        target = os.readlink(link)
-        os.unlink(link)
-        os.symlink(os.path.join(root, _rename(
-            os.path.relpath(target, root), mapping)), link)
+    # symlink cases must keep testing the symlink layer and nothing else.
+    #
+    # Every symlink, not one named path: the corpus has two now, and a rewriter
+    # that hardcodes one of them silently stops covering the next one added.
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            link = os.path.join(dirpath, name)
+            if not os.path.islink(link):
+                continue
+            target = os.readlink(link)
+            os.unlink(link)
+            os.symlink(os.path.join(root, _rename(
+                os.path.relpath(target, root), mapping)), link)
 
     renamed = [(label, sub, hard, _rename(rel, mapping), why)
                for label, sub, hard, rel, why in cases]
