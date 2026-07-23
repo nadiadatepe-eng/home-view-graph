@@ -124,10 +124,12 @@ MUTATIONS = [
     # stale edges makes today's graph right and last week's unrecoverable.
     ("stale edges are tidied away instead of left closed",
      "homegraph/store.py",
-     '            self.db.execute("UPDATE edges SET last_seen=? WHERE id=?",\n'
-     "                            (as_of, row[\"id\"]))",
-     '            self.db.execute("UPDATE edges SET last_seen=? WHERE id=?",\n'
-     "                            (as_of, row[\"id\"]))\n"
+     "            self.db.execute(\n"
+     '                "UPDATE edges SET last_seen=?, method=?, confidence=? "\n'
+     '                "WHERE id=?", (as_of, method, confidence, row["id"]))',
+     "            self.db.execute(\n"
+     '                "UPDATE edges SET last_seen=?, method=?, confidence=? "\n'
+     '                "WHERE id=?", (as_of, method, confidence, row["id"]))\n'
      "            self.db.execute(  # mutated: history deleted as housekeeping\n"
      '                "DELETE FROM edges WHERE last_seen < ?", (as_of,))',
      "last week's graph still has the removed link"),

@@ -166,7 +166,7 @@ MUTATIONS = [
      '''            hits = index.get(target)
             if not hits:
                 store.upsert_edge(path, "wikilink:%s" % target,
-                                  "WIKILINKS_TO", as_of)
+                                  "WIKILINKS_TO", as_of, method="exact")
                 report.broken_links[target] += 1
                 report.broken_by_subtype[data["subtype"]] += 1''',
      '''            hits = index.get(target)
