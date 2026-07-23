@@ -3,7 +3,16 @@
 
 There is no combined database. Mesh opens each model's store, queries them, and
 fuses in memory. One corrupt or missing model degrades the answer and says so;
-it does not take the others down. `mesh.db` holds only cross-model edges.
+it does not take the others down.
+
+`mesh.db` holds the cross-model edges **and a stub for every node they can
+point at** -- a key, a path, a title, and an FTS row. It has to: an edge needs
+endpoints, and a graph query has to be able to name what it found without
+reopening five stores. This used to say "only cross-model edges", three lines
+under "never merges them", so the sentence read as a guarantee about separation
+when it was a description of what the file is for. The separation guarantee is
+real and is elsewhere: no model's rows are copied into another model's store,
+the stubs carry no bodies, and `search` always reads the models themselves.
 
 Two things here are easy to get silently wrong, so both are made explicit.
 
@@ -338,22 +347,38 @@ class Mesh:
                         report["MENTIONS_FILE"] += 1
 
     def _temporal_cohort(self, mesh, loaded, as_of, report, min_days=2):
-        """Files changed on the same days. Bitwise AND, not an array join.
+        """Files whose activity masks are IDENTICAL, within one anchor.
 
-        This is what `datelist_int` exists for: the comparison is one CPU
-        instruction per pair instead of a set intersection. Masks must share an
-        anchor, which is why refresh_all_datelists takes one for the whole store.
+        Not `cohort_overlap`, and not a bitwise AND -- the docstring used to
+        say both, and neither was ever what this did. Grouping by equal mask is
+        the deliberate choice: it is a dict lookup rather than a comparison per
+        pair, and the alternative was `cohort_overlap(mask, mask)`, a value
+        compared against itself. The cost is real and worth stating plainly: two
+        files sharing five of six days get no edge. This relation is "changed on
+        exactly the same days", which is narrower than the name suggests.
+
+        The anchor is part of the key, and that is a fix rather than a detail.
+        `datelist_int` bit i means "anchor minus i days", so two masks are only
+        comparable when they were encoded against the same anchor -- and this
+        loop reads across models, which are built by separate commands on
+        whatever days they happened to run. Grouping on the mask alone silently
+        equated bit 3 of a model built on Monday with bit 3 of one built on
+        Friday and emitted a confident cross-model edge from it. Nothing
+        enforced a shared anchor: `refresh_all_datelists` exists for exactly
+        that and has never been called outside a test, so the discipline the
+        old docstring credited it with was not running.
         """
         masks = []
         for model, s in loaded.items():
             for row in s.db.execute(
-                    "SELECT node_key, datelist_int FROM nodes "
+                    "SELECT node_key, datelist_int, datelist_anchor FROM nodes "
                     "WHERE datelist_int != 0 AND path IS NOT NULL"):
-                masks.append((model, row["node_key"], row["datelist_int"]))
+                masks.append((model, row["node_key"], row["datelist_int"],
+                              row["datelist_anchor"]))
         by_mask = collections.defaultdict(list)
-        for model, key, mask in masks:
-            by_mask[mask].append((model, key))
-        for mask, members in by_mask.items():
+        for model, key, mask, anchor in masks:
+            by_mask[(anchor, mask)].append((model, key))
+        for (_anchor, mask), members in by_mask.items():
             if bin(mask).count("1") < min_days or len(members) < 2:
                 continue
             cross = {m for m, _ in members}
@@ -363,20 +388,46 @@ class Mesh:
             for other in members[1:]:
                 if other[0] == first[0]:
                     continue
-                # `cohort_overlap(mask, mask)` was checked here and is the
-                # same bit count the loop already filtered on above -- a
-                # value compared against itself, which is the shape that hid
-                # a dead cross-validation in CP-5. Members of `by_mask` share
-                # one mask by construction, so the overlap is settled before
-                # this point and the edge is unconditional.
+                # Members of `by_mask` share one mask AND one anchor by
+                # construction, so the comparison is settled before this point
+                # and the edge is unconditional. Re-checking it here with
+                # `cohort_overlap(mask, mask)` would compare a value against
+                # itself -- the shape that hid a dead cross-validation in CP-5.
                 mesh.upsert_edge("%s::%s" % first, "%s::%s" % other,
                                  "TEMPORAL_COHORT", as_of)
                 report["TEMPORAL_COHORT"] += 1
 
     # -- graph queries -----------------------------------------------------
 
+    def _read_mesh(self):
+        """Open the mesh store for reading, or refuse.
+
+        `Store(path)` connects with sqlite3, which CREATES the file, and then
+        migrates it -- so a read query against a mesh that does not exist used
+        to leave a fully-formed empty database behind and answer `count: 0`.
+        With `mesh_db=None` the path became the string "None" and the file
+        landed in whatever directory the process happened to start in.
+
+        That is the opposite of what mcp_server.py promises: an MCP server is
+        driven unattended, and "read-only by construction" has to hold for the
+        query paths, not only for the ones that take a `--mesh-db` to write.
+        `build_edges` already refused on a missing path; these did not.
+
+        Refusing is also the more useful answer. An empty mesh and an absent
+        mesh give the same zero, and only one of them is worth telling a user
+        about.
+        """
+        if not self.mesh_db:
+            raise ModelUnavailable(
+                "no mesh database configured; pass --mesh-db or run "
+                "`homegraph mesh build`")
+        if not os.path.exists(self.mesh_db):
+            raise ModelUnavailable("no mesh database at %s; run "
+                                   "`homegraph mesh build`" % self.mesh_db)
+        return Store(self.mesh_db)
+
     def neighbours(self, node_key, depth=1):
-        mesh = Store(self.mesh_db)
+        mesh = self._read_mesh()
         try:
             seen, frontier, out = set(), [node_key], []
             for _ in range(depth):
@@ -405,7 +456,7 @@ class Mesh:
 
     def path(self, src, dst, max_depth=4):
         """Shortest path between two mesh nodes. Breadth-first, cycle-safe."""
-        mesh = Store(self.mesh_db)
+        mesh = self._read_mesh()
         try:
             if mesh.node_id(src) is None or mesh.node_id(dst) is None:
                 return None

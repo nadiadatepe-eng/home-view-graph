@@ -16,12 +16,23 @@ Two rules that exist for safety rather than tidiness:
     or a session database will happily hand over credentials if you SELECT from
     it. Table names are informative; contents are not worth the risk.
   * **Files over 100 MB become metadata nodes.** Nothing is read past the
-    header.
+    header -- and "the header" is the literal bound: `sniff()` reads at most
+    512 bytes, of any file, at any size. The first pass skips `sniff` entirely
+    for large files; the second pass calls it on every path, large ones
+    included, to draw SAME_FORMAT edges. So a 4 GB disk image is opened and
+    512 bytes are read. That is within the promise but not within the picture
+    the promise paints, which is why it is written down rather than left to
+    the reader to discover in the second loop.
 
-And the rollup, borrowed from the handbook's reduced fact tables: application
-state that has not changed in 90 days is aggregated to (app, month, count,
-bytes, dominant type) instead of one node per file. Tens of thousands of nodes
-nobody will ever search are not a knowledge graph, they are ballast.
+And the rollup, borrowed from the handbook's reduced fact tables: anything that
+has not changed in 90 days is aggregated to (app, month, count, bytes, dominant
+type) instead of one node per file. Tens of thousands of nodes nobody will ever
+search are not a knowledge graph, they are ballast.
+
+"Application state" is how this was phrased, and it is narrower than what the
+code does: `owning_app()` returns "home" for everything outside a dot-directory,
+so cold files anywhere in the corpus roll up under that name. The age is the
+criterion; the app is only the bucket.
 """
 from __future__ import annotations
 

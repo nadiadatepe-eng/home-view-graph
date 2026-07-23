@@ -52,6 +52,17 @@ MUTATIONS = [
      "            report.series[key] += 1",
      "the declared series groups as one"),
 
+    # The third copy of "what is an image". The sets agreed, so the duplicate
+    # was invisible; what it invited is one-sided -- categories.toml grows an
+    # extension, the classifier sends the file to M2, and M2 drops it into a
+    # counter whose comment makes the loss read as intended.
+    ("m2 goes back to its own hand-written extension list",
+     "homegraph/models/m2_build.py",
+     '        return frozenset("." + e for e in tomllib.load(fh)["image"]["extensions"])',
+     '        tomllib.load(fh)  # mutated: read, then ignored\n'
+     '    return frozenset({".png", ".jpg", ".gif"})',
+     "image count matches the corpus layer"),
+
     ("likely copies are merged into one node instead of linked",
      "homegraph/models/m2_build.py",
      "    _link_copies(store, infos, as_of, report)",
@@ -126,7 +137,7 @@ MUTATIONS = [
 
     ("non-image files under the image root become image nodes",
      "homegraph/models/m2_build.py",
-     "        if os.path.splitext(path)[1].lower() not in IMAGE_EXT:",
+     "        if os.path.splitext(path)[1].lower() not in image_extensions():",
      "        if False:  # mutated: everything under the image root is an image",
      "image count matches the corpus layer"),
 

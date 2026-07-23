@@ -115,25 +115,58 @@ def refresh_datelist(store: "Store", node_id: int, anchor: date | str) -> int:
     return mask
 
 
-def refresh_all_datelists(store: "Store", anchor: date | str) -> None:
-    """Every node's mask must share one anchor, or cohort_overlap is nonsense."""
+def refresh_all_datelists(store: "Store", anchor: date | str,
+                          only_anchored: bool = False,
+                          commit: bool = True) -> None:
+    """Re-encode every node's mask against one anchor.
+
+    Bit i means "anchor minus i days", so two masks are comparable only when
+    they were built against the same anchor. That is the whole discipline, and
+    `mesh._temporal_cohort` now keys on `datelist_anchor` so it cannot be
+    violated silently -- but re-anchoring on write is what keeps a single
+    store's masks comparable in the first place.
+
+    `only_anchored=True` skips nodes whose `datelist_anchor` is NULL. Those are
+    the derived, path-less nodes -- authors, tags, collections -- which have no
+    activity of their own, and giving them one would invent history. `update`
+    passes it; a full re-anchor of a fresh store does not need to.
+
+    `commit=False` for the same reason `apply_retention` takes it: an update is
+    one transaction, and a commit inside it publishes half a run.
+
+    This function had no caller outside the tests until `update` stopped
+    re-implementing its loop inline. Two copies of "re-anchor every node"
+    existed, one of them documented as the mechanism and never run.
+    """
     anchor = _d(anchor)
-    for row in store.db.execute("SELECT id FROM nodes"):
+    sql = ("SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"
+           if only_anchored else "SELECT id FROM nodes")
+    for row in store.db.execute(sql):
         refresh_datelist(store, row["id"], anchor)
     store.db.execute(
         "INSERT OR REPLACE INTO metadata(key, value) VALUES "
         "('datelist_anchor', ?)", (anchor.isoformat(),))
-    store.commit()
+    if commit:
+        store.commit()
 
 
 # -- retention -------------------------------------------------------------
 
 def apply_retention(store: "Store", as_of: date | str,
-                    retention_days: int = RETENTION_DAYS) -> dict[str, object]:
+                    retention_days: int = RETENTION_DAYS,
+                    commit: bool = True) -> dict[str, object]:
     """Roll observations older than the window into monthly aggregates.
 
     The daily rows are deleted afterwards. That is the point -- a rollup that
     leaves the source rows in place saves nothing and CP-1 checks for it.
+
+    `commit=False` is what `update` passes, and it is not a convenience. An
+    update is one transaction so that an interrupt leaves the store exactly as
+    it was; a commit anywhere inside that span defeats `Store.__exit__`'s
+    rollback and publishes half a run. Wiring retention in with the default
+    reintroduced that, and CP-8's interrupt gate caught it on the first run --
+    the same defect its own comment records having found once before, arriving
+    through a function that had every right to commit when it ran alone.
     """
     cutoff = (_d(as_of) - timedelta(days=retention_days)).isoformat()
     rows = store.db.execute(
@@ -159,5 +192,6 @@ def apply_retention(store: "Store", as_of: date | str,
              last["content_hash"] if last else None, r["max_size"]))
     deleted = store.db.execute(
         "DELETE FROM observations WHERE seen_date < ?", (cutoff,)).rowcount
-    store.commit()
+    if commit:
+        store.commit()
     return {"cutoff": cutoff, "rolled_up": len(rows), "deleted_rows": deleted}

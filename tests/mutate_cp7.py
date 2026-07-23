@@ -36,6 +36,27 @@ MUTATIONS = [
      '    return {}  # mutated: config read, then dropped',
      "rules_from_config carries the directory into the build"),
 
+    # -- a documented mechanism must have a caller ------------------------
+    #
+    # Four of these were found at once by an external review: functions with a
+    # docstring, a decision entry and a passing checkpoint, reachable only from
+    # tests. Every gate was green because the tests called them; the product
+    # never did. See DECISIONS.md section 21.
+    ("retention goes back to being called only by its test",
+     "homegraph/update.py",
+     "    report.retention = apply_retention(store, as_of, commit=False)",
+     "    pass  # mutated: the observations table grows without bound",
+     "no documented mechanism is reachable only from tests"),
+
+    ("update re-implements the re-anchoring loop inline again",
+     "homegraph/update.py",
+     "    refresh_all_datelists(store, as_of, only_anchored=True, commit=False)",
+     "    from .temporal import refresh_datelist  # mutated: a second copy\n"
+     "    for row in store.db.execute(\n"
+     '            "SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"):\n'
+     "        refresh_datelist(store, row[\"id\"], as_of)",
+     "no documented mechanism is reachable only from tests"),
+
     # -- config writes are atomic ---------------------------------------
     ("the config is truncated in place again",
      "homegraph/userconfig.py",

@@ -44,7 +44,14 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 @dataclass
 class SearchResult:
     hits: list[Hit]     # {node_id, node_key, title, rank, score, sources}
-    out_mode: str       # "fts" | "vector" | "hybrid" | "none"
+    # Today this is always "fts", and that is the honest value rather than a
+    # placeholder: `vector_search` returns None when embeddings are off and
+    # raises NotImplementedError when they are configured, so no run reaches
+    # the hybrid branch. The annotation used to list four values as if the
+    # field were computed, which invites a reader to look for a hybrid state
+    # that cannot occur. "vector" and "hybrid" become reachable the day a
+    # provider is wired up; "none" is written nowhere and may never be.
+    out_mode: str       # "fts" today; "vector" | "hybrid" once embeddings exist
     warnings: list[str] = field(default_factory=list)
 
     # The plan names this field `_out_mode`; expose both so neither spelling

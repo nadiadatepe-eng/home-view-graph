@@ -622,6 +622,56 @@ def t_visualise(tmp, paths, spec):
           "missing=%s, banner present" % rep["missing"])
 
 
+def t_queries_never_create_a_store(tmp):
+    """A read query must not bring the thing it reads into existence.
+
+    `mcp_server` promises "read-only by construction", and an MCP server is
+    driven unattended, so this is the wrong place to be approximately right.
+    `Store(path)` connects with sqlite3 -- which creates the file -- and then
+    migrates it, so `Mesh.neighbours` against a mesh that does not exist used
+    to leave a fully-formed empty database behind and answer `count: 0`.
+
+    With `mesh_db=None` it was worse than pointless: the path became the string
+    "None" and the file landed in whatever directory the process started in.
+
+    Two gates, because they fail for different reasons and a reader deserves to
+    know which: refusing, and not writing.
+    """
+    work = os.path.join(tmp, "readonly")
+    os.makedirs(work)
+    absent = os.path.join(work, "not-built-yet.db")
+
+    outcomes, created = {}, {}
+    for label, mesh_db in (("absent path", absent), ("no path at all", None)):
+        before = set(os.listdir(work))
+        with Mesh({}, mesh_db=mesh_db) as mesh:
+            try:
+                mesh.neighbours("m3::whatever")
+                outcomes[label] = "returned"
+            except ModelUnavailable:
+                outcomes[label] = "refused"
+            except Exception as exc:                            # noqa: BLE001
+                outcomes[label] = "raised:%s" % type(exc).__name__
+        created[label] = sorted(set(os.listdir(work)) - before)
+
+    check("a query against a mesh that does not exist refuses",
+          all(v == "refused" for v in outcomes.values()), str(outcomes))
+    check("and it creates no database while refusing",
+          not any(created.values()) and not os.path.exists(absent),
+          "created %s" % created)
+    # The same for `path`, which had the identical construction.
+    with Mesh({}, mesh_db=None) as mesh:
+        try:
+            mesh.path("a", "b")
+            second = "returned"
+        except ModelUnavailable:
+            second = "refused"
+        except Exception as exc:                                # noqa: BLE001
+            second = "raised:%s" % type(exc).__name__
+    check("mesh_path refuses on a missing mesh too", second == "refused",
+          second)
+
+
 def t_mcp(tmp, paths, spec):
     """The MCP server speaks the protocol and refuses what it should."""
     import io
@@ -742,6 +792,7 @@ def main():
         t_no_false_edges(tmp, paths, spec)
         t_time_travel(paths, spec)
         t_visualise(tmp, paths, spec)
+        t_queries_never_create_a_store(tmp)
         t_mcp(tmp, paths, spec)
         t_federated_beats_single(paths, spec)
     finally:

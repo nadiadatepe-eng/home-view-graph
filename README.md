@@ -48,26 +48,37 @@ homegraph init                      # scans your home directory
 homegraph init --root /srv/archive  # or any other directory
 ```
 
-`init` walks the root and proposes which folders hold images, documents, notes,
-code and cache, based on the **extension mix actually inside each one** rather
-than on a list of names. It shows you the evidence, lets you overwrite every
-line, and writes `~/.homegraph/config.toml`. That file is the truth about this
-installation; edit it whenever you like.
+`init` walks the root and proposes which folders hold images, based on the
+**extension mix actually inside each one** rather than on a list of names. It
+shows you the evidence, lets you overwrite the line, and writes
+`~/.homegraph/config.toml`. That file is the truth about this installation;
+edit it whenever you like.
 
 ```toml
 root = "/srv/archive"
 
 [roles]
-image    = ["Photos"]
-document = ["Papers"]
-note     = ["notes", "wiki"]
-code     = ["src"]
-cache    = [".cache"]
+image = ["Photos"]
 ```
 
-Until it exists, every other command **refuses with exit 2** and says what to
-run. An empty role is a legitimate answer and not an error: the matching model
-is simply absent, and `mesh` labels its answers `partial` and names it.
+One role, and only one. This example used to list five — `document`, `note`,
+`code` and `cache` alongside `image` — and a config copied from it is
+**rejected**, because those four were retired: they were roles nothing read,
+and a role nobody consults is a promise the config cannot keep. `load()` names
+each retired role and says what replaced it rather than ignoring it. What
+decides whether a file is a document or a note is its extension, in
+`categories.toml`; what `cache` used to mean now lives in `[cache]` in
+`exclusions.toml`.
+
+Commands that need to know your layout — `init`, `census`, `explain`, `build`,
+`update`, `md build` — **refuse with exit 2** until the config exists, and say
+what to run. Commands that only read a store already built — `status`,
+`search`, `visualize`, `mesh`, `mcp` — do not consult the config and do not
+refuse; they take a database path and answer from it. (This paragraph used to
+say "every other command", which was broader than the code: those five exit 0
+without any config at all.) An empty role is a legitimate answer and not an
+error: the matching model is simply absent, and `mesh` labels its answers
+`partial` and names it.
 
 Two properties this rests on, both checked in CP-7:
 
@@ -79,8 +90,10 @@ Two properties this rests on, both checked in CP-7:
 - **The scanner is not a second classifier.** It runs once, at `init`, writes
   its answer down, and is never consulted again. CP-7 asserts structurally that
   nothing but `cmd_init` imports it.
-- **`init` never opens a file.** It reads names and `stat()`, the same
-  invariant M2 carries, verified the same two ways -- an audit hook and strace.
+- **`init` never opens a file in the corpus.** It reads names and `stat()`, the
+  same invariant M2 carries, verified the same two ways -- an audit hook and
+  strace. It does read its own rule files and write your config; the claim is
+  about the tree it is scanning, which is what CP-4 measures.
 
 The synthetic test corpus is built with Norwegian directory names and then
 rebuilt with English ones at a second root, under two configs. CP-7 asserts

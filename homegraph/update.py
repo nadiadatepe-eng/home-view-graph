@@ -191,6 +191,11 @@ class UpdateReport:
     # by then, so a silent skip leaves a node holding stale text with no
     # relations, and the run still reports success. Surfaced instead.
     unreadable: list = field(default_factory=list)
+    # What the 90-day retention rolled up and deleted on this run. Reported
+    # rather than silent: it is the one part of `update` that removes rows
+    # nobody asked it to touch, and an empty dict is what a store younger than
+    # the window correctly produces.
+    retention: dict = field(default_factory=dict)
 
     def summary(self):
         d = {"model": self.model}
@@ -202,6 +207,9 @@ class UpdateReport:
                   "edges": "%d -> %d" % (self.edges_before, self.edges_after)})
         if self.unreadable:
             d["unreadable"] = len(self.unreadable)
+        if self.retention.get("deleted_rows"):
+            d["retention"] = "%d row(s) rolled into %d month(s)" % (
+                self.retention["deleted_rows"], self.retention["rolled_up"])
         return d
 
 
@@ -411,10 +419,27 @@ def update(store, model: str, paths, as_of, config, *,
     # full build anchors each file at B; retain update history, but re-encode
     # it at B so cohort comparisons never combine masks for different days.
     # Pathless derived nodes deliberately have no datelist and stay NULL.
-    from .temporal import refresh_datelist
-    for row in store.db.execute(
-            "SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"):
-        refresh_datelist(store, row["id"], as_of)
+    #
+    # Through `refresh_all_datelists`, not a loop written out again here. The
+    # loop that used to sit inline was a second implementation of the function
+    # documented as the mechanism for exactly this -- so the named one had no
+    # caller outside the tests while its job was being done by a copy.
+    from .temporal import refresh_all_datelists
+    refresh_all_datelists(store, as_of, only_anchored=True, commit=False)
+
+    # Retention runs here, and until now it ran nowhere. `apply_retention` was
+    # written, documented in three places as the reason the observations table
+    # has a ceiling, and called only from CP-1 -- so on a real installation the
+    # table grew without bound and `observations_monthly` stayed empty forever.
+    # DECISIONS.md section 16 goes further and cites the 90-day policy as the
+    # precedent for deleting a removed file's history, which made a reader
+    # checking that argument agree with a mechanism that was not running.
+    #
+    # `update` is the right place: it is the only command that runs repeatedly
+    # over the same store, which is the only way the table gets large. A build
+    # writes one day's observations and has nothing to roll up.
+    from .temporal import apply_retention
+    report.retention = apply_retention(store, as_of, commit=False)
 
     report.pruned = prune(store)
     store.rebuild_fts()

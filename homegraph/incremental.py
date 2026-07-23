@@ -63,7 +63,22 @@ def hash_file(path: str, chunk: int = CHUNK) -> str:
 
 
 def scan(paths: Iterable[str], use_hash: bool = False) -> dict[str, FileState]:
-    """Stat a list of paths into FileStates. Never hashes unless asked."""
+    """Stat a list of paths into FileStates. Never hashes.
+
+    `use_hash` is accepted and ignored, and the docstring used to advertise it
+    as "never hashes unless asked" -- an offer the body does not honour, since
+    it never reads the parameter and always leaves `content_hash` unset. A
+    caller who passed `use_hash=True` on the strength of that sentence got the
+    stat-only scan back without a word.
+
+    Harmless today only because `diff()` computes the hash itself, on the
+    files where the cheap check was inconclusive: `state.content_hash or
+    _safe_hash(state.path)`. That is also the better place for it -- hashing
+    every path up front would read files the cheap check was about to clear.
+    The parameter stays because `update` and the model specs pass it around to
+    say which models CAN be hash-confirmed, and `diff()` is where it means
+    something.
+    """
     out: dict[str, FileState] = {}
     for p in paths:
         try:

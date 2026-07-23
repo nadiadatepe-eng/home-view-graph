@@ -13,7 +13,11 @@ images by content hash, so two identical files in two directories remain two
 nodes joined by LIKELY_COPY rather than merged.
 
 What it buys: the 208 MB PNG is never loaded, decompression bombs are not a
-threat model, and a full build takes about a second instead of hours.
+threat model, and a full build costs a `stat()` per file instead of a decode.
+Measured on the 135-image corpus it is 0.04 s; the number that used to sit here
+was "about a second", from an earlier and larger estimate. Two numbers in two
+files describing the same build is how a measurement turns into folklore, so
+this one defers to DECISIONS.md section 4, where it is dated.
 
 The filenames carry more than expected. `03122025_1.png` is a date and a series
 index. `161212025_44_3360x2100.png` is a mistyped date, an index and a

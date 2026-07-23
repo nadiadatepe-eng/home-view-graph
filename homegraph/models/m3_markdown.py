@@ -33,6 +33,13 @@ from ..config import home_root
 
 # Fenced blocks first, then inline spans. Order matters: a stray backtick
 # inside a fence would otherwise open a phantom inline span across the file.
+#
+# What the order does NOT buy is coverage of ``` fences, and the comment above
+# used to imply it did. RE_INLINE_CODE is DOTALL and matches any backtick run
+# not followed by another backtick, which is what a ``` fence opens with -- so
+# it blanks every backtick fence on its own, and removing RE_FENCE changed
+# nothing any check could see until the fixture gained a `~~~` fence. Tildes
+# are what RE_FENCE uniquely catches. See DECISIONS.md section 20.
 RE_FENCE = re.compile(r"^(?P<fence>```+|~~~+).*?^(?P=fence)\s*$",
                       re.MULTILINE | re.DOTALL)
 RE_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
@@ -52,7 +59,19 @@ def _pathish(root):
         r"(?:(?<=\s)|\A|(?<=[`\'\"(]))"
         r"((?:~|" + re.escape(root) + r"|\./|\.\./)[\w./~@+-]*[\w/])")
 
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
+def _image_ext():
+    """Image extensions, from categories.toml -- the one place that decides.
+
+    This was a hand-written set here too, and a shorter one: it was missing
+    `.ico`, `.heic`, `.heif`, `.tif` and `.tiff`, so `![[cover.heic]]` was
+    filed as an ordinary link while `![[cover.png]]` was filed as an embed.
+    Three copies of "what is an image" existed in this package (here, in
+    m2_build, and in categories.toml) and the two hand-written ones disagreed
+    with each other, which is how a duplicated invariant usually announces
+    itself -- not by being wrong, but by drifting.
+    """
+    from .m2_build import image_extensions
+    return image_extensions()
 
 
 def blank_code(text):
@@ -212,7 +231,7 @@ class MarkdownExtractor:
             if target.startswith(("http://", "https://", "mailto:", "#")):
                 links.append(target)
                 continue
-            if bang or os.path.splitext(target)[1].lower() in IMAGE_EXT:
+            if bang or os.path.splitext(target)[1].lower() in _image_ext():
                 embeds.append(target)
             else:
                 links.append(target)

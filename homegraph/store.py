@@ -7,18 +7,25 @@ Two decisions here are load-bearing and both come from other people's scars.
 versioning onto a database that already has data means guessing what version the
 existing rows are. `schema_version` exists before the first node does.
 
-**FTS5 is filled by an explicit `rebuild_fts()` call and by nothing else.** No
-triggers, no implicit population on insert. The failure this avoids is the one
-from code-review-graph: an index that was never built, a search path that
+**FTS5 is POPULATED by an explicit `rebuild_fts()` call and by nothing else.**
+No triggers, no implicit population on insert. The failure this avoids is the
+one from code-review-graph: an index that was never built, a search path that
 silently returned nothing, and a headline number nobody could reproduce. An
 index that is only ever filled on purpose cannot be half-filled by accident,
 and `fts_is_stale()` makes the gap visible rather than quiet.
 
+Populated, not written: `delete_node` removes an index row so a deleted node
+cannot come back as a search hit. This used to say "and by nothing else" about
+writing, three lines above the method that does exactly that.
+
 Time is not bolted on either. `nodes` are slowly-changing dimensions; the facts
 live in `observations` (see temporal.py). Edges carry `first_seen`/`last_seen`,
-so removing a wikilink expires an edge instead of deleting a row -- otherwise
+so a wikilink that stops being written expires instead of vanishing -- otherwise
 the answer to "which links did this note have last week" is gone forever, which
-for a graph over your own home is the whole point.
+for a graph over your own home is the whole point. Expiry is what happens when
+a link is dropped from a file that stays; it is not what happens when the file
+itself is rebuilt or removed, and the schema comment on `edges` says which is
+which.
 """
 from __future__ import annotations
 
@@ -50,8 +57,19 @@ CREATE TABLE nodes (
 CREATE INDEX idx_nodes_path ON nodes(path);
 CREATE INDEX idx_nodes_kind ON nodes(kind, subtype);
 
--- Edges are versioned, never deleted. A removed wikilink is an edge whose
--- last_seen has stopped advancing.
+-- Edges are versioned. A removed wikilink is an edge whose last_seen has
+-- stopped advancing, so `edges_as_of()` can still answer what a note linked
+-- to last week.
+--
+-- "Never deleted" is what this said, and it is not true. `update` deletes:
+-- rebuilding a file drops its outbound edges before writing the new ones
+-- (update.py, DELETE FROM edges WHERE src = ?), and removing a file takes its
+-- edges with it through ON DELETE CASCADE below. DECISIONS.md section 16
+-- argues for that deliberately -- removal deletes, and it deletes history.
+-- The two statements coexisted, and the false one was the one sitting in the
+-- schema, which is where a reader looks to find out whether `edges_as_of()`
+-- can be trusted after an update. It cannot, for files that were rebuilt or
+-- removed; it can, for links that simply stopped being written.
 CREATE TABLE edges (
     id         INTEGER PRIMARY KEY,
     src        INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,

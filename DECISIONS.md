@@ -325,8 +325,20 @@ path at all.
 **Removal deletes, and it deletes history.** A tombstone, or a node whose
 `last_seen` stops advancing the way edges do, cannot coexist with the claim
 above: a rebuild of B has no node for a file that is not in B. The temporal
-layer already discards daily observations after 90 days; this is the same
-policy applied to a file rather than to a date. **Cost:** after an update,
+layer discards daily observations after 90 days; this is the same policy
+applied to a file rather than to a date.
+
+That precedent was cited here before it was true. `apply_retention` existed,
+was documented in three places as the reason the observations table has a
+ceiling, and was called only from CP-1 — so a reader checking whether deletion
+was consistent with the rest of the system got a yes from a mechanism that was
+not running, and the table grew without bound on every real installation. It
+now runs at the end of `update`, with `commit=False` so it stays inside the
+update's single transaction. Wiring it in with the default committing signature
+broke CP-8's interrupt gate immediately, which is the same defect that gate's
+own comment records having caught once before.
+
+**Cost:** after an update,
 `edges_as_of()` cannot show a relation only a deleted file took part in.
 
 **A changed file keeps its own node.** Deleting and recreating it would reset
@@ -362,6 +374,11 @@ Writing this found three things that were already broken and silent:
 both match, because revoking read permission changes neither and `update` would
 otherwise keep serving text from a file it can no longer open — while a full
 `build` would have dropped it. The two must agree, so the probe stays.
+
+It is gated on `use_hash`, which means it does not run for M2 — the model that
+never opens a file and therefore cannot disagree with `build` about whether it
+can be read. That is the right scope and it was not stated: the paragraph above
+reads as a system-wide invariant, and it holds for M1 and M3.
 
 It is a time-of-check/time-of-use race and cannot be made not to be one. There
 is no atomic "will this still be readable when the builder gets there"; only
@@ -475,6 +492,78 @@ the checkpoint had been reporting as green:
 
 Coverage is a map, not a score. 100% would mean every check has one mutation
 aimed at it — not that every way the code can be wrong has been tried.
+
+---
+
+## 21 · Prose is a specification, and it was reviewed as one
+
+Three external rounds asked what the code does wrong. A fourth asked something
+else: **where does the prose claim something the code does not do?** The
+codebase is deliberately prose-heavy — 20 decisions, long docstrings, comments
+that state invariants outright — and that prose is load-bearing. A future
+reader trusts it instead of re-deriving the behaviour, so a docstring that lies
+is worse than no docstring: it stops the investigation.
+
+Thirteen major divergences came back. The pattern in the worst of them was one
+thing, and it is the same one the per-layer control in §18 found:
+
+**Four documented mechanisms had no caller outside `tests/`.**
+
+- `no_open_guard()` — "the enforcement" for the never-open-an-image rule
+- `apply_retention()` — cited three times as why observations are bounded
+- `refresh_all_datelists()` — named as why cohort masks share an anchor
+- `cohort_overlap()` — "the whole point of the bitmask"
+
+Every checkpoint passed, because the tests called them and they worked. The
+product never ran any of them. That is worse than dead code: dead code makes no
+promise, while a function with a docstring, a decision entry and a passing test
+tells a reader the question is already settled.
+
+Resolved four different ways, and which way matters:
+
+- **`apply_retention` is now wired** into `update`. It was a real defect.
+- **`refresh_all_datelists` is now wired**, because `update` was running a
+  second copy of its loop inline — a duplicated invariant where the named
+  mechanism was the dead one.
+- **`no_open_guard` stays test-only, and its prose was corrected.** An audit
+  hook cannot be uninstalled, so arming it per build would leave a permanent
+  process-global tripwire in anything long-running. It is a verification tool;
+  it was only ever described as enforcement.
+- **`cohort_overlap` stays uncalled, and `mesh`'s prose was corrected.**
+  `_temporal_cohort` groups by equal mask, which is a dict lookup rather than a
+  comparison per pair. The docstring claimed a bitwise AND it never did.
+
+`tests/test_cp7.py::t_no_mechanism_lives_only_in_tests` now asserts this, by
+parsing for call sites rather than grepping — the first version matched text
+and passed `no_open_guard` on the strength of the docstring naming it. A gate
+looking for mechanisms that exist only in prose must not be satisfiable by
+prose. A mechanism leaves that list by having its claim corrected, not by being
+quietly dropped.
+
+Three real bugs came out of the same round, none of which any behavioural check
+could see, because each one produced a plausible answer:
+
+- **The MCP server was not read-only.** `Mesh.neighbours` and `Mesh.path`
+  constructed a `Store` without checking the file existed, and `Store` creates
+  and migrates. With no `--mesh-db` the path became the string `"None"`, so an
+  unattended agent asking for neighbours got `count: 0` and left a migrated
+  database called `None` in whatever directory the server started in.
+- **`_temporal_cohort` compared masks across anchors.** Bit *i* means "anchor
+  minus *i* days", and the loop reads across models built by separate commands
+  on whatever days they ran. It now keys on `(anchor, mask)`.
+- **`m2_build` held a hand-written copy of the image extensions**, in the module
+  whose own docstring warns against exactly that, beside a `scan.py` that reads
+  the rule file correctly. The sets were identical, so nothing was wrong — the
+  failure it invited is one-sided and silent: add an extension to
+  `categories.toml` alone and the classifier labels the file `image` while M2
+  drops it into `skipped_non_image`, a counter whose comment makes the loss
+  read as intended. A third copy turned up in `m3_markdown`, shorter by five
+  extensions, so `![[cover.heic]]` was filed as a link and `![[cover.png]]` as
+  an embed. Both now read `categories.toml`.
+
+**The lesson to carry:** a claim is not verified by a test that exercises it.
+It is verified by something that runs when the product runs. Ask of every
+documented mechanism: *what calls this outside the tests?*
 
 ---
 

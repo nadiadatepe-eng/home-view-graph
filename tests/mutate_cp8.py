@@ -160,9 +160,8 @@ MUTATIONS = [
 
     ("datelist masks retain their old anchor",
      "homegraph/update.py",
-     '    for row in store.db.execute(\n'
-     '            "SELECT id FROM nodes WHERE datelist_anchor IS NOT NULL"):',
-     "    for row in []:  # mutated: masks anchored at A are compared at B",
+     "    refresh_all_datelists(store, as_of, only_anchored=True, commit=False)",
+     "    pass  # mutated: masks anchored at A are compared at B",
      "updated nodes equal a full rebuild's"),
 
     ("a changed file keeps the sections it no longer has",

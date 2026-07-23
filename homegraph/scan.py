@@ -27,8 +27,12 @@ Two name-based judgements survive, and both are stated rather than hidden:
   * Directories named in `[cache].dirs` and `[dependencies].dirs` are pruned.
     Those lists come from the same `exclusions.toml` the classifier reads, so
     this is not a second copy of a rule; it is the same rule, read early. Only
-    the parts that need no `{root}` substitution are used, because the
-    substitution depends on the config this scan is producing.
+    the parts that need no `{root}` substitution can be used here, because the
+    substitution depends on the config this scan is producing -- and today
+    neither list contains a `{root}`, so nothing is actually being left out.
+    The sentence states a constraint on what this may read, not a filter it
+    performs; if a `{root}` ever appears in either list, this breaks and the
+    constraint is what says why.
   * Hidden top-level directories are skipped. `~/.icons` holding 240 SVG files
     is not a photo library, and `[app_state]` already encodes the judgement
     that dotted directories at the top level are machine state. On the fixture
@@ -97,6 +101,12 @@ class DirStats:
         if counted < MIN_FILES:
             return None
         category, n = self.by_category.most_common(1)[0]
+        # `max(self.files, counted)` reads as a guard and is inert: every
+        # increment of `by_category` happens in the same loop iteration that
+        # increments `self.files`, so `counted <= self.files` always. Left in
+        # place, named here, because the denominator that carries the claim is
+        # `self.files` alone -- a reader should not have to work out that the
+        # max never fires before trusting which number is being divided by.
         if n / max(self.files, counted) <= MIN_SHARE:
             return None
         return ROLE_OF_CATEGORY.get(category)

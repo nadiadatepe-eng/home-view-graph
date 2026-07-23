@@ -6,10 +6,23 @@ That choice propagates: M5 cannot merge two identical images in two folders, so
 they stay two nodes joined by LIKELY_COPY. Written down here and in the mesh
 model, because a year from now it will look like a deduplication bug.
 
-`no_open_guard()` is the enforcement. Python's audit hook sees every `open()`
-the interpreter performs, including ones inside libraries, so an import that
-starts reading images fails the build rather than silently weakening the
-guarantee. CP-4 runs strace over the same build as an independent check.
+`no_open_guard()` is a VERIFICATION tool, not the enforcement. It used to be
+described as the enforcement, and it never was: it is installed by CP-4 and by
+nothing in this package, so what keeps a real `homegraph` run from opening an
+image is that no line here opens one. An external review named it, correctly,
+as a mechanism that owned nothing -- the same shape as an exclusion layer whose
+files another layer already caught.
+
+It is not armed in `build()` on purpose. A Python audit hook cannot be removed
+once installed, so arming it per build would leave a permanent process-global
+tripwire behind in anything long-running -- the MCP server most of all -- where
+it would eventually raise on an `open()` that has nothing to do with M2. A
+verification tool belongs in the process that verifies.
+
+What CP-4 does with it is real: it runs the actual builder under the hook AND
+under strace, and mutation-tests both by making the build open an image. The
+guarantee rests on those two independent observations of the real code path,
+not on a guard that ships armed.
 
 **This module reads where the image corpus is; it does not decide it.** The
 directories come from `~/.homegraph/config.toml`, the same list that
@@ -25,8 +38,10 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import functools
 import os
 import sys
+import tomllib
 
 from .. import userconfig
 from ..temporal import record_observation, refresh_datelist
@@ -86,7 +101,13 @@ def no_open_guard(roots=None):
     try:
         yield opened
     finally:
-        pass  # audit hooks cannot be removed; the closure just stops mattering
+        # Audit hooks cannot be removed. The comment here used to say "the
+        # closure just stops mattering", and it does not: the hook stays
+        # installed for the life of the process and keeps raising ImageOpened
+        # for ANY open under `watched`, long after this block exits. In a test
+        # process that is the intent. It is also precisely why this is not
+        # armed by `build()` -- see the module docstring.
+        pass
 
 
 class ImageBuildReport:
@@ -112,8 +133,31 @@ class ImageBuildReport:
         }
 
 
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif",
-             ".tiff", ".heic", ".heif", ".svg", ".ico", ".avif"}
+@functools.lru_cache(maxsize=1)
+def image_extensions(rules_dir=None):
+    """`{'.png', '.jpg', ...}` read out of categories.toml, with the dot.
+
+    This used to be a hand-written set beside `build()`, which made this file
+    hold a second opinion about what an image is -- in the module whose own
+    docstring warns against exactly that, and beside a `scan.py` that already
+    did it correctly by reading the rule file.
+
+    The two sets happened to be identical, so nothing was wrong today. The
+    failure it invited is silent and one-sided: add an extension to
+    categories.toml alone and `classify()` labels the file `image`,
+    `corpus_paths(label="image")` hands it to M2, and M2 drops it into
+    `skipped_non_image` -- a counter whose comment documents the `.docx` case,
+    so the loss reads as intended behaviour in the report.
+
+    Naming versus enforcing still holds: the BOUNDARY (which directories hold
+    images) stays in `[image_boundary]` and is not re-tested here. What this
+    reads is the category, which is the one thing this module has to agree
+    with the classifier about in order to be handed the right files at all.
+    """
+    from ..corpus import RULES_DIR
+    path = os.path.join(rules_dir or RULES_DIR, "categories.toml")
+    with open(path, "rb") as fh:
+        return frozenset("." + e for e in tomllib.load(fh)["image"]["extensions"])
 
 
 def collection_of(path, roots):
@@ -141,7 +185,7 @@ def build(store, paths, as_of, parser=None, report=None, roots=None):
     infos = []
 
     for path in paths:
-        if os.path.splitext(path)[1].lower() not in IMAGE_EXT:
+        if os.path.splitext(path)[1].lower() not in image_extensions():
             # A `.docx` can live inside the image directory and is still a
             # document. Being under the image root is necessary, never
             # sufficient.

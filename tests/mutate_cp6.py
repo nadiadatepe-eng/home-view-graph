@@ -113,6 +113,34 @@ MUTATIONS = [
      '            pass  # mutated: the gap is not recorded',
      "a missing model is declared in the page"),
 
+    # -- read-only means read-only ---------------------------------------
+    #
+    # The original defect: `Store(self.mesh_db)` in a query path. sqlite3
+    # creates the file and the migration fills it in, so a read against a mesh
+    # that did not exist answered `count: 0` and left a database behind. An MCP
+    # server runs unattended, which is the wrong place to be roughly right.
+    ("a graph query creates the store it cannot find",
+     "homegraph/mesh.py",
+     "    def neighbours(self, node_key, depth=1):\n"
+     "        mesh = self._read_mesh()",
+     "    def neighbours(self, node_key, depth=1):\n"
+     "        mesh = Store(self.mesh_db)  # mutated: creates on read",
+     "a query against a mesh that does not exist refuses"),
+
+    ("the missing-mesh check accepts a path that is not there",
+     "homegraph/mesh.py",
+     "        if not os.path.exists(self.mesh_db):",
+     "        if False:  # mutated: absent is as good as present",
+     "and it creates no database while refusing"),
+
+    ("mesh_path keeps its own way of opening the store",
+     "homegraph/mesh.py",
+     '        """Shortest path between two mesh nodes. Breadth-first, cycle-safe."""\n'
+     "        mesh = self._read_mesh()",
+     '        """Shortest path between two mesh nodes. Breadth-first, cycle-safe."""\n'
+     "        mesh = Store(self.mesh_db)  # mutated: second way in",
+     "mesh_path refuses on a missing mesh too"),
+
     # -- the federation ---------------------------------------------------
     # The difference between "this model is not here" and "this model found
     # nothing" is the whole reason `partial` exists. Collapsing them is the

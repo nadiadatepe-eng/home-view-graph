@@ -1,29 +1,40 @@
 #!/usr/bin/env python3
-"""Command line for the corpus layer.
+"""Command line for the whole package.
 
     homegraph init [--root DIR]          look at a directory, propose roles
     homegraph explain <path>...          which rule decided, and why
     homegraph census [--root DIR]        counts per category and subtype
+    homegraph config                     show the config in force
+    homegraph build | update | embed     build a model, or move it forward
+    homegraph md build|backlinks|broken  the markdown model
+    homegraph mesh search|explain|...    the federation across models
+    homegraph status | search            read a store that already exists
+    homegraph visualize | mcp            a page, or an MCP server over stdio
 
-`init` comes first because everything else depends on it. It scans whatever
-directory you point it at, proposes which folders hold images, documents,
-notes, code and cache, and writes `~/.homegraph/config.toml`. No structure is
-imposed: the proposal is evidence about your disk, and you can overwrite every
-line of it.
+`init` comes first because everything that reads your disk depends on it. It
+scans whatever directory you point it at, proposes which folders hold images,
+and writes `~/.homegraph/config.toml`. No structure is imposed: the proposal is
+evidence about your disk, and you can overwrite it.
 
-Until that file exists the other commands **refuse with exit 2** and say so.
-That is the same idiom `build`/`update`/`embed` already use, and it is a
-deliberate choice: guessing a directory name would produce an empty image model
-that reports success, which is the worst of the available failures.
+Until that file exists, every command that has to know your layout **refuses
+with exit 2** and says so. Guessing a directory name would produce an empty
+image model that reports success, which is the worst of the available failures.
+The commands that only read a store already built -- `status`, `search`,
+`visualize`, `mesh`, `mcp` -- take a database path and never consult the
+config, so they neither need it nor refuse without it.
 
 `explain` exists because a classifier nobody can interrogate is a classifier
 nobody can argue with. When a file lands somewhere surprising, this prints the
 layer and the specific rule that put it there, so the next move is editing a
 rule rather than reading source.
 
-No command here opens a classified file. `census` and `init` walk the tree for
-names and `stat()`, nothing more -- CP-4 verifies that over `init` with an
-audit hook and with strace, the same two ways it verifies the image build.
+**The corpus-layer commands do not open a classified file.** `census`, `init`
+and `explain` walk the tree for names and `stat()`, nothing more -- CP-4
+verifies that over `init` with an audit hook and with strace, the same two ways
+it verifies the image build. That is a claim about those three. `md build` and
+`update` do read the files they index, because extracting text is what they are
+for; this docstring described a three-command CLI and kept saying "no command
+here" long after the other twelve arrived.
 """
 from __future__ import annotations
 

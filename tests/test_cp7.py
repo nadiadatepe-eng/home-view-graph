@@ -31,6 +31,8 @@ Run:
 """
 from __future__ import annotations
 
+import ast
+import collections
 import os
 import shutil
 import subprocess
@@ -417,6 +419,86 @@ def t_scan_never_becomes_a_classifier():
           "%d offending import(s) %s" % (len(offenders), offenders[:2]))
 
 
+def t_no_mechanism_lives_only_in_tests():
+    """Every documented mechanism must have a caller outside tests/.
+
+    An external review found four of these at once: `no_open_guard`, described
+    as "the enforcement" for the never-open-an-image rule; `apply_retention`,
+    cited in three places as the reason the observations table has a ceiling;
+    `refresh_all_datelists`, named as why cohort masks share an anchor; and
+    `cohort_overlap`, named as the comparison the bitmask exists for. All four
+    were reachable only from tests. The prose described a running system; the
+    package shipped a library of unarmed mechanisms.
+
+    That is worse than dead code, because dead code does not make a promise. A
+    reader checking "is the observations table bounded?" finds a function, a
+    docstring and a checkpoint that exercises it, and stops looking.
+
+    Structural, like `t_scan_never_becomes_a_classifier` above and for the same
+    reason: no behavioural check can see this. Every gate passes -- the tests
+    call the function, so it works -- and the product never runs it.
+
+    The list is explicit rather than derived from every public name. A derived
+    version would have to encode which helpers are legitimately internal, and
+    that judgement belongs in a list a reader can argue with.
+
+    Two of the original four are deliberately NOT here, and the distinction is
+    the whole point of the gate rather than an exception to it:
+
+    * `no_open_guard` is a verification tool. An audit hook cannot be removed
+      once installed, so arming it per build would leave a process-global
+      tripwire in anything long-running. Its prose now says verification
+      instead of enforcement, which makes it honest rather than armed.
+    * `cohort_overlap` is a public helper for querying a store. Nothing in the
+      package uses it because `_temporal_cohort` groups by equal mask, which
+      is a dict lookup rather than a comparison per pair -- the mesh docstring
+      used to claim otherwise and has been corrected.
+
+    So a mechanism leaves this list by having its prose corrected, not by being
+    quietly dropped. `refresh_all_datelists` stays: the anchor discipline it
+    names is real, `_temporal_cohort` now enforces it by keying on the anchor,
+    and if that ever becomes the only enforcement this should fail again.
+    """
+    must_be_called = {
+        "apply_retention": "temporal.py: 'full daily observations for 90 days'",
+        "refresh_all_datelists": "mesh.py: 'every node's mask must share one "
+                                 "anchor'",
+    }
+    pkg = os.path.join(REPO, "homegraph")
+    sources = {}
+    for dirpath, _, files in os.walk(pkg):
+        for f in files:
+            if f.endswith(".py"):
+                p = os.path.join(dirpath, f)
+                sources[os.path.relpath(p, pkg)] = open(
+                    p, encoding="utf-8").read()
+
+    # Parsed, not grepped. The first version matched text and passed
+    # `no_open_guard` on the strength of the module docstring that names it:
+    # "`no_open_guard()` is the enforcement". A gate looking for a mechanism
+    # that exists only in prose cannot itself be satisfied by prose.
+    called = collections.defaultdict(list)
+    for rel, src in sources.items():
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = (fn.id if isinstance(fn, ast.Name)
+                    else fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name:
+                called[name].append("%s:%d" % (rel, node.lineno))
+
+    unarmed = ["%s -- %s" % (name, claim)
+               for name, claim in sorted(must_be_called.items())
+               if not called.get(name)]
+
+    check("no documented mechanism is reachable only from tests",
+          not unarmed,
+          "%d unarmed: %s" % (len(unarmed), unarmed[:2]) if unarmed
+          else "%d mechanism(s) have a caller in the package"
+               % len(must_be_called))
+
+
 # -- 3. the config is load-bearing -----------------------------------------
 
 def t_empty_image_role(tmp, root):
@@ -763,6 +845,7 @@ def main():
         t_pruned_ratio_does_not_decide_the_role(tmp)
         t_retired_roles_are_named_not_ignored(tmp)
         t_scan_never_becomes_a_classifier()
+        t_no_mechanism_lives_only_in_tests()
         t_empty_image_role(tmp, syn.ROOT)
         t_image_role_points_at_an_empty_directory(tmp, syn.ROOT)
         t_generated_dirs_come_from_the_config()
