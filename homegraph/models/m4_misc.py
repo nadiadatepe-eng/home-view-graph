@@ -67,6 +67,19 @@ MAX_ARCHIVE_ENTRIES = 200
 # generous -- but a multi-gigabyte archive on a spinning disk is still a stall,
 # and a build that stalls gets killed and reports nothing.
 ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
+# Zip containers whose contents are somebody else's build output, not the
+# user's filing. A Thunderbird language pack is a zip by magic number and by
+# every technical measure, and listing it is correct and useless: on the real
+# corpus 12 of 78 ARCHIVE_CONTAINS edges came from `.xpi`, naming `chrome/`
+# and `manifest.json` in extensions nobody filed there by hand.
+#
+# **A policy list, not a fourth copy of an extension list.** Nothing else in
+# the package decides anything by these names, so there is no second opinion
+# to drift from -- which is the distinction that matters in a package that has
+# already had to delete three duplicated extension lists. The exclusion is
+# counted rather than silent: an archive that was skipped on purpose and one
+# that could not be opened are different facts.
+UNLISTED_ARCHIVES = frozenset({".xpi"})
 
 # Magic numbers, checked in order. Deliberately small: this is a triage step,
 # not a format library. Anything unrecognised is `unknown`, which is an honest
@@ -222,6 +235,7 @@ class MiscBuildReport:
         self.archives = 0
         self.archive_entries = 0
         self.unlistable_archives = []
+        self.unlisted_by_policy = []
         self.edges = collections.Counter()
 
     def summary(self):
@@ -238,6 +252,7 @@ class MiscBuildReport:
             "archives": self.archives,
             "archive_entries": self.archive_entries,
             "unlistable_archives": len(self.unlistable_archives),
+            "unlisted_by_policy": len(self.unlisted_by_policy),
             "edges": dict(self.edges),
         }
 
@@ -359,6 +374,9 @@ def _archive_contains(store, path, as_of, report):
     node, so there is no endpoint to attach to -- the same reason SAME_FORMAT
     skips them, and visible in the report as archives < zip files.
     """
+    if os.path.splitext(path)[1].lower() in UNLISTED_ARCHIVES:
+        report.unlisted_by_policy.append(path)
+        return
     try:
         size = os.path.getsize(path)
     except OSError:

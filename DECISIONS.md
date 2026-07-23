@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (250 of
-422)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (253 of
+427)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:
@@ -991,6 +991,18 @@ are different answers all the way to the report, because a build where every
 archive is corrupt otherwise looks identical to one where every archive is
 empty.
 
+**And one archive is declined on purpose.** `UNLISTED_ARCHIVES` holds `.xpi`:
+a browser extension is a zip by magic number and by every technical measure,
+and listing it is correct and useless -- 12 of the first 78 real
+ARCHIVE_CONTAINS edges named `chrome/` and `manifest.json` inside language
+packs nobody filed there. That is a **policy** list and not a fourth copy of
+an extension list: nothing else in the package decides anything by these
+names, so there is no second opinion to drift from. Declining is reported
+(`unlisted_by_policy`), because an archive skipped by decision and one that
+could not be opened are different facts, and the gate keeps them apart by
+first proving the declined file *could* have been listed -- otherwise an
+implementation that simply failed to open it would pass.
+
 **`CITES_CODE` — prose that names a source file.** The plan deferred this one
 with a reason: `code` is a corpus category with no store behind it, since the
 code model is `code-review-graph`, a separate tool with its own database. That
@@ -1028,6 +1040,15 @@ nothing — the gate was green and untestable at once. And the extension filter
 had no decoy to reject, so removing it outright left the mention gate green.
 Both were only visible because the needles were written at the same time as
 the gates.
+
+**The picture draws it too.** `visualize --mesh-db` adds the code stubs as a
+fifth layer and the cross-model edges with them. Without it the page is four
+separate graphs on one canvas whose search box cannot find a source file --
+which shipped, and was found by a user searching the page for a file the CLI
+had just returned. **A drawing that omits what the system reports is the
+drawing disagreeing with the system it illustrates.** Only edges with both
+endpoints on the page are drawn; a capped page legitimately shows fewer nodes
+than the mesh knows, and half an edge is not a relation.
 
 **Code is searchable by name, and only by name.** A `CITES_CODE` edge could
 name a file that no search would then find: the stubs sit in `mesh.db`'s FTS

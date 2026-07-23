@@ -131,7 +131,7 @@ layout would still be imposed.
 | M1 documents | `CONTAINS` · `AUTHORED_BY` · `CITES` · `SAME_AUTHOR` · `REFERENCES_FILE` |
 | M2 images | `IN_COLLECTION` · `NAMED_DATE` · `SAME_RESOLUTION` · `SERIES_MEMBER` · `LIKELY_COPY` |
 | M3 markdown | `CONTAINS` · `WIKILINKS_TO` · `LINKS_TO` · `EMBEDS` · `TAGGED` · `MENTIONS_PATH` |
-| M4 misc | `BELONGS_TO_APP` · `SAME_FORMAT` · `ARCHIVE_CONTAINS` |
+| M4 misc | `BELONGS_TO_APP` · `SAME_FORMAT` · `ARCHIVE_CONTAINS` (zip only; `.xpi` declined by policy) |
 | M5 mesh | `FIGURE_FOR` · `MENTIONS_FILE` · `TEMPORAL_COHORT` · `CITES_CODE` |
 
 `mesh search` answers from the four models **and** from the code inventory,
@@ -266,6 +266,13 @@ Pan by dragging, zoom by scrolling, hover for the node key, filter by model,
 search to highlight. If a model's store is missing the page says so in the
 panel rather than quietly drawing a smaller graph.
 
+**Pass `--mesh-db` or the page is four separate graphs on one canvas.** The
+code inventory lives in no model, so without it the drawing has never heard of
+a source file and its search box cannot find one -- while the CLI finds it.
+With it, code appears as a fifth layer and the cross-model edges are drawn.
+Only edges with both endpoints on the page: a mesh knows more nodes than a
+capped drawing shows, and half an edge is not a relation.
+
 ## Tests
 
 ```sh
@@ -284,7 +291,7 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twelve checkpoints plus a privacy check. 306 mutations, 0 survived, 0 detected
+**Twelve checkpoints plus a privacy check. 310 mutations, 0 survived, 0 detected
 only by a crash**, measured 2026-07-23 on the final tree, after the three
 missing edge types, the audit that followed them, and making code searchable
 by name. The split of *how* they died is the
@@ -301,14 +308,14 @@ than trusting the numbers here.
 | CP-2 markdown | 22 | 22 |
 | CP-3 documents | 26 | 26 |
 | CP-4 images | 17 | 17 |
-| CP-5 misc | 20 | 20 |
-| CP-6 mesh | 38 | 37 |
+| CP-5 misc | 22 | 22 |
+| CP-6 mesh | 40 | 39 |
 | CP-7 config | 33 | 33 |
 | CP-8 update | 32 | 32 |
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| **total** | **306** | **305** |
+| **total** | **310** | **309** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -475,7 +482,7 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 306 mutations name 250 of 422
+- **Mutation coverage is a minority of checks.** 310 mutations name 253 of 427
   checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**

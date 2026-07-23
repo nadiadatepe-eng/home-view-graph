@@ -739,6 +739,52 @@ def t_visualise(tmp, paths, spec):
           % (report["nodes"], spec["min_graph_nodes"], report["edges"],
              report["bytes"] / 1024, elapsed, report.get("raised", "")))
 
+    # The picture and the CLI must answer the same question the same way. A
+    # code file the federation can find and the drawing has never heard of is
+    # the drawing disagreeing with the system it illustrates -- and that is
+    # what shipped: `visualize` reads the model stores, and code lives in
+    # none of them, so the page's search box could not find a source file.
+    meshdb = os.path.join(tmp, "mesh-code.db")
+    both = os.path.join(tmp, "graph-code.html")
+    if os.path.exists(meshdb):
+        with_code = render(paths, both, limit_per_model=2000, iterations=20,
+                           title="homegraph", mesh_db=meshdb)
+        page_code = open(both, encoding="utf-8").read()
+        check("the picture draws the code the federation can find",
+              with_code["nodes"] > report["nodes"]
+              and spec["code_findable"] in page_code
+              and "CITES_CODE" in page_code,
+              "%d nodes with the inventory vs %d without"
+              % (with_code["nodes"], report["nodes"]))
+        # And the negative half: without a mesh the page is the four models,
+        # so the difference above is the inventory and not a rendering quirk.
+        # A mesh knows more nodes than a capped page draws, so some edges have
+        # an endpoint that is not on the canvas. Forced here with a tiny cap:
+        # without it every endpoint happens to be present on this corpus, and
+        # the guard that drops those edges is code no test ever reaches.
+        from homegraph.visualize import collect
+        try:
+            few_n, few_e, _ = collect(paths, limit_per_model=5,
+                                      mesh_db=meshdb)
+            dangling = [e for e in few_e
+                        if e[0] >= len(few_n) or e[1] >= len(few_n)]
+            raised = None
+        except Exception as exc:                                # noqa: BLE001
+            few_n, few_e, dangling = [], [], []
+            raised = "raised:%s" % type(exc).__name__
+        check("an edge with an endpoint off the page is not drawn",
+              raised is None and few_n and not dangling,
+              "%d node(s), %d edge(s), %d dangling%s"
+              % (len(few_n), len(few_e), len(dangling), raised or ""))
+
+        model_only = open(out, encoding="utf-8").read()
+        check("without a federation the picture has no code in it",
+              spec["code_findable"] not in model_only,
+              "%s in the model-only page: %s"
+              % (spec["code_findable"],
+                 "yes -- the difference above is not the inventory"
+                 if spec["code_findable"] in model_only else "no"))
+
     page = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
     # Checked against the page STRUCTURE, not the whole file. The embedded data
     # legitimately contains URLs -- document titles and markdown bodies have

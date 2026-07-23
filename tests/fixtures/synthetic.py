@@ -378,6 +378,11 @@ ARCHIVE_UNLISTABLE = ("proj/corrupt.zip",)
 # Gzip: an archive by magic number, with no member list to read without
 # decompressing it. Zero entries, and not an error either.
 ARCHIVE_NOT_LISTED = ("proj/logs.gz",)
+# A VALID zip that must not be listed anyway: somebody else's build output.
+# It has real members, so an implementation that skipped it by accident --
+# because it could not open it, say -- would not satisfy the gate; the point
+# is that the contents are readable and deliberately not read.
+ARCHIVE_BY_POLICY = ("proj/langpack-nb.xpi",)
 
 # CP-6. Every CITES_CODE edge, with the method each must carry. `code` is a
 # corpus category with no store, so these point at inventory stubs.
@@ -436,7 +441,7 @@ LARGE_FILES = (".appstate/large/blob-a.bin",
 # eight declared `misc` cases, the forty cold application-state files, and the
 # three large blobs. A corpus that silently grows -- an exclusion layer switched
 # off -- otherwise reads as a bigger, greener build.
-MISC_TOTAL = 8 + 3 + 40 + 3   # declared misc, the three archives, cold, large
+MISC_TOTAL = 8 + 4 + 40 + 3   # declared misc, the four archives, cold, large
 
 # CP-6. Every (note, image) pair FIGURE_FOR must produce, and nothing else.
 # `03122025_9.png` is named in experiments.md and does not exist; a graph that
@@ -752,6 +757,12 @@ def build(root, clean=True):
     case("misc", "unknown", True, "proj/corrupt.zip",
          "the zip magic number with no central directory behind it: counted "
          "as unlistable, never a traceback")
+    _zip_bundle(root, "proj/langpack-nb.xpi",
+                ("manifest.json", "chrome/nb/locale.properties"))
+    case("misc", "unknown", True, "proj/langpack-nb.xpi",
+         "a browser extension: a perfectly listable zip whose contents are "
+         "somebody else's build output, so ARCHIVE_CONTAINS declines it by "
+         "policy and says it did")
     _write(root, "proj/logs.gz", b"\x1f\x8b\x08\x00" + b"\x00" * 16,
            binary=True)
     case("misc", "unknown", True, "proj/logs.gz",

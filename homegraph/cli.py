@@ -288,7 +288,8 @@ def cmd_visualize(args):
                      ((s.partition("=")[0], None, s.partition("=")[2])
                       for s in args.model)},
                     args.out, limit_per_model=args.limit,
-                    min_degree=args.min_degree, title=args.title)
+                    min_degree=args.min_degree, title=args.title,
+                    mesh_db=getattr(args, "mesh_db", None))
     for key, value in report.items():
         print("%-12s %s" % (key, value))
     print("\nOpen it in a browser:  file://%s" % os.path.abspath(args.out))
@@ -834,6 +835,10 @@ def main(argv=None):
     p = sub.add_parser("visualize", help="write a self-contained HTML graph")
     p.add_argument("--model", action="append", required=True,
                    metavar="NAME=PATH")
+    p.add_argument("--mesh-db", dest="mesh_db", default=None,
+                   help="also draw the code inventory and the cross-model "
+                        "edges; without it the page shows four separate "
+                        "graphs and its search cannot find a source file")
     p.add_argument("--out", default="graph.html")
     p.add_argument("--limit", type=int, default=2000,
                    help="max nodes per model")

@@ -127,7 +127,9 @@ def corpus():
             "unlistable": {os.path.join(syn.ROOT, r)
                            for r in syn.ARCHIVE_UNLISTABLE},
             "not_listed": {os.path.join(syn.ROOT, r)
-                           for r in syn.ARCHIVE_NOT_LISTED}}
+                           for r in syn.ARCHIVE_NOT_LISTED},
+            "by_policy": {os.path.join(syn.ROOT, r)
+                          for r in syn.ARCHIVE_BY_POLICY}}
 
 
 def t_build(tmp, by_label, spec):
@@ -395,15 +397,31 @@ def t_archives(tmp, db, report, spec):
           % (len(edges), len(declared),
              {os.path.basename(k): sorted(v) for k, v in edges.items()}))
 
-    # The two silences, told apart. One archive cannot be opened and must be
+    # The three silences, told apart. One archive cannot be opened and must be
     # counted; one is an archive with no member list to read, and must be
-    # neither counted nor an error.
+    # neither counted nor an error; one is a perfectly readable zip declined
+    # by policy, which is a decision and has to be reported as one.
     unlistable = {p for p, _ in report.unlistable_archives}
     check("an unlistable archive is counted, a gzip is not an error",
           unlistable == spec["unlistable"]
           and not (spec["not_listed"] & unlistable)
           and not (spec["not_listed"] & set(edges)),
           "unlistable=%s" % sorted(os.path.basename(p) for p in unlistable))
+
+    by_policy = spec["by_policy"]
+    # The positive control first: the file really is a listable zip. Without
+    # it, an implementation that failed to OPEN the .xpi would pass this gate
+    # while doing something entirely different from declining it.
+    listable = {p: archive_entries(p) for p in by_policy}
+    check("the archive declined by policy is one that could be listed",
+          all(v for v in listable.values()) and listable,
+          "%s" % {os.path.basename(k): v for k, v in listable.items()})
+    check("a declined archive draws no edges and is reported as declined",
+          set(report.unlisted_by_policy) == by_policy
+          and not (by_policy & set(edges)),
+          "declined=%s, %d edge(s) from them"
+          % (sorted(os.path.basename(p) for p in report.unlisted_by_policy),
+             len(by_policy & set(edges))))
 
     with Store(db) as s:
         stray = s.db.execute(

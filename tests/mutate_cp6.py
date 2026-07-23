@@ -17,6 +17,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    ("the picture leaves out the code the federation can find",
+     "homegraph/visualize.py",
+     "    if mesh_db:\n"
+     "        _collect_mesh(mesh_db, nodes, index, edges, limit_per_model, missing)",
+     "    pass  # mutated: the drawing disagrees with the CLI",
+     "the picture draws the code the federation can find"),
+
+    ("a cross-model edge is drawn with one endpoint missing",
+     "homegraph/visualize.py",
+     "            if r[\"a\"] in index and r[\"b\"] in index:",
+     "            if r[\"a\"] in index or r[\"b\"] in index:"
+     "  # mutated: half an edge",
+     "an edge with an endpoint off the page is not drawn"),
+
     ("a search with no federation omits code in silence",
      "homegraph/mesh.py",
      "        if not self.mesh_db:\n"

@@ -18,6 +18,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    ("an extension's build output is listed like the user's own filing",
+     "homegraph/models/m4_misc.py",
+     "    if os.path.splitext(path)[1].lower() in UNLISTED_ARCHIVES:\n"
+     "        report.unlisted_by_policy.append(path)\n"
+     "        return",
+     "    pass  # mutated: .xpi contents come back into the graph",
+     "a declined archive draws no edges and is reported as declined"),
+
+    ("declining an archive is silent",
+     "homegraph/models/m4_misc.py",
+     "        report.unlisted_by_policy.append(path)",
+     "        pass  # mutated: skipped on purpose looks like never seen",
+     "a declined archive draws no edges and is reported as declined"),
+
     # -- ARCHIVE_CONTAINS -------------------------------------------------
     ("an archive lists every member, not one level",
      "homegraph/models/m4_misc.py",

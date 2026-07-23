@@ -168,8 +168,16 @@ def _layout(nodes, edges, iterations=180, seed=20260722, width=1600.0):
     return [(round(x, 1), round(y, 1)) for x, y in pos]
 
 
-def collect(model_paths, limit_per_model=2000, min_degree=0):
-    """Read nodes and edges out of the stores. Never mutates them."""
+def collect(model_paths, limit_per_model=2000, min_degree=0, mesh_db=None):
+    """Read nodes and edges out of the stores. Never mutates them.
+
+    `mesh_db` adds what lives in no model: the code stubs, and the cross-model
+    edges. Without it the picture is four separate graphs drawn on one canvas
+    -- which is what it was, and the search box could not find a source file
+    because the page had never been told one existed. A CITES_CODE edge that
+    the CLI reports and the drawing omits is the drawing disagreeing with the
+    system it illustrates.
+    """
     nodes, index, edges, missing = [], {}, [], []
     for model, path in sorted(model_paths.items()):
         if not path or not os.path.exists(path):
@@ -202,6 +210,9 @@ def collect(model_paths, limit_per_model=2000, min_degree=0):
                     edges.append((index["%s::%s" % (model, r["a"])],
                                   index["%s::%s" % (model, r["b"])],
                                   r["r"], r["m"], r["c"]))
+    if mesh_db:
+        _collect_mesh(mesh_db, nodes, index, edges, limit_per_model, missing)
+
     if min_degree:
         degree = [0] * len(nodes)
         for a, b, *_ in edges:
@@ -215,9 +226,49 @@ def collect(model_paths, limit_per_model=2000, min_degree=0):
     return nodes, edges, missing
 
 
+def _collect_mesh(mesh_db, nodes, index, edges, limit_per_model, missing):
+    """Code stubs as a fifth layer, plus every cross-model edge that lands.
+
+    The keys need no translation: the mesh already stores `m3::/path` for a
+    mirrored node and `code::/path` for a stub, which is exactly the key the
+    page uses. That is why an edge can simply be looked up here rather than
+    rebuilt -- and rebuilding it is how the two would come to disagree.
+
+    Only edges whose BOTH endpoints are already on the page are drawn. A
+    mesh built over five models and a picture drawn from three is a normal
+    state, and half an edge is not a relation.
+    """
+    if not os.path.exists(mesh_db):
+        missing.append("code")
+        return
+    with Store(mesh_db) as s:
+        for r in s.db.execute(
+                "SELECT node_key, title, kind, subtype FROM nodes "
+                "WHERE kind = 'code' ORDER BY node_key LIMIT ?",
+                (limit_per_model,)):
+            key = r["node_key"]
+            index[key] = len(nodes)
+            nodes.append({
+                "key": key, "model": "code",
+                "title": (r["title"] or key)[:80],
+                "kind": r["kind"] or "", "subtype": r["subtype"] or "",
+                # A code stub carries a real path, so the page may link to it.
+                # The prefix is the model, not part of the path.
+                "link": bool(key.startswith("code::/")),
+            })
+        for r in s.db.execute(
+                "SELECT s.node_key a, d.node_key b, e.rel r, "
+                "e.method m, e.confidence c FROM edges e "
+                "JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst"):
+            if r["a"] in index and r["b"] in index:
+                edges.append((index[r["a"]], index[r["b"]],
+                              r["r"], r["m"], r["c"]))
+
+
 def render(model_paths, out_path, limit_per_model=2000, min_degree=0,
-           iterations=180, title="homegraph"):
-    nodes, edges, missing = collect(model_paths, limit_per_model, min_degree)
+           iterations=180, title="homegraph", mesh_db=None):
+    nodes, edges, missing = collect(model_paths, limit_per_model, min_degree,
+                                    mesh_db=mesh_db)
     positions = _layout(nodes, [(a, b) for a, b, *_ in edges],
                         iterations=iterations)
     # The same warning `md backlinks`, `mesh neighbors`, the MCP server and
