@@ -20,10 +20,13 @@ Keys come in three shapes, and only the first two carry anything:
     <prefix>:<name>             no path at all: author, ref, wikilink, app,
                                 format, rollup
 
-**A path outside the root is refused, never emitted.** The tempting fallback is
-`../../elsewhere/file.md`, which imports into a directory the user did not
-choose and did not name -- an artifact that writes outside its own root is a
-different problem from a graph that is missing a node.
+**A path outside the root is refused, in BOTH directions.** The tempting
+fallback is `../../elsewhere/file.md`, which imports into a directory the user
+did not choose and did not name. Refusing on export is not enough: an artifact
+is a file that arrives from somewhere else, and its `..` segments are as
+untrusted as everything else in it. This module refused on the way out and
+happily resolved on the way in for one day, until an audit escaped the root
+with a hand-recomputed digest.
 """
 from __future__ import annotations
 
@@ -71,11 +74,27 @@ def path_to_portable(path: str, root: str) -> str:
 
 
 def path_to_local(portable: str, root: str) -> str:
+    """The inverse of `path_to_portable`, and it CONTAINS.
+
+    The module docstring promised that a path outside the root is refused --
+    and the promise was kept on the export side only. `os.path.normpath`
+    COLLAPSES `..` rather than rejecting it, so `~/../../etc/passwd` landed
+    two levels above the directory the reader named, and the import reported
+    success. An adversarial audit walked straight through it with a
+    hand-recomputed digest, which a checksum cannot stop: **the digest proves
+    the artifact is intact, never that it is benign.**
+
+    Containment is therefore checked HERE, after the join, against the same
+    boundary rule `_under` uses -- one definition of "inside the root", read
+    in both directions.
+    """
     if portable == MARKER:
         return os.path.normpath(root)
     if not portable.startswith(MARKER + "/"):
         raise OutsideRoot("%r does not start with the root marker" % portable)
-    return os.path.normpath(os.path.join(root, portable[len(MARKER) + 1:]))
+    local = os.path.normpath(os.path.join(root, portable[len(MARKER) + 1:]))
+    _under(local, root)          # raises OutsideRoot if it escaped
+    return local
 
 
 def _split_wrapper(key: str):

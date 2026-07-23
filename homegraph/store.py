@@ -332,11 +332,17 @@ class Store:
         against a different anchor is a confident wrong answer -- the defect
         `_temporal_cohort` was fixed for.
         """
+        # Unconditional, not COALESCE. With COALESCE a column the artifact
+        # does not carry KEPT THE LOCAL VALUE while `first_seen` was
+        # overwritten -- so a node could end up with a mask from one machine
+        # and an anchor from another, which is the confident wrong answer this
+        # method's own docstring warns about. A node's history comes from the
+        # artifact wholesale or not at all.
         self.db.execute(
             """UPDATE nodes SET first_seen=?, last_seen=?,
-                                activity_datelist=COALESCE(?, activity_datelist),
-                                datelist_int=COALESCE(?, datelist_int),
-                                datelist_anchor=COALESCE(?, datelist_anchor)
+                                activity_datelist=COALESCE(?, '[]'),
+                                datelist_int=COALESCE(?, 0),
+                                datelist_anchor=?
                WHERE node_key=?""",
             (first_seen, last_seen, activity_datelist, datelist_int,
              datelist_anchor, node_key))

@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (269 of
-457)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (279 of
+470)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:
@@ -1251,6 +1251,91 @@ Two numbers worth keeping because neither was predicted:
     describes, confirmed on real data rather than argued from a fixture --
     and `shape` is the only level where it disappears (0 occurrences of
     `/home`, `.md`, `.py` or the user's name).
+
+### The adversarial audit of the artifact, and the ten defects it found
+
+Lens: *"an artifact is a promise made to a future machine -- where does the
+import trust something the export never proved?"* Ten findings, every one
+reproduced with running code before it was touched. The answer to the lens was
+**five things**: root containment, field presence, that the manifest describes
+the body, that the digest line is the last line, and that the destination is
+empty.
+
+**1. `..` escaped the root the reader named.** `portable.py` promised in its
+own docstring that a path outside the root is refused -- and enforced it on
+the EXPORT side only. `os.path.normpath` collapses `..` rather than rejecting
+it, so `~/../../etc/passwd` imported two levels above the named directory and
+reported success. The audit walked through it with a hand-recomputed digest,
+which is the lesson: **a digest proves the artifact is intact, never that it
+is benign.** Containment is checked in both directions now, against one
+boundary rule.
+
+**2. `--force` said replace and delivered union**, and `COALESCE` in
+`restore_node_history` kept LOCAL values for columns the artifact omitted
+while overwriting `first_seen` unconditionally -- so a node could end up with
+an activity mask from one machine and an anchor from another, the exact
+confident-wrong-answer that method's docstring warns about. History is
+restored wholesale now, and `--force` moves the old store aside.
+
+**3. The manifest never described the body.** Counts were declared and read
+and never compared; a row could name a model the manifest did not list; and
+`inspect` verified nothing at all -- it printed a `shape` label beside a
+`full` description without objecting. All three are refusals now, and
+`inspect` runs `verify()`.
+
+**4. Missing columns reached the user as a traceback**, against a class whose
+docstring promises never to. Worse, `except KeyError` around `upsert_edge`
+caught the KeyError raised by its own ARGUMENTS and reported a missing
+endpoint -- sending the reader to look for a node when a column was absent.
+And the CLI cleaned up only on `ImportError_`, so a bare `KeyError` left a
+database behind that looked built and answered every query with nothing.
+
+**5. `shape` shipped `content_hash`, `size` and the activity mask.** The
+content hash is strictly stronger disclosure than the guessable-path weakness
+this section admitted: anyone holding a candidate file does not have to guess
+its path, they hash the file and look it up. `mtime` had been dropped for
+fingerprinting a machine while a per-node activity mask travelled untouched.
+All of it is dropped now. `first_seen` and `last_seen` remain, because an
+import needs them -- a residue, written down rather than implied away.
+
+**6. The answer key had no callers.** `tests/gold/portable_keys.py` was
+written before the converter, graded once by hand in a shell probe, and never
+imported by a test. A naive string-prefix boundary test passed all 30 CP-12
+checks while exporting a neighbour directory's files as if they were inside
+the root. **This is the project's own signature failure -- a mechanism that
+lives only in prose -- committed in the file that grades the mechanism.** It
+is a gate now.
+
+**7. The digest line was not a terminator.** `continue` rather than `break`,
+so rows after it were digested and imported while a consumer stopping at the
+digest saw a different graph. An artifact could carry content past its own
+declared end and still verify.
+
+**8. The import root was never validated** -- a directory that does not
+exist, a FILE, a relative path, and the empty string were all accepted
+silently. An import into a root that is not there produces a graph where every
+path names nothing, and the next `update` sees the whole corpus as deleted.
+
+**9. `redaction` drove nothing at import.** A `structure` store has empty
+bodies, so `rebuild_fts` indexes them, `fts_count == node_count`, and
+`fts_is_stale` says False -- a search answers with silence indistinguishable
+from "no match", which is the state that predicate's own docstring says must
+never be invisible. The level is written into `metadata` now, so the store can
+say why it has no text.
+
+**10. `root_in_user_data` counted `node_key`** -- a structural, already-ported
+field -- so the CLI told the user their own TEXT named the root when what
+named it was a key the conversion had handled. And CP-12's "independent
+recount" used a different field split from the code it graded: two definitions
+that agreed only because no fixture filename contained the root's basename.
+
+**And five of the gates written for these fixes survived their own
+mutations**, for the reasons this project keeps meeting: a corpus that could
+not exhibit the case (a smuggled row, a non-existent root, a store with local
+history to blend), and **a gate that imported `SHAPE_DROPS` from the module it
+was grading** -- shortening the constant shortened the gate with it. The
+declared list lives in the test now.
+
 
 ### What CP-12's mutation harness found, which is the part worth keeping
 

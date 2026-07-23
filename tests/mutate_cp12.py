@@ -21,6 +21,82 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- what the audit found, one needle each ----------------------------
+    ("`..` resolves instead of being refused on import",
+     "homegraph/portable.py",
+     "    local = os.path.normpath(os.path.join(root, portable[len(MARKER) + 1:]))\n"
+     "    _under(local, root)          # raises OutsideRoot if it escaped\n"
+     "    return local",
+     "    return os.path.normpath(os.path.join(root, portable[len(MARKER) + 1:]))"
+     "  # mutated: escapes the reader's root",
+     "`..` cannot escape the root on the way in"),
+
+    ("the boundary test becomes a string prefix",
+     "homegraph/portable.py",
+     "    prefix = root if root.endswith(os.sep) else root + os.sep\n"
+     "    if not norm.startswith(prefix):",
+     "    if not norm.startswith(root):  # mutated: /rootless is under /root",
+     "the adversarial rows behave as the key declares"),
+
+    ("the digest line stops terminating the artifact",
+     "homegraph/importer.py",
+     "                trailing = [ln for ln in fh if ln.strip()]\n"
+     "                if trailing:",
+     "                trailing = []\n"
+     "                if trailing:  # mutated: content past the end imports",
+     "nothing may follow the digest line"),
+
+    ("the manifest's counts are read and not compared",
+     "homegraph/importer.py",
+     "    if counts and (read[\"nodes\"], read[\"edges\"]) != (want[\"nodes\"],",
+     "    if False and (read[\"nodes\"], read[\"edges\"]) != (want[\"nodes\"],",
+     "a manifest that overstates its own contents is refused"),
+
+    ("a row may belong to a model the manifest never declared",
+     "homegraph/importer.py",
+     "            if model not in declared_models:",
+     "            if False:  # mutated: smuggled rows import silently",
+     "a row outside the declared models is refused"),
+
+    ("a missing column reaches the user as a traceback",
+     "homegraph/importer.py",
+     "    missing = [f for f in fields if row.get(f) is None]\n"
+     "    if missing:",
+     "    missing = []\n"
+     "    if missing:  # mutated: KeyError at the user",
+     "a missing column is named, not reported as a missing endpoint"),
+
+    ("shape ships the content hash after all",
+     "homegraph/export.py",
+     'SHAPE_DROPS = ("body", "mtime", "content_hash", "size",\n'
+     '               "activity_datelist", "datelist_int", "datelist_anchor")',
+     'SHAPE_DROPS = ("body", "mtime")  # mutated: fingerprints travel',
+     "shape carries no fingerprint of the files themselves"),
+
+    ("inspect prints the manifest without checking it",
+     "homegraph/importer.py",
+     "    if claimed != digest.hexdigest():\n"
+     '        return "digest mismatch"',
+     "    if False:  # mutated: inspect cannot say no\n"
+     '        return "digest mismatch"',
+     "inspect catches a digest that does not match"),
+
+    ("history is restored field by field, keeping local values",
+     "homegraph/store.py",
+     "                                activity_datelist=COALESCE(?, '[]'),\n"
+     "                                datelist_int=COALESCE(?, 0),\n"
+     "                                datelist_anchor=?",
+     "                                activity_datelist=COALESCE(?, activity_datelist),\n"
+     "                                datelist_int=COALESCE(?, datelist_int),\n"
+     "                                datelist_anchor=COALESCE(?, datelist_anchor)",
+     "an imported node takes its history whole, not field by field"),
+
+    ("the import root is accepted without looking",
+     "homegraph/cli.py",
+     "    if not os.path.exists(root):",
+     "    if False:  # mutated: a root that is not there is fine",
+     "a root that does not exist is refused"),
+
     # -- the conversion itself --------------------------------------------
     ("keys keep their absolute root",
      "homegraph/portable.py",
@@ -95,8 +171,8 @@ MUTATIONS = [
 
     ("shape keeps the timestamps",
      "homegraph/export.py",
-     '               if k not in ("body", "mtime")}',
-     '               if k not in ("body",)}  # mutated: mtime fingerprints',
+     'SHAPE_DROPS = ("body", "mtime", "content_hash", "size",',
+     'SHAPE_DROPS = ("body",  # mutated: mtime fingerprints\n               "content_hash", "size",',
      "shape carries no text and no timestamps"),
 
     ("edges keep readable keys while the nodes are hashed",
@@ -127,14 +203,18 @@ MUTATIONS = [
     # -- what the import trusts -------------------------------------------
     ("the digest is not checked",
      "homegraph/importer.py",
-     "    if claimed != digest.hexdigest():",
-     "    if False:  # mutated: a tampered artifact imports cleanly",
+     "    if claimed != digest.hexdigest():\n"
+     "        raise ImportError_(",
+     "    if False:  # mutated: a tampered artifact imports cleanly\n"
+     "        raise ImportError_(",
      "every broken artifact is refused, and says which way"),
 
     ("a missing digest is treated as no digest needed",
      "homegraph/importer.py",
-     "    if claimed is None:",
-     "    if False:  # mutated: truncation is not noticed",
+     "    if claimed is None:\n"
+     "        raise ImportError_(",
+     "    if False:  # mutated: truncation is not noticed\n"
+     "        raise ImportError_(",
      "every broken artifact is refused, and says which way"),
 
     ("a newer schema is imported rather than refused",
@@ -164,21 +244,21 @@ MUTATIONS = [
 
     ("the index is not rebuilt after importing",
      "homegraph/importer.py",
-     "    for store in stores.values():\n        store.rebuild_fts()",
-     "    pass  # mutated: an imported store answers no query",
+     "        store.rebuild_fts()",
+     "        pass  # mutated: an imported store answers no query",
      "the artifact ships no index, and the import rebuilds one"),
 
     # -- the command line the user actually walks -------------------------
     ("a refused import leaves its half-made store behind",
      "homegraph/cli.py",
-     "        for path in fresh:\n            with _ctx.suppress(OSError):\n                os.remove(path)",
-     "        pass  # mutated: an empty store is left looking built",
+     "    for path in paths:\n        with _ctx.suppress(OSError):\n            os.remove(path)",
+     "    pass  # mutated: an empty store is left looking built",
      "a refused import leaves no store looking built"),
 
     ("importing over an existing store just overwrites it",
      "homegraph/cli.py",
-     "            if s.node_count() and not args.force:",
-     "            if False:  # mutated: --force is decorative",
+     "        if occupied and not args.force:",
+     "        if False:  # mutated: --force is decorative",
      "importing over an existing store is refused without --force"),
 ]
 

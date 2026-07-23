@@ -68,6 +68,25 @@ IMPLEMENTED = ("full", "structure", "shape")
 # practical concern, short enough that an artifact stays readable as a shape.
 DIGEST_CHARS = 16
 
+# What `shape` refuses to carry, and why each one is here. The first draft
+# dropped `body` and `mtime` and called it done; an audit read the actual rows
+# and found the level advertised as shareable still carrying:
+#
+#   * `content_hash` -- `hash_file()` over the CONTENTS. That is strictly
+#     stronger disclosure than the guessable-path weakness the docstring
+#     admitted: anyone holding a candidate file does not have to guess a path
+#     at all, they hash the file and look it up.
+#   * `size` -- confirms such a guess on its own.
+#   * `activity_datelist` / `datelist_int` / `datelist_anchor` -- a per-node
+#     activity mask is a usage pattern, no less machine-identifying than the
+#     `mtime` that was already dropped for exactly that reason.
+#
+# `first_seen` and `last_seen` stay, because the import needs them and a graph
+# without them is not importable. That is a real residue and it is written
+# down rather than implied away -- see DECISIONS.md section 27.
+SHAPE_DROPS = ("body", "mtime", "content_hash", "size",
+               "activity_datelist", "datelist_int", "datelist_anchor")
+
 # Columns copied verbatim. `first_seen`, `last_seen` and the datelist columns
 # are here because `upsert_node` cannot set them: it stamps `as_of` and starts
 # a fresh mask. The importer restores them explicitly, and CP-12 compares them
@@ -152,12 +171,7 @@ def redact(row: dict[str, Any], level: str) -> dict[str, Any]:
     if level == "structure":
         return {k: v for k, v in row.items() if k != "body"}
     if level == "shape":
-        out = {k: v for k, v in row.items()
-               # `body` is text, not a name, so it is dropped rather than
-               # hashed. `mtime` is dropped because a timestamp to the second
-               # fingerprints a machine as well as a name does -- and `shape`
-               # is the level someone reaches for when they intend to share.
-               if k not in ("body", "mtime")}
+        out = {k: v for k, v in row.items() if k not in SHAPE_DROPS}
         for field in ("node_key", "path", "src", "dst"):
             if field in out:
                 out[field] = shape_key(out[field])
@@ -272,7 +286,13 @@ def export(model_paths: dict[str, str], out_path: str, root: str, *,
 
     def note_leak(row):
         for field, value in row.items():
-            if field in ("path", "src", "dst") or not isinstance(value, str):
+            # `node_key` belongs here: it is structural and portable, and
+            # counting it made the CLI tell the user their own TEXT named the
+            # root when what named it was a key the conversion had already
+            # handled. A report that overstates a leak is a report nobody
+            # calibrates against.
+            if (field in ("node_key", "path", "src", "dst")
+                    or not isinstance(value, str)):
                 continue
             if root in value or (base and base in value):
                 leaks[field] = leaks.get(field, 0) + 1

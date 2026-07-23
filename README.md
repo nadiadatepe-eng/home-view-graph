@@ -321,7 +321,7 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Thirteen checkpoints plus a privacy check. 333 mutations, 0 survived, 0
+**Thirteen checkpoints plus a privacy check. 343 mutations, 0 survived, 0
 detected only by a crash**, measured 2026-07-23 after the portable artifact
 landed. CP-3's count is 27, not the 26 printed here for a day -- recounted
 rather than carried forward, which this file has had to do before. The split of *how* they died is the
@@ -345,8 +345,8 @@ than trusting the numbers here.
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| CP-12 portable artifact | 23 | 23 |
-| **total** | **333** | **332** |
+| CP-12 portable artifact | 33 | 33 |
+| **total** | **343** | **342** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -555,7 +555,7 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 333 mutations name 269 of 457
+- **Mutation coverage is a minority of checks.** 343 mutations name 279 of 470
   checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**

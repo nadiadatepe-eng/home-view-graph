@@ -447,7 +447,7 @@ def cmd_inspect(args):
     An artifact arrives from somewhere else, and "run it to find out what it
     holds" is the wrong shape for that.
     """
-    from .importer import ImportError_, read_manifest
+    from .importer import ImportError_, read_manifest, verify
     try:
         manifest = read_manifest(args.artifact)
     except ImportError_ as exc:
@@ -456,7 +456,21 @@ def cmd_inspect(args):
     for key in sorted(manifest):
         if key != "t":
             print("%-16s %s" % (key, manifest[key]))
-    return 0
+    # `inspect` verifies. It printed whatever the manifest claimed, including
+    # a `shape` label beside a `full` description, because nothing compared
+    # the manifest to the artifact it heads -- a gate that cannot say no, on
+    # the one command whose whole purpose is to let you look before you take
+    # something in.
+    problem = verify(args.artifact)
+    print("%-16s %s" % ("integrity", problem or "digest and counts agree"))
+    return 2 if problem else 0
+
+
+def _cleanup(paths):
+    import contextlib as _ctx
+    for path in paths:
+        with _ctx.suppress(OSError):
+            os.remove(path)
 
 
 def cmd_import(args):
@@ -467,7 +481,25 @@ def cmd_import(args):
     from .store import Store
 
     models = _models_from(args.model)
+    if not args.root or not args.root.strip():
+        print("REFUSED  --root is empty; name the directory the imported "
+              "paths should live under", file=sys.stderr)
+        return 2
     root = os.path.abspath(os.path.expanduser(args.root))
+    # The root is checked, not assumed. Every one of these was accepted
+    # silently: a directory that does not exist, a FILE, a relative path
+    # resolved against whatever the shell happened to be in, and the empty
+    # string. An import into a root that is not there produces a graph where
+    # every path names nothing, and the next `update` sees the whole corpus
+    # as deleted.
+    if not os.path.exists(root):
+        print("REFUSED  no directory at %s. An import into a root that does "
+              "not exist produces paths that name nothing." % root,
+              file=sys.stderr)
+        return 2
+    if not os.path.isdir(root):
+        print("REFUSED  %s is not a directory" % root, file=sys.stderr)
+        return 2
     # Which files this command created, so a refusal can take them away
     # again. `Store(path)` creates the database, so without this a refused
     # import leaves an empty store behind -- something that looks built and
@@ -478,10 +510,23 @@ def cmd_import(args):
         if path in fresh:
             continue
         with Store(path) as s:
-            if s.node_count() and not args.force:
-                print("REFUSED  %s already holds %d node(s); pass --force to "
-                      "replace it" % (path, s.node_count()), file=sys.stderr)
-                return 2
+            occupied = s.node_count()
+        if occupied and not args.force:
+            print("REFUSED  %s already holds %d node(s); pass --force to "
+                  "replace it" % (path, occupied), file=sys.stderr)
+            return 2
+        if occupied:
+            # `--force` says REPLACE, and it merged. An import is a series of
+            # upserts, so a second artifact over the first produced the union
+            # of two corpora -- a store larger and fresher than anything that
+            # was ever built, which is the shape `update`'s equivalence claim
+            # exists to prevent. The old store is moved aside rather than
+            # unlinked, so a mistake is recoverable.
+            backup = path + ".replaced"
+            os.replace(path, backup)
+            fresh.append(path)
+            print("replaced   %s (previous store kept at %s)"
+                  % (path, os.path.basename(backup)))
 
     try:
         with _ctx.ExitStack() as stack:
@@ -489,10 +534,15 @@ def cmd_import(args):
                       for name, path in sorted(models.items())}
             report = load(args.artifact, stores, root)
     except ImportError_ as exc:
-        for path in fresh:
-            with _ctx.suppress(OSError):
-                os.remove(path)
+        _cleanup(fresh)
         print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    except Exception as exc:                                    # noqa: BLE001
+        # Anything else is still a failed import, and the store it created
+        # must not stay: a bare KeyError used to leave a database behind that
+        # looked built and answered every query with nothing.
+        _cleanup(fresh)
+        print("REFUSED  %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
         return 2
     for key, value in report.items():
         print("%-16s %s" % (key, value))

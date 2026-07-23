@@ -178,6 +178,70 @@ def _seed(store, root):
 
 # -- the checks ------------------------------------------------------------
 
+def t_key_fasit():
+    """The answer key for the converter, run by a test at last.
+
+    `tests/gold/portable_keys.py` was written before `portable.py` existed --
+    nine key forms, four adversarial rows, three awkward roots -- and then
+    graded once, by hand, in a shell probe. **Nothing imported it.** An audit
+    found it with `grep`: the file had no callers, so the invariant its
+    docstring calls "the load-bearing part" was held by nobody, and a naive
+    string-prefix boundary test passed all 30 checks in this file while
+    exporting a neighbour directory's files as if they were inside the root.
+
+    That is this project's own signature failure -- a mechanism that lives
+    only in prose -- committed in the file that grades the mechanism.
+    """
+    from homegraph.portable import OutsideRoot, to_local, to_portable
+    from tests.gold.portable_keys import (ADVERSARIAL, KEY_FASIT, ROOT_CASES,
+                                          ROOT)
+
+    def convert(fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:                                # noqa: BLE001
+            return "raised:%s" % type(exc).__name__
+
+    wrong = []
+    for local, portable, _why in KEY_FASIT:
+        got = convert(to_portable, local, ROOT)
+        back = convert(to_local, got, ROOT) if got == portable else None
+        if got != portable or back != local:
+            wrong.append((local, got, back))
+    check("every declared key form converts, and converts back",
+          not wrong and KEY_FASIT,
+          "%d of %d row(s) correct%s"
+          % (len(KEY_FASIT) - len(wrong), len(KEY_FASIT),
+             "" if not wrong else "  %s" % wrong[:1]))
+
+    hard = []
+    for local, portable, _why in ADVERSARIAL:
+        if portable is None:
+            try:
+                to_portable(local, ROOT)
+                hard.append((local, "was not refused"))
+            except OutsideRoot:
+                pass
+        else:
+            got = convert(to_portable, local, ROOT)
+            if got != portable:
+                hard.append((local, got))
+    check("the adversarial rows behave as the key declares",
+          not hard and ADVERSARIAL,
+          "%d of %d%s" % (len(ADVERSARIAL) - len(hard), len(ADVERSARIAL),
+                          "" if not hard else "  %s" % hard[:1]))
+
+    roots = []
+    for root, local, portable, _why in ROOT_CASES:
+        got = convert(to_portable, local, root)
+        if got != portable:
+            roots.append((root, local, got, portable))
+    check("an awkward root is still a root",
+          not roots and ROOT_CASES,
+          "%d of %d%s" % (len(ROOT_CASES) - len(roots), len(ROOT_CASES),
+                          "" if not roots else "  %s" % roots[:1]))
+
+
 def t_round_trip(tmp, db_a, root_a):
     """Same root, and nothing may change."""
     art = os.path.join(tmp, "same.hgx")
@@ -476,6 +540,202 @@ def t_shape(tmp, db_a, root_a):
              "equal" if degrees == want_d else "DIFFER", failure or ""))
 
 
+def t_audit_findings(tmp, db_a, root_a, art):
+    """One gate per confirmed audit finding. Named after the defect, not the
+    fix, so a reader can trace each back to what it was written for."""
+    import hashlib as _h
+
+    from homegraph.importer import verify
+    from homegraph.portable import OutsideRoot, to_local
+
+    # 1. `..` must not escape the root the reader named. The digest cannot
+    #    stop this -- it proves the artifact is intact, never that it is
+    #    benign -- so containment is checked on the way in. The example root
+    #    is deliberately not home-shaped: the privacy gate flagged this very
+    #    block for spelling one out, the third comment in this repo to leak
+    #    what the code does not.
+    escaped = []
+    for key in ("~/../../etc/passwd", "m3::~/../../../etc/hosts",
+                "archive:~/../../x.zip!a/b"):
+        try:
+            escaped.append(to_local(key, "/korpus/prosjekt"))
+        except OutsideRoot:
+            pass
+    ok = to_local("~/inside/file.md", "/korpus/prosjekt")
+    check("`..` cannot escape the root on the way in",
+          not escaped and ok == "/korpus/prosjekt/inside/file.md",
+          "%d escape(s)%s" % (len(escaped),
+                              "" if not escaped else "  %s" % escaped[:2]))
+
+    # 7. The digest ends the artifact. Content after it used to be imported
+    #    while a consumer stopping at the digest saw a different graph.
+    with lzma.open(art, "rt", encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    appended = os.path.join(tmp, "appended.hgx")
+    extra = json.dumps({"t": "node", "model": "m4",
+                        "node_key": "~/APPENDED.md", "kind": "file",
+                        "first_seen": AS_OF, "last_seen": AS_OF},
+                       sort_keys=True)
+    with lzma.open(appended, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join(lines + [extra]) + "\n")
+    db = os.path.join(tmp, "appended.db")
+    with Store(db, model="m4") as s:
+        _, failure = safe_load(appended, {"m4": s}, root_a)
+    check("nothing may follow the digest line",
+          failure is not None and "follow" in failure,
+          "%s" % (failure or "imported content past the declared end")[:70])
+
+    # 3. The manifest counts what follows it, and the two are compared. An
+    #    artifact with rows removed and a recomputed digest imported cleanly
+    #    as a smaller graph -- which looks exactly like a smaller corpus.
+    short = os.path.join(tmp, "short.hgx")
+    kept = lines[1:-1][:-2]
+    dig = _h.sha256()
+    for ln in [lines[0]] + kept:
+        dig.update((ln + "\n").encode("utf-8"))
+    with lzma.open(short, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join([lines[0]] + kept
+                            + [json.dumps({"t": "digest",
+                                           "sha256": dig.hexdigest()},
+                                          sort_keys=True)]) + "\n")
+    db2 = os.path.join(tmp, "short.db")
+    with Store(db2, model="m4") as s:
+        _, failure2 = safe_load(short, {"m4": s}, root_a)
+    check("a manifest that overstates its own contents is refused",
+          failure2 is not None and "manifest declares" in failure2,
+          "%s" % (failure2 or "imported a smaller graph in silence")[:70])
+    check("and `inspect` sees it too, without importing",
+          verify(short) is not None and verify(art) is None,
+          "short=%r intact=%r" % ((verify(short) or "")[:34], verify(art)))
+
+    # 4. A missing column is a refusal with the column named, not a
+    #    traceback -- and not a confident wrong diagnosis about endpoints.
+    stripped = []
+    for line in lines:
+        row = json.loads(line)
+        if row.get("t") == "edge":
+            row.pop("method", None)
+        stripped.append(json.dumps(row, sort_keys=True))
+    dig = _h.sha256()
+    for ln in stripped[:-1]:
+        dig.update((ln + "\n").encode("utf-8"))
+    broken = os.path.join(tmp, "nomethod.hgx")
+    with lzma.open(broken, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join(stripped[:-1]
+                            + [json.dumps({"t": "digest",
+                                           "sha256": dig.hexdigest()},
+                                          sort_keys=True)]) + "\n")
+    db3 = os.path.join(tmp, "nomethod.db")
+    with Store(db3, model="m4") as s:
+        _, failure3 = safe_load(broken, {"m4": s}, root_a)
+    check("a missing column is named, not reported as a missing endpoint",
+          failure3 is not None and "missing method" in failure3
+          and "endpoint" not in failure3,
+          "%s" % (failure3 or "imported it")[:70])
+
+    # 5. `shape` carries no content hash, no size and no activity mask. The
+    #    first draft dropped `body` and `mtime` and shipped a content
+    #    fingerprint -- strictly stronger disclosure than the level admitted.
+    shaped = os.path.join(tmp, "audit-shape.hgx")
+    export({"m4": db_a}, shaped, root_a, redaction="shape")
+    # DECLARED here, not imported from `export`. The first version read
+    # `SHAPE_DROPS` out of the module it was grading, so a mutation that
+    # shortened the list shortened the gate with it and survived -- a key
+    # derived from the implementation is a photograph of it.
+    must_not_carry = {"body", "mtime", "content_hash", "size",
+                      "activity_datelist", "datelist_int", "datelist_anchor"}
+    carried = set()
+    with lzma.open(shaped, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            row = json.loads(line)
+            if row.get("t") == "node":
+                carried |= set(row)
+    check("shape carries no fingerprint of the files themselves",
+          not (carried & must_not_carry),
+          "still carries %s" % (sorted(carried & must_not_carry) or "nothing"))
+
+    # 3b. A row for a model the manifest never declared. `inspect` shows the
+    #     manifest, so a row outside it is content nobody could have foreseen.
+    smuggled = []
+    for line in lines:
+        smuggled.append(line)
+    extra_row = json.dumps({"t": "node", "model": "m1",
+                            "node_key": "~/SMUGGLED.md", "kind": "file",
+                            "first_seen": AS_OF, "last_seen": AS_OF},
+                           sort_keys=True)
+    body2 = lines[1:-1] + [extra_row]
+    dig2 = _h.sha256()
+    for ln in [lines[0]] + body2:
+        dig2.update((ln + "\n").encode("utf-8"))
+    smug = os.path.join(tmp, "smuggle.hgx")
+    with lzma.open(smug, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join([lines[0]] + body2
+                            + [json.dumps({"t": "digest",
+                                           "sha256": dig2.hexdigest()},
+                                          sort_keys=True)]) + "\n")
+    db4 = os.path.join(tmp, "smuggle.db")
+    with Store(db4, model="m4") as s:
+        _, failure4 = safe_load(smug, {"m4": s}, root_a)
+    check("a row outside the declared models is refused",
+          failure4 is not None and "does not declare" in failure4,
+          "%s" % (failure4 or "imported a model nobody declared")[:70])
+
+    # 3c. `inspect` must catch a bad digest, not only a count mismatch.
+    tampered = list(lines)
+    row = json.loads(tampered[3])
+    row["title"] = "CHANGED"
+    tampered[3] = json.dumps(row, sort_keys=True)
+    bad = os.path.join(tmp, "bad-digest.hgx")
+    with lzma.open(bad, "wt", encoding="utf-8") as fh:
+        fh.write("\n".join(tampered) + "\n")
+    check("inspect catches a digest that does not match",
+          (verify(bad) or "").startswith("digest mismatch"),
+          "%r" % (verify(bad) or "said nothing"))
+
+    # 2b. History comes from the artifact wholesale. Importing over a store
+    #     with different local values must not blend the two -- a mask from
+    #     one machine with an anchor from another is a confident wrong answer.
+    blended = os.path.join(tmp, "blend.db")
+    with Store(blended, model="m4") as s:
+        s.upsert_node("~/held.md", kind="file", as_of="2019-01-01")
+        s.db.execute("UPDATE nodes SET datelist_anchor='2019-01-01', "
+                     "datelist_int=7, activity_datelist='[1,2,3]'")
+        key = to_local("~/held.md", root_a)
+        s.upsert_node(key, kind="file", as_of="2019-01-01")
+        s.db.execute("UPDATE nodes SET datelist_anchor='2019-01-01', "
+                     "datelist_int=7 WHERE node_key=?", (key,))
+    one = os.path.join(tmp, "one.hgx")
+    with lzma.open(one, "wt", encoding="utf-8") as fh:
+        node = json.dumps({"t": "node", "model": "m4",
+                           "node_key": "~/held.md", "kind": "file",
+                           "first_seen": "2026-01-01",
+                           "last_seen": "2026-01-01"}, sort_keys=True)
+        man = json.dumps({"t": "manifest", "format": 1, "schema": 2,
+                          "redaction": "structure",
+                          "redaction_note": "paths, titles, every edge; "
+                                            "no file text",
+                          "models": ["m4"],
+                          "counts": {"m4": {"nodes": 1, "edges": 0}}},
+                         sort_keys=True)
+        d = _h.sha256()
+        for ln in (man, node):
+            d.update((ln + "\n").encode("utf-8"))
+        fh.write("\n".join([man, node,
+                             json.dumps({"t": "digest",
+                                         "sha256": d.hexdigest()},
+                                        sort_keys=True)]) + "\n")
+    with Store(blended, model="m4") as s:
+        safe_load(one, {"m4": s}, root_a)
+    with Store(blended) as s:
+        held = s.get_node(to_local("~/held.md", root_a))
+    check("an imported node takes its history whole, not field by field",
+          held is not None and held["datelist_anchor"] is None
+          and held["datelist_int"] == 0 and held["first_seen"] == "2026-01-01",
+          "anchor=%r mask=%r first_seen=%r"
+          % (held["datelist_anchor"], held["datelist_int"],
+             held["first_seen"]) if held else "no node")
+
+
 def t_refusals(tmp, art):
     """Six ways an artifact can be wrong, and six named refusals."""
     with lzma.open(art, "rt", encoding="utf-8") as fh:
@@ -576,6 +836,12 @@ def t_through_the_cli(tmp, db_a, root_a):
     art = os.path.join(tmp, "cli.hgx")
     env = dict(os.environ, PYTHONPATH=ROOTDIR)
     out = os.path.join(tmp, "cli-m4.db")
+    # The import root has to EXIST -- `import` refuses one that does not, and
+    # these checks passed a path that was never created until that refusal
+    # arrived and failed them. A gate that only works because a guard is
+    # missing is a gate about the guard.
+    cli_root = os.path.join(tmp, "cli-root")
+    os.makedirs(cli_root, exist_ok=True)
 
     def run(*args):
         return subprocess.run([sys.executable, "-m", "homegraph.cli", *args],
@@ -595,16 +861,14 @@ def t_through_the_cli(tmp, db_a, root_a):
           and "structure" in r.stdout,
           "exit %d" % r.returncode)
 
-    r = run("import", art, "--model", "m4=%s" % out, "--root",
-            os.path.join(tmp, "cli-root"))
+    r = run("import", art, "--model", "m4=%s" % out, "--root", cli_root)
     check("import runs from the command line and writes a store",
           r.returncode == 0 and os.path.exists(out),
           "exit %d%s" % (r.returncode, ("  " + r.stderr.strip()[:60])
                          if r.returncode else ""))
 
     # Importing again over a store that already holds nodes must refuse.
-    r = run("import", art, "--model", "m4=%s" % out, "--root",
-            os.path.join(tmp, "cli-root"))
+    r = run("import", art, "--model", "m4=%s" % out, "--root", cli_root)
     check("importing over an existing store is refused without --force",
           r.returncode == 2 and "force" in r.stderr,
           "exit %d  %s" % (r.returncode, r.stderr.strip()[:50]))
@@ -616,8 +880,13 @@ def t_through_the_cli(tmp, db_a, root_a):
     with lzma.open(trunc, "wt", encoding="utf-8") as fh:
         fh.write("\n".join(lines[:-1]) + "\n")
     gone = os.path.join(tmp, "cli-gone.db")
-    r = run("import", trunc, "--model", "m4=%s" % gone, "--root",
-            os.path.join(tmp, "cli-root"))
+    r = run("import", trunc, "--model", "m4=%s" % gone, "--root", cli_root)
+    absent = run("import", art, "--model", "m4=%s" % os.path.join(tmp, "x.db"),
+                 "--root", os.path.join(tmp, "no-such-directory"))
+    check("a root that does not exist is refused",
+          absent.returncode == 2 and "no directory" in absent.stderr,
+          "exit %d  %s" % (absent.returncode, absent.stderr.strip()[:44]))
+
     check("a refused import leaves no store looking built",
           r.returncode == 2 and not os.path.exists(gone),
           "exit %d, file left: %s" % (r.returncode, os.path.exists(gone)))
@@ -652,12 +921,14 @@ def main():
         db_a = build_corpus(root_a, syn)
         print("corpus A: %s\n" % root_a)
 
+        t_key_fasit()
         art, report = t_round_trip(tmp, db_a, root_a)
         t_moved_root(tmp, db_a, root_a, syn)
         t_negative_control(tmp, art, root_a, report)
         t_outside_root(tmp, db_a, root_a)
         t_redaction(tmp, db_a, root_a)
         t_shape(tmp, db_a, root_a)
+        t_audit_findings(tmp, db_a, root_a, art)
         t_refusals(tmp, art)
         t_rollback(tmp, art)
         t_fts(tmp, db_a, root_a)
