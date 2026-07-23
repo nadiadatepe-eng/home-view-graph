@@ -393,6 +393,115 @@ def cmd_update(args):
     return 0
 
 
+def _models_from(specs):
+    out = {}
+    for spec in specs:
+        name, _, path = spec.partition("=")
+        out[name] = path
+    return out
+
+
+def cmd_export(args):
+    """Write a portable artifact.
+
+    `--root` is optional by decision: it defaults to the configured root, the
+    same one the models were built against. Convenient, and the reason it is
+    printed rather than assumed -- exporting a graph rooted somewhere other
+    than where you think it is rooted is a mistake nobody notices until an
+    import lands in the wrong place.
+    """
+    from .export import ExportError, export
+
+    root = getattr(args, "root", None)
+    if not root:
+        cfg = userconfig.load(getattr(args, "config", None))
+        root = cfg.root
+        print("root   %s  (from %s)" % (root, cfg.path))
+    if args.redaction == "full":
+        # stderr, and before the work rather than after it.
+        print("WARNING  redaction=full carries the FULL TEXT of every file in "
+              "these models. On a measured home corpus that is 5.9 million "
+              "characters. Treat the artifact as private.", file=sys.stderr)
+    try:
+        report = export(_models_from(args.model), args.out, root,
+                        redaction=args.redaction)
+    except ExportError as exc:
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    for key, value in report.items():
+        print("%-18s %s" % (key, value))
+    if report["root_in_user_data"]:
+        # Measured, not scrubbed. The structural fields are portable and CP-12
+        # proves it; a title, an author or a line of prose may still name the
+        # root, and rewriting the user's own text to hide it would be a lie
+        # about what the file says.
+        print("\nNOTE   the root's name still appears inside user data: %s. "
+              "Paths and keys are portable; your own text was not rewritten."
+              % report["root_in_user_data"])
+    return 0
+
+
+def cmd_inspect(args):
+    """Print an artifact's manifest without importing it.
+
+    An artifact arrives from somewhere else, and "run it to find out what it
+    holds" is the wrong shape for that.
+    """
+    from .importer import ImportError_, read_manifest
+    try:
+        manifest = read_manifest(args.artifact)
+    except ImportError_ as exc:
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    for key in sorted(manifest):
+        if key != "t":
+            print("%-16s %s" % (key, manifest[key]))
+    return 0
+
+
+def cmd_import(args):
+    """Read an artifact into stores, rooted wherever the reader says."""
+    import contextlib as _ctx
+
+    from .importer import ImportError_, load
+    from .store import Store
+
+    models = _models_from(args.model)
+    root = os.path.abspath(os.path.expanduser(args.root))
+    # Which files this command created, so a refusal can take them away
+    # again. `Store(path)` creates the database, so without this a refused
+    # import leaves an empty store behind -- something that looks built and
+    # answers every query with nothing.
+    fresh = [p for p in models.values() if not os.path.exists(p)]
+
+    for name, path in sorted(models.items()):
+        if path in fresh:
+            continue
+        with Store(path) as s:
+            if s.node_count() and not args.force:
+                print("REFUSED  %s already holds %d node(s); pass --force to "
+                      "replace it" % (path, s.node_count()), file=sys.stderr)
+                return 2
+
+    try:
+        with _ctx.ExitStack() as stack:
+            stores = {name: stack.enter_context(_writing(path, model=name))
+                      for name, path in sorted(models.items())}
+            report = load(args.artifact, stores, root)
+    except ImportError_ as exc:
+        for path in fresh:
+            with _ctx.suppress(OSError):
+                os.remove(path)
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    for key, value in report.items():
+        print("%-16s %s" % (key, value))
+    print("\nThe mesh is not in the artifact -- it is derived. Run "
+          "`homegraph mesh build --mesh-db ... --code-root %s` to rebuild it."
+          % root)
+    return 0
+
+
 def cmd_unbuilt(args):
     """build/update/embed/visualize belong to the models, not the substrate.
 
@@ -882,6 +991,32 @@ def main(argv=None):
     p.add_argument("--as-of", dest="as_of", default=None)
     p.add_argument("--config", default=None)
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("export", help="write a portable artifact")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH")
+    p.add_argument("--out", required=True)
+    p.add_argument("--root", default=None,
+                   help="the root these stores were built against; defaults "
+                        "to the configured one")
+    p.add_argument("--redaction", default="structure",
+                   choices=("full", "structure", "shape"),
+                   help="structure (default) carries paths, titles and every "
+                        "edge but no file text")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("inspect", help="print an artifact's manifest")
+    p.add_argument("artifact")
+    p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser("import", help="read an artifact into stores")
+    p.add_argument("artifact")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH")
+    p.add_argument("--root", required=True,
+                   help="where the imported paths should live on THIS machine")
+    p.add_argument("--force", action="store_true",
+                   help="replace a store that already holds nodes")
+    p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("embed", help="not implemented")
     p.set_defaults(func=cmd_unbuilt)

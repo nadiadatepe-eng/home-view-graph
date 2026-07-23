@@ -115,7 +115,10 @@ def load(path: str, stores: dict[str, Store], root: str) -> dict[str, Any]:
     skipped_models: dict[str, int] = {}
 
     with lzma.open(path, "rt", encoding="utf-8") as fh:
-        fh.readline()                       # the manifest, already parsed
+        # The manifest counts towards the digest: it carries the redaction
+        # level and the counts, and an unprotected manifest can be relabelled
+        # after the fact while the body still verifies.
+        digest.update(fh.readline().encode("utf-8"))
         for lineno, line in enumerate(fh, start=2):
             if not line.strip():
                 continue
@@ -128,9 +131,9 @@ def load(path: str, stores: dict[str, Store], root: str) -> dict[str, Any]:
             if kind == "digest":
                 claimed = row.get("sha256")
                 continue
-            # Digested BEFORE anything is done with it, and only for the rows
-            # the exporter digested -- the manifest is excluded there, so a
-            # checksum cannot end up covering the line that announces it.
+            # Digested BEFORE anything is done with it. The digest line
+            # itself is the one exclusion -- a checksum cannot cover the line
+            # that announces it.
             digest.update(line.encode("utf-8"))
             model = row.get("model")
             store = stores.get(model)

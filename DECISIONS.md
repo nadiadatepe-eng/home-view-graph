@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (253 of
-427)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (265 of
+450)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:

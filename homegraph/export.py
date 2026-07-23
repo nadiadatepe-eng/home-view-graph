@@ -77,6 +77,25 @@ class ExportError(RuntimeError):
     """Refused. Named, never approximated."""
 
 
+def check_level(level: str) -> None:
+    """Refuse a level this build cannot produce. The one place that decides.
+
+    It was two places: this test and a raise inside `redact`. Both said the
+    same thing, so removing either left the other answering, and the mutation
+    that deleted the check walked straight through the gate. `redact` trusts
+    this now, and this is called before a single byte is written.
+    """
+    if level not in LEVELS:
+        raise ExportError("unknown redaction level %r; known: %s"
+                          % (level, ", ".join(sorted(LEVELS))))
+    if level not in IMPLEMENTED:
+        raise ExportError(
+            "redaction level %r is declared but not implemented yet (E3); "
+            "available: %s. An artifact labelled %r that was not %r is worse "
+            "than no artifact."
+            % (level, ", ".join(IMPLEMENTED), level, level))
+
+
 def redact(row: dict[str, Any], level: str) -> dict[str, Any]:
     """Apply a redaction level to one node row. The only place it happens.
 
@@ -89,10 +108,11 @@ def redact(row: dict[str, Any], level: str) -> dict[str, Any]:
         return row
     if level == "structure":
         return {k: v for k, v in row.items() if k != "body"}
-    raise ExportError(
-        "redaction level %r is declared but not implemented yet (E3). "
-        "An artifact labelled %r that was not %r is worse than no artifact."
-        % (level, level, level))
+    # Unreachable by construction: `check_level` runs first and refuses
+    # anything not in IMPLEMENTED. Kept as a loud failure rather than a
+    # silent pass-through, because "unreachable" is a claim about today's
+    # callers and a new one may not read this comment.
+    raise ExportError("redact() reached with unvalidated level %r" % level)
 
 
 def _rows(store: Store, model: str, root: str):
@@ -139,13 +159,7 @@ def export(model_paths: dict[str, str], out_path: str, root: str, *,
     `mesh.py` did exactly that last week, because `Store.close()` commits by
     default.
     """
-    if redaction not in LEVELS:
-        raise ExportError("unknown redaction level %r; known: %s"
-                          % (redaction, ", ".join(sorted(LEVELS))))
-    if redaction not in IMPLEMENTED:
-        raise ExportError(
-            "redaction level %r is not implemented yet (E3); available: %s"
-            % (redaction, ", ".join(IMPLEMENTED)))
+    check_level(redaction)
     root = os.path.abspath(os.path.expanduser(root))
 
     counts: dict[str, dict[str, int]] = {}
@@ -175,8 +189,8 @@ def export(model_paths: dict[str, str], out_path: str, root: str, *,
         # its first draft, which is how easily it happens.
         "root_note": "exported from a root holding %d node(s)"
                      % sum(c["nodes"] for c in counts.values()),
-        "digest": "sha256, in the trailer line -- an artifact without one is "
-                  "incomplete and must be refused",
+        "digest": "sha256 over every line including this one, in the trailer "
+                  "-- an artifact without one is incomplete and is refused",
     }
 
     digest = hashlib.sha256()
@@ -215,19 +229,25 @@ def export(model_paths: dict[str, str], out_path: str, root: str, *,
 
     try:
         with lzma.open(tmp, "wt", encoding="utf-8", preset=PRESET) as fh:
-            # The manifest is written but NOT digested: the trailer covers
-            # what follows it, so the two cannot become circular. A digest
-            # that includes the line announcing it is a checksum of itself.
-            fh.write(json.dumps(manifest, ensure_ascii=False,
-                                sort_keys=True) + "\n")
+            # The manifest IS digested. It was not, on the argument that a
+            # digest must not cover the line announcing it -- true when the
+            # digest lived in the manifest, and false the moment it moved to
+            # the trailer. The manifest states the redaction level, the model
+            # list and the counts; leaving it uncovered meant an artifact
+            # could be relabelled `structure` after the fact and still verify.
+            emit(fh, manifest)
             for model, path in sorted(model_paths.items()):
                 s = Store(path)
                 try:
                     for row in _rows(s, model, root):
                         if row["t"] == "node":
-                            row = dict(row, **redact(row, redaction))
-                            if redaction == "structure":
-                                row.pop("body", None)
+                            # `redact` is the ONLY place a level is applied.
+                            # A second `row.pop("body")` stood here and did
+                            # the same job, so deleting the rule inside
+                            # `redact` changed nothing and the gate stayed
+                            # green -- a duplicated invariant across two
+                            # layers, in the package that forbids it.
+                            row = redact(row, redaction)
                             written["nodes"] += 1
                         else:
                             written["edges"] += 1

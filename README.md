@@ -127,7 +127,9 @@ layout would still be imposed.
 | `mesh.py` | M5: federates the models, never merges them |
 | `visualize.py` | force layout in Python, canvas in the browser, one file |
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
-| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `build` |
+| `portable.py` | node keys with the root taken out, and put back |
+| `export.py` / `importer.py` | the portable artifact: lzma JSON Lines, digest in a trailer |
+| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `build`, `export`, `import`, `inspect` |
 
 ## What the edges say
 
@@ -204,7 +206,18 @@ homegraph visualize --model m3=/tmp/m3.db --out graph.html
 
 # MCP server on stdio
 homegraph mcp --model m3=/tmp/m3.db
+
+# A portable artifact: lzma, root-relative, importable under any root
+homegraph export --model m3=/tmp/m3.db --out graph.hgx
+homegraph inspect graph.hgx            # what it carries, before taking it in
+homegraph import graph.hgx --model m3=/tmp/new.db --root ~/somewhere-else
 ```
+
+`export` defaults to `--redaction structure`: paths, titles and every edge,
+but no file text. On a measured home corpus the text is 86% of the artifact
+and all of it is yours. `full` carries it and says so on stderr; `shape` is
+declared and refused until E3 ships its hashing, because an artifact labelled
+`shape` that was not shaped is worse than no artifact.
 
 ## Updating without rebuilding
 
@@ -281,8 +294,8 @@ capped drawing shows, and half an edge is not a relation.
 ## Tests
 
 ```sh
-uvx pytest -q tests/                                            # 13 modules
-for t in 0 1 2 3 4 5 6 7 8 9 10 11; do python3 tests/mutate_cp$t.py; done
+uvx pytest -q tests/                                            # 14 modules
+for t in 0 1 2 3 4 5 6 7 8 9 10 11 12; do python3 tests/mutate_cp$t.py; done
 python3 tests/mutation_coverage.py         # which checks no mutation aims at
 python3 tests/test_cp0.py                  # any checkpoint runs standalone too
 ```
@@ -296,10 +309,10 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twelve checkpoints plus a privacy check. 310 mutations, 0 survived, 0 detected
-only by a crash**, measured 2026-07-23 on the final tree, after the three
-missing edge types, the audit that followed them, and making code searchable
-by name. The split of *how* they died is the
+**Thirteen checkpoints plus a privacy check. 328 mutations, 0 survived, 0
+detected only by a crash**, measured 2026-07-23 after the portable artifact
+landed. CP-3's count is 27, not the 26 printed here for a day -- recounted
+rather than carried forward, which this file has had to do before. The split of *how* they died is the
 fragile number and is timestamped for a reason: it has moved twice within an
 hour of measurement. **0 survived is the load-bearing claim**; a mutation
 moving between *the named gate said no* and *the suite died* changes how much
@@ -311,7 +324,7 @@ than trusting the numbers here.
 | CP-0 corpus | 18 | 18 |
 | CP-1 substrate | 22 | 22 |
 | CP-2 markdown | 22 | 22 |
-| CP-3 documents | 26 | 26 |
+| CP-3 documents | 27 | 27 |
 | CP-4 images | 17 | 17 |
 | CP-5 misc | 22 | 22 |
 | CP-6 mesh | 40 | 39 |
@@ -320,7 +333,8 @@ than trusting the numbers here.
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| **total** | **310** | **309** |
+| CP-12 portable artifact | 18 | 18 |
+| **total** | **328** | **327** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -529,7 +543,7 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 310 mutations name 253 of 427
+- **Mutation coverage is a minority of checks.** 328 mutations name 265 of 450
   checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**
