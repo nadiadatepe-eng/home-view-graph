@@ -153,6 +153,45 @@ MUTATIONS = [
      'names = [\n  ".env", ".netrc", ".pgpass", ".npmrc", ".git-credentials",',
      'names = [  # mutated: secrets no longer named\n  ".__never__",',
      "secret filenames are excluded"),
+
+    # -- the exclusion report -------------------------------------------
+    #
+    # A silent truncation reads as full coverage. These are the mutations
+    # that separate "the list is short" from "the list was cut".
+    ("a capped list never admits it was cut",
+     "homegraph/corpus.py",
+     "        return self.cap is not None and len(self.dirs) > self.cap",
+     "        return False  # mutated: never truncated",
+     "a capped list reports itself as truncated"),
+
+    ("truncation is reported whether or not the cap bit",
+     "homegraph/corpus.py",
+     "        return self.cap is not None and len(self.dirs) > self.cap",
+     "        return self.cap is not None  # mutated: a cap set is a cap hit",
+     "a cap wider than the tally does not report truncation"),
+
+    ("the cap is announced but not applied",
+     "homegraph/corpus.py",
+     "        return ranked if self.cap is None else ranked[:self.cap]",
+     "        return ranked  # mutated: cap ignored",
+     "a capped list reports itself as truncated"),
+
+    # A layer that owns files and is missing from every line the user reads.
+    # No behavioural gate sees this: the classification is unchanged.
+    ("one layer stops being named in the report",
+     "homegraph/corpus.py",
+     "        self.by_layer[decision.layer] = self.by_layer.get(decision.layer, 0) + 1",
+     "        if decision.layer != \"symlinks\":  # mutated: one layer goes quiet\n"
+     "            self.by_layer[decision.layer] = "
+     "self.by_layer.get(decision.layer, 0) + 1",
+     "every exclusion layer is named in the report"),
+
+    ("the report counts files the census did not exclude",
+     "homegraph/corpus.py",
+     "        if decision.label != EXCLUDED:\n            return decision",
+     "        if False:  # mutated: everything counts as excluded\n"
+     "            return decision",
+     "the report's exclusion count matches the census"),
 ]
 
 

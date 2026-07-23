@@ -463,21 +463,28 @@ def refresh_mesh(model_paths, mesh_db, as_of):
         return mesh.build_edges(as_of, prune=True)
 
 
-def corpus_paths(root, label, config=None):
-    """The paths one model owns, straight from `corpus.classify()`.
+def corpus_paths(root, label, config=None, cap=None):
+    """(paths this model owns, what the walk left out).
 
     Not a second opinion about what belongs where: the same function the build
     used, called again. An update that selected files by a rule of its own
     would drift from the build within one release.
+
+    The report is returned rather than optional because an optional one is a
+    report nobody passes. `explain()` is called instead of `classify()` at no
+    extra cost -- `classify` is `explain(...).label` -- so the layer that
+    owned each exclusion is known for free, and "99.09% excluded" stops being
+    a number with nothing behind it.
     """
-    from .corpus import Classifier
+    from .corpus import Classifier, ExclusionReport, TOP_DIRS
     clf = Classifier(home=root, config=config)
+    report = ExclusionReport(root, cap=TOP_DIRS if cap is None else cap)
     out = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in filenames:
             full = os.path.join(dirpath, name)
             try:
-                if clf.classify(full) == label:
+                if report.record(full, clf.explain(full)).label == label:
                     out.append(full)
             except OSError:
                 continue
@@ -485,4 +492,12 @@ def corpus_paths(root, label, config=None):
             full = os.path.join(dirpath, name)
             if os.path.islink(full):
                 dirnames.remove(name)
-    return sorted(out)
+                # A directory symlink is excluded by the symlink layer, and
+                # it is dropped here rather than classified. Left unrecorded,
+                # `[symlinks]` owns nothing in any report and CP-0's per-layer
+                # gate has a layer it can never see.
+                try:
+                    report.record(full, clf.explain(full, is_symlink=True))
+                except OSError:
+                    pass
+    return sorted(out), report

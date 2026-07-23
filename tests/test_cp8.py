@@ -99,11 +99,11 @@ def first_seen_of(db):
 
 
 def markdown_paths(root, cfg):
-    return up.corpus_paths(root, "markdown", config=cfg)
+    return up.corpus_paths(root, "markdown", config=cfg)[0]
 
 
 def image_paths(root, cfg):
-    return up.corpus_paths(root, "image", config=cfg)
+    return up.corpus_paths(root, "image", config=cfg)[0]
 
 
 def main():

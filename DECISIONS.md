@@ -657,6 +657,54 @@ another, 0 crash-kills, 0 survivors.**
 
 ---
 
+## 23 · Exclusion is reported, and the cap says when it bit
+
+`build` and `update` reported exclusion as a percentage and nothing else.
+With 588,589 files in and 5,333 out, **"99.09% excluded" is 99.09% nobody can
+check** — including the author. `census` did better and named directories, but
+capped the list at twenty and said nothing about the cap. A silent truncation
+reads as full coverage, which is the same shape as `all()` over an empty list
+reading as agreement (§20).
+
+`corpus.ExclusionReport` now carries the count, the layer that owned each
+exclusion, the directories, and `truncated`. **The flag is the point; the list
+is a convenience.** `census` gained `--top` and `--all`; `update` and
+`md build` print a line they never had.
+
+`corpus_paths()` returns `(paths, report)` rather than taking an optional
+report argument. An optional report is a report nobody passes — the same
+failure as a mechanism whose only caller is a test (§21). It calls `explain()`
+instead of `classify()` at no cost, since `classify` is `explain(...).label`,
+so the owning layer is known for free.
+
+**One class fed by `record()`, not a tally per command.** The walks
+legitimately differ — `census` wants every decision, `corpus_paths` wants one
+label — but the truncation rule must not, because two copies of "did we cut
+the list" is how one of them ends up always saying no. That is decision 1 from
+the top of this file applied to reporting.
+
+**Directory symlinks are recorded where they are pruned.** `corpus_paths`
+drops them from `os.walk` without classifying, so `[symlinks]` owned nothing
+in any report and CP-0's new per-layer gate had a layer it could never see —
+the same fixture-shaped blindness §18 found from the other side.
+
+CP-0 gained five checks and five mutations. Two of them are the pair that
+matters: `truncated` hardwired to `False` passes any gate that only tests the
+capped case, and hardwired to `True` passes any gate that only tests the
+uncapped one, so both directions are checked plus a cap wider than the tally.
+
+**Measured on the real home, which is where the value showed up:** 465,471
+files excluded across all seven layers, 232 directories, list cut at 8 and
+said so. `.local/share` owns 100,952 of them. That number was invisible behind
+a percentage for the whole life of the project.
+
+**Not done, deliberately:** the MCP server exposes no build, census or update
+tool — it is read-only search over an existing store — so there is nothing
+there to carry this structure. Said here rather than left as an unexplained
+gap in the plan.
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

@@ -49,6 +49,98 @@ CATEGORIES = ("markdown", "document", "image", "code", "misc")
 ALL_LABELS = CATEGORIES + (EXCLUDED,)
 
 
+# The seven layers that can exclude a file. Named here so a report can say
+# which one owned a decision, and so CP-0 can check that each of them shows
+# up in a run rather than being a rule nobody's corpus ever reaches.
+EXCLUSION_LAYERS = ("secrets", "L3_cache", "L1_dependencies", "L2_app_state",
+                    "L4_vendored_repo", "symlinks", "image_boundary")
+
+# How many directories a report names before it says it stopped.
+TOP_DIRS = 20
+
+
+class ExclusionReport:
+    """What a walk left out, and honestly enough to audit.
+
+    `build` and `update` used to report exclusion as a percentage. With
+    588,589 files in and 5,333 out, "99.09% excluded" is 99.09% nobody can
+    check. `census` did better and named directories, but capped the list at
+    twenty and said nothing about the cap -- a silent truncation reads as
+    full coverage, which is the pattern this package keeps finding in its own
+    gates.
+
+    So: the count, the layer that owned each exclusion, the directories, and
+    `truncated` when the printed list is shorter than the tally. The flag is
+    the point; the list is a convenience.
+
+    Directories are attributed to the first two components below the root,
+    which is the granularity at which a surprise is actionable -- `.cache/pip`
+    tells you something, `.cache` alone does not.
+
+    One class, fed by `record()` from each walk. The walks legitimately
+    differ (`census` wants every decision, `corpus_paths` wants one label),
+    but the truncation rule must not: two copies of "did we cut the list" is
+    how one of them ends up always saying no.
+    """
+
+    def __init__(self, root: str, cap: int = TOP_DIRS) -> None:
+        self.root = root
+        self.cap = cap
+        self.count = 0
+        self.seen = 0
+        self.by_layer: dict[str, int] = {}
+        self.dirs: dict[str, int] = {}
+
+    def record(self, path: str, decision: "Decision") -> "Decision":
+        """Tally one classified path. Returns the decision, so a caller can
+        write `if report.record(p, d).label == label:` without a second call
+        to `explain()`."""
+        self.seen += 1
+        if decision.label != EXCLUDED:
+            return decision
+        self.count += 1
+        self.by_layer[decision.layer] = self.by_layer.get(decision.layer, 0) + 1
+        try:
+            rel = os.path.relpath(path, self.root)
+        except ValueError:                       # different drive on Windows
+            rel = path
+        key = "/".join(rel.split(os.sep)[:2])
+        self.dirs[key] = self.dirs.get(key, 0) + 1
+        return decision
+
+    @property
+    def dirs_total(self) -> int:
+        return len(self.dirs)
+
+    @property
+    def truncated(self) -> bool:
+        return self.cap is not None and len(self.dirs) > self.cap
+
+    def top(self) -> list[tuple[str, int]]:
+        ranked = sorted(self.dirs.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked if self.cap is None else ranked[:self.cap]
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "seen": self.seen,
+            "excluded": self.count,
+            "by_layer": dict(sorted(self.by_layer.items())),
+            "dirs": self.top(),
+            "dirs_total": self.dirs_total,
+            "truncated": self.truncated,
+        }
+
+    def line(self) -> str:
+        """One line for a command that prints rows, not JSON."""
+        layers = ", ".join("%s %d" % (k, v)
+                           for k, v in sorted(self.by_layer.items())) or "none"
+        tail = ""
+        if self.truncated:
+            tail = " (naming %d of %d directories)" % (self.cap, len(self.dirs))
+        return "%d of %d excluded by [%s]%s" % (self.count, self.seen,
+                                                layers, tail)
+
+
 @dataclass(frozen=True)
 class Decision:
     """Why a path got its label. This is what `corpus explain` prints."""

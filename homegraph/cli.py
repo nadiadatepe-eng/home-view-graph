@@ -61,7 +61,7 @@ if __package__ in (None, ""):
 
 from . import userconfig
 from .config import home_root
-from .corpus import ALL_LABELS, Classifier
+from .corpus import ALL_LABELS, EXCLUSION_LAYERS, TOP_DIRS, Classifier
 
 
 def _walk(root):
@@ -166,20 +166,18 @@ def cmd_explain(args):
 
 
 def cmd_census(args):
+    from .corpus import ExclusionReport
     clf = Classifier()
     by_label = collections.Counter()
     by_subtype = collections.Counter()
-    excluded_dirs = collections.Counter()
+    # `--all` means no cap, which is the only way to see the tail. The cap is
+    # not the problem; a cap nobody is told about is.
+    excluded = ExclusionReport(args.root, cap=None if args.all else args.top)
 
     for path, is_link in _walk(args.root):
-        d = clf.explain(path, is_symlink=is_link)
+        d = excluded.record(path, clf.explain(path, is_symlink=is_link))
         by_label[d.label] += 1
         by_subtype[(d.label, d.subtype)] += 1
-        if d.label == "EXCLUDED":
-            # Attribute to the top two path components below root, which is
-            # the granularity at which a surprise is actionable.
-            rel = os.path.relpath(path, args.root)
-            excluded_dirs["/".join(rel.split(os.sep)[:2])] += 1
 
     total = sum(by_label.values())
     print("root:  %s" % args.root)
@@ -195,8 +193,20 @@ def cmd_census(args):
                                       key=lambda kv: (kv[0][0], -kv[1])):
         print("%-10s %-22s %9d" % (label, subtype, n))
 
-    print("\ntop 20 excluded directories")
-    for name, n in excluded_dirs.most_common(20):
+    print("\n%-18s %9s" % ("layer", "excluded"))
+    for layer in EXCLUSION_LAYERS:
+        # Every layer is listed, including the ones that owned nothing. A
+        # layer missing from the output reads as "no such rule"; a layer
+        # showing 0 reads as "this corpus does not reach it", which is the
+        # finding CP-0's per-layer check exists to surface.
+        print("%-18s %9d" % (layer, excluded.by_layer.get(layer, 0)))
+
+    shown = excluded.top()
+    print("\n%d excluded director%s%s"
+          % (len(shown), "y" if len(shown) == 1 else "ies",
+             (" of %d -- re-run with --all for the rest"
+              % excluded.dirs_total) if excluded.truncated else ""))
+    for name, n in shown:
         print("  %9d  %s" % (n, name))
     return 0
 
@@ -291,7 +301,11 @@ def cmd_update(args):
                   % (name, path), file=sys.stderr)
             failed = True
             continue
-        paths = up.corpus_paths(root, spec.label, config=cfg)
+        paths, excluded = up.corpus_paths(root, spec.label, config=cfg)
+        # Printed before the update runs, so a corpus that silently tripled --
+        # an exclusion layer switched off -- is visible next to the diff that
+        # is about to be applied rather than after it.
+        print("%-6s %s" % (name, excluded.line()))
         with _writing(path, model=name,
                       fingerprint=up.fingerprint(cfg)) as store:
             try:
@@ -345,10 +359,16 @@ def cmd_md_build(args):
 
     from . import update as up
     from .corpus import Classifier
+    from .corpus import ExclusionReport
     from .models.m3_build import build, rules_from_config
     clf = Classifier()
-    paths = [p for p, _ in _walk(args.root)
-             if clf.classify(p) == "markdown" and os.path.exists(p)]
+    excluded = ExclusionReport(args.root or home_root())
+    paths = []
+    for p, is_link in _walk(args.root):
+        d = excluded.record(p, clf.explain(p, is_symlink=is_link))
+        if d.label == "markdown" and os.path.exists(p):
+            paths.append(p)
+    print("%-22s %s" % ("excluded", excluded.line()))
     with _writing(args.db, model="m3",
                   fingerprint=up.fingerprint(clf.config)) as s:
         report = build(s, paths, args.as_of or date.today().isoformat(),
@@ -546,6 +566,12 @@ def main(argv=None):
 
     p = sub.add_parser("census", help="counts per category and subtype")
     p.add_argument("--root", default=home_root())
+    p.add_argument("--top", type=int, default=TOP_DIRS,
+                   help="how many excluded directories to name "
+                        "(default %d; the output says when it cut the list)"
+                        % TOP_DIRS)
+    p.add_argument("--all", action="store_true",
+                   help="name every excluded directory, no cap")
     p.set_defaults(func=cmd_census)
 
     p = sub.add_parser("status", help="store contents and index health")

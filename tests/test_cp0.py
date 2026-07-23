@@ -251,6 +251,75 @@ LAYERS_OFF = {
 }
 
 
+def cp0_exclusion_report(rows, baseline, spec, home):
+    """The report has to name what the rules did, and admit when it cut a list.
+
+    Separate from `cp0_layer_independence`, which asks whether a layer earns
+    its keep. This asks whether the *reporting path* can still see it. Those
+    fail differently: a layer can own three hundred files and be missing from
+    every line the user reads, and `build` said "99.09% excluded" for months
+    without anyone being able to check the 99.09%.
+
+    `truncated` is the check that matters. A capped list that does not say it
+    was capped reads as full coverage -- the same shape as an `all()` over an
+    empty list reading as agreement.
+    """
+    from homegraph.corpus import EXCLUSION_LAYERS, ExclusionReport
+
+    clf = Classifier(home=home)
+    clf.vendored_roots
+    report = ExclusionReport(home)
+    for path, is_link in rows:
+        report.record(path, clf.explain(path, is_symlink=is_link))
+
+    # 1. The report agrees with the census. Two tallies of one walk that
+    #    disagree mean one of them is answering about a different corpus.
+    check("the report's exclusion count matches the census",
+          report.count == baseline[EXCLUDED],
+          "report=%d census=%d" % (report.count, baseline[EXCLUDED]))
+
+    # 2. Every layer is named. A layer at zero here is either a rule this
+    #    corpus cannot reach or a layer the report forgot; both are findings,
+    #    and neither is visible from a percentage.
+    silent = [layer for layer in EXCLUSION_LAYERS
+              if not report.by_layer.get(layer)]
+    check("every exclusion layer is named in the report", not silent,
+          "  ".join("%s %d" % (k, report.by_layer.get(k, 0))
+                    for k in EXCLUSION_LAYERS)
+          + ("" if not silent else "  SILENT: %s" % silent))
+
+    # 3. The cap announces itself. Two directions, because "truncated is
+    #    always False" passes the first and "always True" passes nothing --
+    #    while "always True" would pass a one-sided gate that only checked
+    #    the capped case.
+    tight = ExclusionReport(home, cap=2)
+    for path, is_link in rows:
+        tight.record(path, clf.explain(path, is_symlink=is_link))
+    check("a capped list reports itself as truncated",
+          tight.truncated and len(tight.top()) == 2
+          and tight.dirs_total > 2,
+          "cap=2 shown=%d of %d truncated=%s"
+          % (len(tight.top()), tight.dirs_total, tight.truncated))
+
+    loose = ExclusionReport(home, cap=None)
+    for path, is_link in rows:
+        loose.record(path, clf.explain(path, is_symlink=is_link))
+    check("an uncapped list does not claim truncation",
+          not loose.truncated and len(loose.top()) == loose.dirs_total,
+          "shown=%d of %d truncated=%s"
+          % (len(loose.top()), loose.dirs_total, loose.truncated))
+
+    # 4. The negative control for the cap: a cap wider than the tally must
+    #    not report truncation either. Without this, `truncated` could be
+    #    "did anyone set a cap" rather than "did the cap bite".
+    wide = ExclusionReport(home, cap=loose.dirs_total + 10)
+    for path, is_link in rows:
+        wide.record(path, clf.explain(path, is_symlink=is_link))
+    check("a cap wider than the tally does not report truncation",
+          not wide.truncated, "cap=%d dirs=%d truncated=%s"
+          % (wide.cap, wide.dirs_total, wide.truncated))
+
+
 def cp0_layer_independence(rows, baseline, spec, home):
     """Every exclusion layer must uniquely own at least one file.
 
@@ -533,6 +602,7 @@ def main(inv=None):
     cp0_cache_gate(clf)
     cp0_negative_control(rows, counts, spec)
     cp0_layer_independence(rows, counts, spec, spec["home"])
+    cp0_exclusion_report(rows, counts, spec, spec["home"])
     cp0_idempotent(clf, rows)
     cp0_one_place_only(clf)
     cp0_secrets(clf)
