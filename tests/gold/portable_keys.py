@@ -9,9 +9,12 @@ would be a photograph of it, which is the failure `tests/fixtures/synthetic.py`
 opens by warning about.
 
 The root in every row is `/root`, chosen because it is short and because a
-converter that special-cases home directories would pass a key full of
-`/home/...` and fail on a project directory or an external disk. The whole
-point of TODO-E is that the root is whatever the user picked.
+converter that special-cases home directories would pass every key from one
+and fail on a project directory or an external disk. The whole point of
+TODO-E is that the root is whatever the user picked -- and the privacy gate
+caught this very paragraph when it spelled that out with a home-shaped
+literal, which is the second time a comment has leaked what the code does
+not.
 
 Columns: (local key, portable key, why this row exists).
 """
