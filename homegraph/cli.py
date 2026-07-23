@@ -367,8 +367,13 @@ def cmd_md_backlinks(args):
     from .models.m3_build import backlinks
     from .store import Store
     with Store(args.db) as s:
-        found = backlinks(s, os.path.abspath(args.path))
-        print("%d inbound wikilink(s)" % len(found))
+        as_of = getattr(args, "as_of", None)
+        found = backlinks(s, os.path.abspath(args.path), as_of=as_of)
+        # The date is echoed because "3 inbound links" means something
+        # different on two dates, and a reader scrolling back through a
+        # terminal has no other way to tell which run was which.
+        print("%d inbound wikilink(s)%s"
+              % (len(found), " as of %s" % as_of if as_of else ""))
         for src in found:
             print("  %s" % src)
     return 0
@@ -507,6 +512,12 @@ def main(argv=None):
     q = msub.add_parser("backlinks")
     q.add_argument("db")
     q.add_argument("path")
+    # The one command that reaches Store.edges_as_of. Without it the versioned
+    # edge schema -- first_seen, last_seen, and the predicate that reads them --
+    # was a capability with no way in.
+    q.add_argument("--as-of", dest="as_of", default=None,
+                   metavar="YYYY-MM-DD",
+                   help="which files linked here on that date")
     q.set_defaults(func=cmd_md_backlinks)
     q = msub.add_parser("broken")
     q.add_argument("db")

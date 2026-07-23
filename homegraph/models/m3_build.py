@@ -239,11 +239,27 @@ def _resolve_relative(src, target):
     return os.path.normpath(os.path.join(os.path.dirname(src), target))
 
 
-def backlinks(store, node_key, rel="WIKILINKS_TO"):
-    """Inbound edges, computed on demand. Never a stored second copy."""
+def backlinks(store, node_key, rel="WIKILINKS_TO", as_of=None):
+    """Inbound edges, computed on demand. Never a stored second copy.
+
+    `as_of` answers the question the versioned edge schema was built for --
+    "which files linked here on that date" -- by going through
+    `Store.edges_as_of`, which owns the first_seen/last_seen predicate.
+
+    Not by repeating the predicate here. That query was reachable only from a
+    test until this call existed: `--as-of` on `mesh search` filters NODES by
+    first_seen, so time travel over edges, the capability store.py's docstring
+    names as the whole point, had no path from the command line. Writing the
+    dates into this SQL instead would have given the system a second opinion
+    about what "alive on a date" means, which is how the boundary rule in
+    DECISIONS.md section 2 gets broken by a helpful shortcut.
+    """
     nid = store.node_id(node_key)
     if nid is None:
         return []
+    if as_of:
+        return sorted(r["src_key"] for r in store.edges_as_of(as_of, rel)
+                      if r["dst"] == nid)
     return [r["node_key"] for r in store.db.execute(
         "SELECT s.node_key FROM edges e JOIN nodes s ON s.id = e.src "
         "WHERE e.dst = ? AND e.rel = ? ORDER BY s.node_key", (nid, rel))]

@@ -22,6 +22,8 @@ Run:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -37,6 +39,7 @@ if not REAL:
     from tests.fixtures.synthetic import ROOT as SYNTH_ROOT
     os.environ.setdefault("HOMEGRAPH_ROOT", SYNTH_ROOT)
 
+from homegraph import cli                                        # noqa: E402
 from homegraph.corpus import Classifier                          # noqa: E402
 from homegraph.models.m3_build import (BuildReport,              # noqa: E402
                                        backlinks, broken_links,
@@ -381,6 +384,63 @@ def t_backlinks(db, spec):
                                ).fetchall(), "no backlink table exists")
 
 
+def t_backlinks_time_travel(tmp):
+    """Backlinks as they stood on a date, through the command a user runs.
+
+    `Store.edges_as_of` holds the whole of time travel -- one predicate, in one
+    place -- and until `md backlinks --as-of` existed nothing outside a test
+    called it. The schema carried `first_seen` and `last_seen` on every edge,
+    store.py's docstring named "which links did this note have last week" as
+    the reason, and there was no way to ask.
+
+    So this gate runs the CLI path, not the helper. A check that called
+    `backlinks(..., as_of=)` directly would pass just as happily with the
+    argument unwired from argparse, which is the shape DECISIONS.md section 21
+    is about: the mechanism works, and the product never reaches it.
+    """
+    db = os.path.join(tmp, "history.db")
+    target = "/notes/target.md"
+    with Store(db, model="m3") as s:
+        for key in (target, "/notes/early.md", "/notes/late.md"):
+            s.upsert_node(key, kind="file", path=key, as_of="2026-01-01")
+        # early.md linked on both days; late.md only on the second.
+        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-01")
+        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-05")
+        s.upsert_edge("/notes/late.md", target, "WIKILINKS_TO", "2026-01-05")
+        s.commit()
+
+    def run(*extra):
+        # SystemExit is caught, not allowed to propagate. argparse raises it
+        # for an unknown flag, so a `--as-of` that was never wired up would
+        # otherwise kill the checkpoint before any gate spoke -- and the
+        # mutation harness scores that as detected-only-by-a-crash, the
+        # weakest signal there is. The same for a broken SQL predicate, which
+        # surfaces as an exception rather than a wrong answer.
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["md", "backlinks", db, target, *extra])
+        except SystemExit as exc:
+            return "exit:%s" % exc.code, out.getvalue()
+        except Exception as exc:                                # noqa: BLE001
+            return "raised:%s" % type(exc).__name__, out.getvalue()
+        return code, out.getvalue()
+
+    code_now, now = run()
+    code_then, then = run("--as-of", "2026-01-01")
+
+    check("md backlinks runs and finds both links today",
+          code_now == 0 and "early.md" in now and "late.md" in now,
+          "exit %s, %d line(s)" % (code_now, len(now.splitlines())))
+    # The one that matters: a link that did not exist yet must be absent, and
+    # `--as-of` must not simply return everything with a date printed on it.
+    check("--as-of hides a link that did not exist yet",
+          code_then == 0 and "early.md" in then and "late.md" not in then,
+          "exit %s: %s" % (code_then, then.replace("\n", " ")[:70]))
+    check("the date is echoed with the answer",
+          "2026-01-01" in then, then.splitlines()[0] if then else "(no output)")
+
+
 def t_subtype_gate(tmp):
     """The filter must return zero for a term that only a hidden file has."""
     db = os.path.join(tmp, "sub.db")
@@ -470,6 +530,7 @@ def main():
         db, report = t_build(tmp, paths, classified, spec)
         t_known_answers(db, spec)
         t_backlinks(db, spec)
+        t_backlinks_time_travel(tmp)
         t_subtype_gate(tmp)
         t_cycle(db, spec)
         t_broken_are_nodes(db, spec)

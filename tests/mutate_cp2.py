@@ -62,6 +62,38 @@ MUTATIONS = [
      "  # mutated: alias kept",
      "real links survive"),
 
+    # -- time travel over edges, through the command a user runs ----------
+    #
+    # `Store.edges_as_of` was reachable only from a test: the schema carried
+    # first_seen and last_seen on every edge, the docstring named "which links
+    # did this note have last week" as the reason, and no command asked.
+    ("--as-of is accepted and then ignored",
+     "homegraph/cli.py",
+     "        found = backlinks(s, os.path.abspath(args.path), as_of=as_of)",
+     "        found = backlinks(s, os.path.abspath(args.path))  # mutated",
+     "--as-of hides a link that did not exist yet"),
+
+    ("the flag never reaches the parser",
+     "homegraph/cli.py",
+     '    q.add_argument("--as-of", dest="as_of", default=None,\n'
+     '                   metavar="YYYY-MM-DD",\n'
+     '                   help="which files linked here on that date")\n'
+     "    q.set_defaults(func=cmd_md_backlinks)",
+     "    q.set_defaults(func=cmd_md_backlinks)  # mutated: flag unwired",
+     "--as-of hides a link that did not exist yet"),
+
+    # The predicate itself, in the one place that owns it. A `backlinks` that
+    # wrote its own dates into SQL would keep this green while giving the
+    # system a second opinion about what "alive on a date" means.
+    # OR, not a dropped clause: the arity has to stay at two placeholders, or
+    # sqlite3 raises and the harness scores a crash instead of a refusal.
+    # A mutation that cannot produce a WRONG ANSWER only tests error handling.
+    ("the as-of predicate forgets when an edge started",
+     "homegraph/store.py",
+     '               "WHERE e.first_seen <= ? AND e.last_seen >= ?")',
+     '               "WHERE e.first_seen <= ? OR e.last_seen >= ?")  # mutated',
+     "--as-of hides a link that did not exist yet"),
+
     # -- what the build produces ------------------------------------------
     ("markdown files are read but not all stored",
      "homegraph/models/m3_build.py",
@@ -87,8 +119,8 @@ MUTATIONS = [
     # disagree with it. The module docstring says so; nothing tested it.
     ("backlinks get their own table, which can drift",
      "homegraph/models/m3_build.py",
-     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\"):",
-     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\"):\n"
+     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\", as_of=None):",
+     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\", as_of=None):\n"
      "    store.db.execute(  # mutated: a second, drifting copy\n"
      "        'CREATE TABLE IF NOT EXISTS backlink_cache (src TEXT, dst TEXT)')",
      "backlinks are derived, not stored"),

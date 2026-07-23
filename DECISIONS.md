@@ -565,6 +565,28 @@ could see, because each one produced a plausible answer:
 It is verified by something that runs when the product runs. Ask of every
 documented mechanism: *what calls this outside the tests?*
 
+Asked of every definition rather than the four named ones, it found one more,
+and a bigger one. **`Store.edges_as_of` had no path from the command line.**
+That is the versioned-edge time-travel query — the `first_seen <= X AND
+last_seen >= X` predicate the entire edge schema exists to support, and the
+capability `store.py` names in its own docstring as the reason nothing is
+deleted: *"which links did this note have last week"*. `--as-of` existed on
+`mesh search`, but that filters NODES by `first_seen`; edges could time-travel
+only from a test.
+
+`md backlinks --as-of` now reaches it, through `Store.edges_as_of` rather than
+by writing the dates into `backlinks`'s own SQL — a second copy of the
+predicate would have given the system a second opinion about what "alive on a
+date" means. CP-2 asserts it through the CLI, because a check calling the
+helper directly would pass with the flag unwired from argparse, which is this
+whole section's failure wearing a smaller hat.
+
+Two things that gate got wrong first, both worth remembering: it let argparse's
+`SystemExit` escape, so the unwired-flag mutation registered as a crash rather
+than a refusal; and the first predicate mutation dropped a SQL clause and
+changed the placeholder count, so it raised instead of answering wrongly. **A
+mutation that cannot produce a wrong answer only tests error handling.**
+
 ---
 
 ## 14 · Deferred
