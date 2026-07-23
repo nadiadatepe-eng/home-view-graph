@@ -34,10 +34,17 @@ globs = [
 # answer key that quietly hides a gap is worse than no answer key.
 
 [allow]
-# Allowlist wins over every layer below it (never over `secrets`). Empty on
-# purpose: each entry is a hole in the partition proof and must be argued for.
+# Allowlist wins over every layer below it (never over `secrets`). Each entry
+# is a hole in the partition proof and must be argued for.
+#
+# The memory dir is the one argued hole: `.claude/projects/` is excluded as
+# app-state below (its per-session transcripts are machine state and churn on
+# every message, which a live watch turns into a full rebuild each time), but
+# the memory notes under `.claude/projects/*/memory/` are hand-written content
+# the graph should keep. Allow wins over that app-state exclusion, so the
+# transcripts go and the memory stays.
 paths = []
-globs = []
+globs = ["{root}/.claude/projects/*/memory/*"]
 
 [cache]
 # Layer 3. Matches at ANY depth, not just the top level.
@@ -89,6 +96,11 @@ prefixes_scoped = [
   "{root}/.claude/daemon/", "{root}/.claude/jobs/",
   "{root}/.claude/ide/", "{root}/.claude/backups/",
   "{root}/.claude/uploads/", "{root}/.claude/downloads/",
+  # Per-session transcripts (one .jsonl appended on every message) and the
+  # usage-state file rewritten alongside them: machine state that a live watch
+  # otherwise turns into a full rebuild on every keystroke. The memory notes
+  # nested under here are kept by an [allow] carve-out above.
+  "{root}/.claude/projects/", "{root}/.claude/usage-state.json",
   "{root}/.codex/shell_snapshots/", "{root}/.codex/ipc/",
   "{root}/.codex/plugins/cache/",
 ]

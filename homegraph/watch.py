@@ -55,8 +55,26 @@ def relevant(path: str, ignore: Iterable[str]) -> bool:
     return True
 
 
-def _any_relevant(batch: list[tuple[str, int]], ignore: Iterable[str]) -> bool:
-    return any(relevant(path, ignore) for path, _mask in batch)
+def relevant_to_corpus(path: str, ignore: Iterable[str],
+                       is_excluded: Callable[[str], bool]) -> bool:
+    """True if a change to `path` should trigger a rebuild.
+
+    Two kinds of change are noise. One is a store write (`relevant` is False --
+    the self-trigger guard). The other is a change to a file the corpus would
+    not index anyway: the classifier that prunes whole directories from the
+    watch also excludes individual churny files inside watched ones -- Claude
+    Code rewrites `.claude/usage-state.json` every few seconds inside a
+    `.claude/` we otherwise want -- and rebuilding the whole graph for a file
+    that is only going to be dropped from it is exactly the wasted work, and
+    wasted heat, this skips. `is_excluded(path)` is the classifier's verdict,
+    injected so this module stays free of the corpus rules it borrows.
+    """
+    return relevant(path, ignore) and not is_excluded(path)
+
+
+def _any_relevant(batch: list[tuple[str, int]],
+                  keep: Callable[[str], bool]) -> bool:
+    return any(keep(path) for path, _mask in batch)
 
 
 def store_prune(root: str, stores: Iterable[str]) -> Prune:
@@ -106,36 +124,37 @@ class Source:
 
 
 def watch_loop(source: Source, trigger: Callable[[], None], *,
-               ignore: Iterable[str], debounce: float) -> None:
-    """Call `trigger` once per settled burst of relevant filesystem changes.
+               keep: Callable[[str], bool], debounce: float) -> None:
+    """Call `trigger` once per settled burst of changes worth keeping.
 
-    A burst begins on the first relevant event and ends once `debounce`
-    seconds pass with no further relevant event. Irrelevant events (the store
-    writes from `ignore`) neither begin nor extend a burst, which is what stops
-    an update from triggering itself: after `trigger` runs and writes the
-    stores, those writes arrive as the next batch, fail the relevance guard,
-    and are skipped rather than starting a second update.
+    A burst begins on the first change `keep` returns True for and ends once
+    `debounce` seconds pass with no further such change. Changes `keep` rejects
+    -- store writes, and files the corpus excludes -- neither begin nor extend a
+    burst. That is what stops an update from triggering itself: after `trigger`
+    runs and writes the stores, those writes arrive as the next batch, fail
+    `keep`, and are skipped rather than starting a second update. The same guard
+    means a churny but excluded file (a live `.claude/usage-state.json`) never
+    starts a rebuild it would only be dropped from.
 
     Runs until `source.read` raises (KeyboardInterrupt in production). Writes
     nothing itself; `trigger` is the only thing that touches disk.
     """
-    ignore = list(ignore)
     while True:
         batch = source.read(None)
-        if not _any_relevant(batch, ignore):
-            # A batch with nothing relevant (store writes an update just made,
-            # or any churn `ignore` covers) must not begin a burst. Re-reading
-            # at once would spin a core as fast as the kernel delivers such
-            # events; pausing one debounce first caps the wake rate. No relevant
-            # event is lost -- inotify queues it, and it is still waiting on the
-            # next read. (A sustained flood could overflow that queue during the
-            # pause; pruning the store dir upstream is what keeps this path
+        if not _any_relevant(batch, keep):
+            # A batch with nothing worth keeping (store writes an update just
+            # made, or excluded churn) must not begin a burst. Re-reading at
+            # once would spin a core as fast as the kernel delivers such events;
+            # pausing one debounce first caps the wake rate. No kept event is
+            # lost -- inotify queues it, and it is still waiting on the next
+            # read. (A sustained flood could overflow that queue during the
+            # pause; pruning the churny dir upstream is what keeps this path
             # cold, so this backoff is only a backstop.)
             time.sleep(debounce)
             continue
-        # Coalesce: keep waiting until a full debounce window is quiet of
-        # relevant events, so one save that touches five files is one update.
-        while _any_relevant(source.read(debounce), ignore):
+        # Coalesce: keep waiting until a full debounce window is quiet of kept
+        # events, so one save that touches five files is one update.
+        while _any_relevant(source.read(debounce), keep):
             pass
         trigger()
 

@@ -471,9 +471,18 @@ def cmd_watch(args):
             print("[%s] update reported problems (exit %d) -- watch continues"
                   % (stamp, rc), file=sys.stderr, flush=True)
 
+    # A change counts only if it is not a store write AND the corpus would
+    # index it. The classifier that shapes `prune` for whole directories shapes
+    # relevance for individual files too, so a churny but excluded file in a
+    # watched dir (Claude Code rewriting .claude/usage-state.json every few
+    # seconds) never triggers a full rebuild it would only be dropped from.
+    def keep(path):
+        return wat.relevant_to_corpus(
+            path, ignore, lambda p: clf.explain(p).label == EXCLUDED)
+
     print("watching %s (inotify) -- Ctrl-C to stop" % root, flush=True)
     try:
-        wat.watch_loop(source, trigger, ignore=ignore, debounce=args.debounce)
+        wat.watch_loop(source, trigger, keep=keep, debounce=args.debounce)
     except KeyboardInterrupt:
         print("\nstopped. nothing persists.", flush=True)
     finally:

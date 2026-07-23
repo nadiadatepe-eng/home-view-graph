@@ -46,18 +46,24 @@ MUTATIONS = [
     # -- debounce / coalescing --------------------------------------------
     ("the debounce stops coalescing, so each event is its own update",
      "homegraph/watch.py",
-     "        while _any_relevant(source.read(debounce), ignore):\n"
+     "        while _any_relevant(source.read(debounce), keep):\n"
      "            pass",
-     "        if _any_relevant(source.read(debounce), ignore):  "
+     "        if _any_relevant(source.read(debounce), keep):  "
      "# mutated: no coalescing\n"
      "            pass",
      "three changes in one burst fire one update"),
 
     ("any event starts a burst, so store writes update forever",
      "homegraph/watch.py",
-     "        if not _any_relevant(batch, ignore):",
+     "        if not _any_relevant(batch, keep):",
      "        if False:  # mutated: any event starts a burst",
      "store writes alone never trigger an update"),
+
+    ("the corpus verdict is ignored, so excluded churn triggers rebuilds",
+     "homegraph/watch.py",
+     "    return relevant(path, ignore) and not is_excluded(path)",
+     "    return relevant(path, ignore)  # mutated: excluded files count",
+     "a corpus-excluded churny file does not count"),
 
     ("the irrelevant-burst backoff is gone, so store writes spin the loop",
      "homegraph/watch.py",

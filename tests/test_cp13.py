@@ -81,7 +81,8 @@ def count_triggers(batches):
         fired["n"] += 1
 
     try:
-        w.watch_loop(src, trigger, ignore=IGNORE, debounce=0.01)
+        w.watch_loop(src, trigger, keep=lambda p: w.relevant(p, IGNORE),
+                     debounce=0.01)
     except KeyboardInterrupt:
         pass
     return fired["n"], src
@@ -141,6 +142,23 @@ def t_no_retrigger():
     one update, not two."""
     n, _ = count_triggers([[EV], [], [DB, WAL], [DB]])
     check("an update does not trigger itself", n == 1, "fired %d" % n)
+
+
+def t_corpus_relevance():
+    """Fasit for relevant_to_corpus: a change counts only if it is neither a
+    store write nor a file the corpus excludes. The classifier's verdict is
+    injected, so this tests the composition without the real rules (cp7 owns
+    those). usage-state.json is excluded churn -> no rebuild; a store write is
+    the self-trigger guard -> no rebuild; an ordinary note counts."""
+    ig = ["/store/m3.db"]
+    excluded = lambda p: p.endswith("usage-state.json")     # noqa: E731
+    keep = lambda p: w.relevant_to_corpus(p, ig, excluded)  # noqa: E731
+    check("a corpus-excluded churny file does not count",
+          keep("/home/.claude/usage-state.json") is False)
+    check("a store write still does not count",
+          keep("/store/m3.db") is False)
+    check("an ordinary corpus change counts",
+          keep("/home/notes.md") is True)
 
 
 def t_no_spin():
@@ -423,6 +441,7 @@ def main():
     t_separated()
     t_self_trigger()
     t_no_retrigger()
+    t_corpus_relevance()
     t_no_spin()
     t_store_prune()
     t_debounce_rejected()
