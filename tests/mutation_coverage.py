@@ -74,7 +74,17 @@ def main(argv=None):
 
     total = covered_total = 0
     rows = []
-    for n in range(9):
+    # Globbed, not `range(9)`. A hardcoded bound is a silent cap: CP-11 was
+    # written, measured at 57%, and the number was the same 57% as before,
+    # because the loop stopped at 8 and said nothing about it.
+    import glob
+    import re
+    numbers = sorted(
+        int(m.group(1))
+        for m in (re.search(r"test_cp(\d+)\.py$", p)
+                  for p in glob.glob(os.path.join(HERE, "test_cp*.py")))
+        if m)
+    for n in numbers:
         test = os.path.join(HERE, "test_cp%d.py" % n)
         mut = os.path.join(HERE, "mutate_cp%d.py" % n)
         if not os.path.exists(test):

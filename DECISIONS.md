@@ -589,6 +589,74 @@ mutation that cannot produce a wrong answer only tests error handling.**
 
 ---
 
+## 22 · One writer per store, and it refuses rather than queues
+
+Until CP-11 there was no write barrier at all. `Store.__init__` opened SQLite
+with `foreign_keys = ON` and nothing else — no journal mode, no busy timeout,
+no lock. Two concurrent `homegraph update` runs against one store were
+undefined, and since `update` is a single transaction, a collision damages
+more rather than less.
+
+The intent is borrowed from `codebase-memory-mcp`'s admission barrier, which
+requires every process to share a build and a cache root and records conflicts
+explicitly. **The daemon it hangs off is not borrowed**: homegraph has no
+long-running service to coordinate — the MCP server is stdio and read-only,
+and there is no watcher. A daemon here would be machinery without a problem.
+
+**Refusing is the design.** A queue would make a second writer wait on a first
+that may be rebuilding a 588k-file corpus, and its caller — a cron line, a
+shell loop — has no way to tell waiting from working. Exit 2 naming the
+holder's pid is a fact the caller can act on.
+
+Two barriers, in order:
+
+1. **`lock.StoreLock`** — a `<store>.lock` file taken with `O_CREAT|O_EXCL`,
+   holding pid, boot-relative start time, a nonce and the config fingerprint.
+2. **`Store.begin_immediate()`** — `BEGIN IMMEDIATE` so SQLite's own write
+   lock is taken before the work rather than at the first `INSERT`, which is
+   what Python's implicit DEFERRED transaction would do.
+
+Readers take neither. `status`, `search`, `explain` and the MCP server answer
+while a writer holds the lock; WAL exists so they can.
+
+**A pid is not a process.** Pids are reused, and a lock left by a crash whose
+number was later handed to something else would read as live forever, making
+the store unwritable until someone deleted the file by hand — which is how
+people learn to delete lock files by reflex. So liveness compares the recorded
+start time too. On a platform without `/proc` only `kill(pid, 0)` is
+available; the lock still works there, one guarantee weaker, and the refusal
+message says so instead of implying otherwise.
+
+**The residual race is closed by reading back, not by locking harder.** Two
+processes can both find a stale lock and both unlink it; only one `O_EXCL`
+succeeds, but the loser may have removed the winner's fresh file. So a writer
+re-reads the lock it believes it took and checks its own nonce is the one on
+disk. Symmetrically, `release()` unlinks only a lock whose nonce is still
+ours — otherwise a writer whose lock was cleared as an orphan would delete the
+lock of whoever took it next.
+
+**Known limitation, written down rather than assumed away: WAL does not work
+over network filesystems.** `journal_mode` is the one PRAGMA that can decline,
+so `Store` reads back what it actually got instead of trusting the request.
+The user config permits an arbitrary root, so this is reachable. Today it is
+detected and recorded (`Store.journal_mode`), not refused — the barrier's
+correctness does not depend on WAL, only readers' ability to answer during a
+write does.
+
+**Two of CP-11's own gates were empty on the first run, and the mutation
+harness is what said so.** One claimed to test unparseable lock files and
+never reached the branch it named, because `_read` returned `None` and the
+caller wrote `holder is not None and live` — the liveness question decided in
+two places, the duplicated invariant this project bans, three days after
+writing that rule down. `_read` returns `{}` now and `_liveness` decides
+alone. The other claimed to test the nonce and tested the `held` flag that
+short-circuits before it; the real scenario — our lock cleared as an orphan,
+a later writer holding the file, our release running anyway — is now its own
+gate. **CP-11: 26 checks, 12 mutations, 12 killed by a named gate, 0 by
+another, 0 crash-kills, 0 survivors.**
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

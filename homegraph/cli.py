@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import os
 import sys
 
@@ -265,7 +266,6 @@ def cmd_update(args):
     from datetime import date
 
     from . import update as up
-    from .store import Store
 
     cfg = userconfig.load(getattr(args, "config", None))
     root = os.path.abspath(os.path.expanduser(args.root or cfg.root))
@@ -292,7 +292,8 @@ def cmd_update(args):
             failed = True
             continue
         paths = up.corpus_paths(root, spec.label, config=cfg)
-        with Store(path, model=name) as store:
+        with _writing(path, model=name,
+                      fingerprint=up.fingerprint(cfg)) as store:
             try:
                 report = up.update(store, name, paths, as_of, cfg,
                                    allow_config_change=args.allow_config_change)
@@ -320,7 +321,8 @@ def cmd_update(args):
         return 2
 
     if args.mesh_db:
-        result = up.refresh_mesh(models, args.mesh_db, as_of)
+        with _barrier(args.mesh_db):
+            result = up.refresh_mesh(models, args.mesh_db, as_of)
         print("mesh   %s" % result)
     return 0
 
@@ -344,11 +346,11 @@ def cmd_md_build(args):
     from . import update as up
     from .corpus import Classifier
     from .models.m3_build import build, rules_from_config
-    from .store import Store
     clf = Classifier()
     paths = [p for p, _ in _walk(args.root)
              if clf.classify(p) == "markdown" and os.path.exists(p)]
-    with Store(args.db, model="m3") as s:
+    with _writing(args.db, model="m3",
+                  fingerprint=up.fingerprint(clf.config)) as s:
         report = build(s, paths, args.as_of or date.today().isoformat(),
                        rules=rules_from_config(clf.config))
         s.rebuild_fts()
@@ -399,6 +401,55 @@ def cmd_md_broken(args):
 def backlink_sources(store, name):
     from .models.m3_build import backlinks
     return backlinks(store, "wikilink:%s" % name)
+
+
+@contextlib.contextmanager
+def _barrier(db_path, fingerprint=None):
+    """Hold the one-writer lock on a store path, or exit 2 naming the holder.
+
+    Separate from `_writing` because the mesh is written through `Mesh`, not
+    through `Store`, and a barrier that only covered the `Store` path would
+    leave `mesh build` exactly as unprotected as it was before.
+    """
+    from .lock import Locked, StoreLock
+
+    def note(msg):
+        print("NOTE  %s" % msg, file=sys.stderr)
+
+    barrier = StoreLock(db_path, fingerprint=fingerprint, on_stale=note)
+    try:
+        barrier.acquire()
+    except Locked as exc:
+        # Exit 2, the refusal code the rest of the CLI uses. Naming the pid is
+        # the point: "database is locked" sends the reader to the disk, and
+        # the answer is almost always their own other run.
+        print("REFUSED  %s\n(waiting is not offered: re-run when that "
+              "process is done)" % exc, file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        yield barrier
+    finally:
+        barrier.release()
+
+
+@contextlib.contextmanager
+def _writing(db_path, model="unknown", fingerprint=None):
+    """Open a store for writing behind both barriers.
+
+    In this order: the lock file refuses a second homegraph writer by pid, and
+    BEGIN IMMEDIATE refuses anything else holding the database -- before the
+    work starts rather than after it.
+
+    Every command that writes a store goes through here or through
+    `_barrier`. A writer that opens `Store` directly is a writer outside the
+    barrier, which is the whole failure this replaces; CP-11 parses for that
+    with `ast` rather than trusting this sentence.
+    """
+    from .store import Store
+    with _barrier(db_path, fingerprint=fingerprint):
+        with Store(db_path, model=model) as store:
+            store.begin_immediate()
+            yield store
 
 
 def _mesh(args):
@@ -456,11 +507,16 @@ def cmd_mesh_path(args):
 
 
 def cmd_mesh_build(args):
-    with _mesh(args) as mesh:
-        from datetime import date
-        report = mesh.build_edges(args.as_of or date.today().isoformat())
-        for key, value in report.items():
-            print("%-12s %s" % (key, value))
+    from datetime import date
+    if not args.mesh_db:
+        print("REFUSED  mesh build writes a store; name it with --mesh-db",
+              file=sys.stderr)
+        return 2
+    with _barrier(args.mesh_db):
+        with _mesh(args) as mesh:
+            report = mesh.build_edges(args.as_of or date.today().isoformat())
+            for key, value in report.items():
+                print("%-12s %s" % (key, value))
     return 0
 
 

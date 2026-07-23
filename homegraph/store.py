@@ -146,6 +146,22 @@ class Store:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
+        # Readers answer while a writer works. Without WAL a single `update`
+        # blocks every `search` for its whole run, which on a 588k-file corpus
+        # is not a moment.
+        #
+        # `journal_mode` is the one PRAGMA that can decline: it returns the
+        # mode actually in force, and returns "delete" unchanged on a network
+        # filesystem or against a database another connection holds open in
+        # rollback mode. Reading the answer is the difference between having
+        # WAL and believing you asked for it -- and the user config allows an
+        # arbitrary root, so the network case is reachable here.
+        row = self.db.execute("PRAGMA journal_mode = WAL").fetchone()
+        self.journal_mode = (row[0] if row else "unknown").lower()
+        # Concurrent readers still contend for brief write locks (FTS rebuild,
+        # checkpoint). Five seconds of waiting beats an immediate
+        # "database is locked" that the caller reads as corruption.
+        self.db.execute("PRAGMA busy_timeout = 5000")
         self.migrate()
 
     # -- migrations -------------------------------------------------------
@@ -340,6 +356,25 @@ class Store:
                 "SELECT COUNT(*) c FROM embeddings").fetchone()["c"],
             "embeddings_enabled": self.embeddings is not None,
         }
+
+    def begin_immediate(self) -> None:
+        """Take SQLite's write lock now rather than at the first INSERT.
+
+        Python's sqlite3 begins a DEFERRED transaction implicitly before the
+        first DML statement, so a writer that loses a race discovers it after
+        it has already read and computed -- possibly minutes into a rebuild.
+        IMMEDIATE moves the refusal to the front.
+
+        Verified rather than assumed: with the default `isolation_level`, an
+        explicit BEGIN IMMEDIATE sets `in_transaction`, suppresses the
+        implicit BEGIN, and is ended by `commit()` as usual.
+
+        This is the second barrier, not the first. `lock.StoreLock` is what
+        stops two `homegraph update` runs; this is what stops anything else
+        holding the file, and what makes the failure loud and early.
+        """
+        if not self.db.in_transaction:
+            self.db.execute("BEGIN IMMEDIATE")
 
     def commit(self) -> None:
         self.db.commit()

@@ -46,6 +46,9 @@ warn_unreachable = true
 #                contract M5 depends on
 #   search       fused hits, where the wrong key halves a rank invisibly
 #   incremental  the changed/touched distinction that decides re-extraction
+#   lock         a pid and a boot-relative start time decide whether another
+#                writer is alive; either one arriving as a str compares
+#                unequal forever and the barrier silently stops refusing
 #
 # Deliberately NOT strict: models/, mesh.py, cli.py, visualize.py, tests/. Their errors are
 # loud -- an extractor that mishandles a type raises, and a checkpoint goes red.
@@ -58,6 +61,7 @@ module = [
   "homegraph.temporal",
   "homegraph.search",
   "homegraph.incremental",
+  "homegraph.lock",
   "homegraph.config",
 ]
 # `strict = true` is a global flag; in a per-module section mypy applies it to
