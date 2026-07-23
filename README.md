@@ -24,6 +24,16 @@ directory with 588 589 files:
      42 documents (M1)
 ```
 
+```mermaid
+pie showData title Corpus census — 588589 files, 2026-07-22
+    "excluded" : 583256
+    "code" : 2669
+    "misc · M4" : 1686
+    "markdown · M3" : 801
+    "images · M2" : 135
+    "documents · M1" : 42
+```
+
 That census is a **snapshot**, frozen into a file that is not distributed (it
 is 74 MB of one person's filenames). CP-0 grades the classifier against that
 file rather than against the live filesystem, so the checkpoint stays
@@ -37,6 +47,30 @@ The exclusion figure is the headline, not a footnote. Signal-to-noise for
 images before rules is roughly 1:530, and no random sample at any realistic
 directory level returns the user's own code -- dependency trees dominate every
 root. Defining the corpus *is* the work; extraction is the easy part.
+
+## The shape
+
+One classifier decides which of five partitions a path belongs to; four models
+build a store each, a code inventory rides alongside, and the mesh federates
+them without merging. The 99% that is excluded is the largest box on purpose.
+
+```mermaid
+flowchart TB
+    root["a directory you choose"]
+    root --> clf["corpus.py<br/>classify — path only, never opens a file"]
+    clf -->|"99% excluded"| drop["7 exclusion layers<br/>cache · deps · app-state · vendored<br/>secrets · symlinks · image-boundary"]
+    clf --> m1["M1 documents"]
+    clf --> m2["M2 images"]
+    clf --> m3["M3 markdown"]
+    clf --> m4["M4 misc"]
+    clf -. "--code-root" .-> codeinv["code inventory<br/>basename + path, no contents"]
+    m1 --> mesh["M5 mesh — federates, never merges"]
+    m2 --> mesh
+    m3 --> mesh
+    m4 --> mesh
+    codeinv --> mesh
+    mesh --> surf["search · visualize · mcp · export"]
+```
 
 ## No layout is assumed
 
@@ -129,7 +163,7 @@ layout would still be imposed.
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
 | `portable.py` | node keys with the root taken out, and put back |
 | `export.py` / `importer.py` | the portable artifact: lzma JSON Lines, digest in a trailer |
-| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `build`, `export`, `import`, `inspect` |
+| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `watch`, `build`, `export`, `import`, `inspect` |
 
 ## What the edges say
 
@@ -285,6 +319,38 @@ deleted file took part in.
 corpus into single nodes, so a per-file diff cannot be applied without breaking
 the reconciliation CP-5 checks. `update` says so and exits 2.
 
+## Watching for changes
+
+`update` is manual. `watch` runs it for you when the corpus moves:
+
+```sh
+homegraph watch --model m3=/tmp/m3.db --mesh-db /tmp/mesh.db --code-root ~
+```
+
+It watches the root with inotify and re-runs the same `update` above after each
+settled burst of changes -- one save that rewrites five files is one update,
+not five. It is **foreground and opt-in**: nothing survives Ctrl-C, there is no
+daemon, no autostart, no state left behind. The idea is borrowed from
+`codegraph`; the daemon it came with is not, because this package runs no
+long-lived services.
+
+```mermaid
+flowchart LR
+    init["init<br/>propose roles"] --> build["build<br/>from scratch"] --> stores[("model stores")]
+    disk{{"a file changes"}} --> watch["watch<br/>inotify, foreground"] --> update["update<br/>re-derive the diff"] --> stores
+    stores --> use["search · visualize<br/>mcp · export"]
+```
+
+Two things keep it honest, and CP-13 checks both through the CLI:
+
+- **An update never triggers itself.** The store writes it produces would
+  otherwise arrive as fresh changes and it would update forever; those paths
+  are ignored.
+- **It watches only the corpus.** A naive recursive watch of a real home arms
+  an inotify watch on each of ~51 000 directories, most of them `.cache` /
+  `.venv` / `.git` churn. `watch` reuses the corpus classifier to prune those,
+  and armed 676 watches instead on the home it was measured against.
+
 ## Viewing the graph
 
 `visualize` writes a single HTML file with the layout precomputed in Python and
@@ -306,8 +372,8 @@ capped drawing shows, and half an edge is not a relation.
 ## Tests
 
 ```sh
-uvx pytest -q tests/                                            # 14 modules
-for t in 0 1 2 3 4 5 6 7 8 9 10 11 12; do python3 tests/mutate_cp$t.py; done
+uvx pytest -q tests/                                            # 15 modules
+for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do python3 tests/mutate_cp$t.py; done
 python3 tests/mutation_coverage.py         # which checks no mutation aims at
 python3 tests/test_cp0.py                  # any checkpoint runs standalone too
 ```
@@ -321,8 +387,8 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Thirteen checkpoints plus a privacy check. 343 mutations, 0 survived, 0
-detected only by a crash**, measured 2026-07-23 after the portable artifact
+**Fourteen checkpoints plus a privacy check. 352 mutations, 0 survived, 0
+detected only by a crash**, measured 2026-07-23 after the foreground watch
 landed. CP-3's count is 27, not the 26 printed here for a day -- recounted
 rather than carried forward, which this file has had to do before. The split of *how* they died is the
 fragile number and is timestamped for a reason: it has moved twice within an
@@ -346,7 +412,8 @@ than trusting the numbers here.
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
 | CP-12 portable artifact | 33 | 33 |
-| **total** | **343** | **342** |
+| CP-13 foreground watch | 9 | 9 |
+| **total** | **352** | **351** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -588,6 +655,36 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 - **`update`'s neighbour expansion is a heuristic.** It is exact for
   wikilinks and best-effort for path mentions; what backs it is the CP-8
   equivalence gate, not a proof.
+
+## Contributing
+
+This graph is built to prove itself wrong, and it is more useful the more
+people try. Checks and improvements are welcome -- open an issue or a pull
+request.
+
+The most valuable thing you can send is a **broken gate**. Run the suite and
+the mutation harnesses (see *Tests*): a mutation that survives is a check that
+does not test what it claims, and that is a sharper bug report than any prose.
+The *Known weaknesses* section above is a to-do list, not a disclaimer -- each
+item is an open invitation.
+
+Every number here was measured on one machine on one date. If a claim does not
+reproduce on yours, that is a finding: open an issue with your own numbers and
+the command that produced them.
+
+Three house rules keep a change the same shape as the rest, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the full version:
+
+- **Fasit before code.** A test's expected answer is written from the spec, by
+  hand, before the implementation. An answer derived from the code is a
+  photograph of it, not a check on it.
+- **Mutation-test every checkpoint.** A new gate has to prove it can reject
+  something, or it is decoration.
+- **No new runtime dependencies.** `dependencies = []` is deliberate
+  (`DECISIONS.md` section 5); the standard library is the whole toolbox.
+
+New here? `git grep -n TODO`, the *Known weaknesses* list, and the low-severity
+notes in `DECISIONS.md` are the shortest paths to something real.
 
 ## Not done
 

@@ -1,0 +1,90 @@
+# Contributing to Home-view-graph
+
+This project is built to prove itself wrong. The checkpoints, the mutation
+harnesses, and the *Known weaknesses* list in the README are not a finished
+proof — they are the current best attempt to break the thing, and a fresh pair
+of eyes is the most useful thing it can get. Checks and improvements are
+welcome.
+
+## The fastest ways to help
+
+- **Send a broken gate.** Run the suite and the mutation harnesses (below). A
+  mutation that *survives* is a check that does not test what it claims. That is
+  a better bug report than any description of a symptom, because it points at
+  the exact line that lies.
+- **Fail to reproduce a number.** Every measurement in the README carries a
+  date and was taken on one machine. If `census`, a mutation count, or the
+  watch's directory count comes out differently on yours, open an issue with
+  your numbers and the command that produced them. A number that only holds on
+  one machine is a bug in the claim.
+- **Pick up a known weakness.** The README's *Known weaknesses in the evidence
+  chain* section and the low-severity notes in `DECISIONS.md` are an open
+  to-do list, not a disclaimer.
+
+## Running the checks
+
+```sh
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .
+
+python3 -m pytest -q tests/                 # 15 checkpoint modules + a privacy gate
+for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do python3 tests/mutate_cp$t.py; done
+python3 tests/mutation_coverage.py          # which checks no mutation aims at
+```
+
+Every checkpoint also runs standalone with no test runner:
+`python3 tests/test_cp0.py`. `test_no_real_paths.py` is expected to fail in a
+fresh clone — the material it proves is unpublished is gitignored and therefore
+absent, so the gate refuses to pass rather than report a clean scan of nothing.
+
+## House rules
+
+These are not style preferences. Each one is a mistake this codebase has
+already made at least once, written down so it is not made again.
+
+1. **Fasit before code.** Write a test's expected answer from the specification,
+   by hand, *before* the implementation exists. An answer derived from the code
+   is a photograph of the code, not a check on it — it passes by construction
+   and catches nothing.
+
+2. **Mutation-test every checkpoint, not just the last one.** A gate that no
+   mutation reddens is a gate that tests nothing. Add mutations alongside a new
+   check that break each property it claims, and confirm the named gate — not a
+   crash, not a neighbour — is what says no. Fourteen false gates were found in
+   this project exactly this way, each one green on its first run.
+
+3. **Ask what calls this when the product runs.** A mechanism verified only by a
+   test that exercises it is not verified. Four documented mechanisms here once
+   had no caller outside `tests/`. If you add a capability, add the production
+   caller too.
+
+4. **Never duplicate an invariant across two layers.** If a rule lives in one
+   place, reuse it; do not re-derive it. The `watch` command borrows the corpus
+   classifier for its exclusions rather than reimplementing them, so the two can
+   never disagree.
+
+5. **Run it on real data before calling it done.** Nine green checkpoints have
+   missed what one run against a real home directory found. The synthetic
+   fixture is a floor, not a ceiling.
+
+6. **No new runtime dependencies.** `dependencies = []` in `pyproject.toml` is a
+   design decision (`DECISIONS.md` section 5), not an accident. The standard
+   library is the whole toolbox; a feature that seems to need more is a feature
+   worth reconsidering first.
+
+7. **Recount before you cite a number.** Two of the mutation counts in this
+   repo drifted between measurements. After touching a checkpoint, re-run the
+   harness rather than carrying a number forward.
+
+`ruff` and `mypy` are expected to stay clean:
+
+```sh
+uvx ruff check homegraph/ tests/
+uvx mypy homegraph/
+```
+
+## Opening a pull request
+
+Keep a change focused on one checkpoint or one weakness. State what you
+measured and on what, the way the README does — a claim without a number to
+back it is the one thing this project tries hardest not to ship.
