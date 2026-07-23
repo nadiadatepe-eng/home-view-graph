@@ -788,6 +788,72 @@ cannot produce a wrong answer only tests error handling.
 
 ---
 
+## 25 · The query language is closed, and its grammar is published
+
+Written before the parser, and the parser follows it. The other order produces
+a language whose definition is "whatever the code accepts", which is how a
+subset ends up with no documented edge — `codebase-memory-mcp` rejected
+`WHERE NOT ()-[:CALLS]->(f)` with `expected token type 85, got 67 at pos 30`,
+a message about its own tokeniser rather than about what the language does not
+have.
+
+```ebnf
+query      = match , [ where ] , [ asof ] , return ;
+
+match      = "MATCH" , node , edge , node ;
+node       = "(" , [ ident ] , [ ":" , label ] , ")" ;
+edge       = "-[" , [ ident ] , [ ":" , reltype ] , "]->" ;
+
+where      = "WHERE" , condition , { "AND" , condition } ;
+condition  = ident , "." , property , op , literal
+           | ident , "NAMED" , string ;
+op         = "=" | "!=" | "<" | "<=" | ">" | ">="
+           | "PREFIX" | "CONTAINS" ;
+
+asof       = "AS" , "OF" , date ;
+
+return     = "RETURN" , item , { "," , item } ;
+item       = ident , "." , property ;
+
+literal    = string | number ;
+date       = string ;            (* ISO 8601, quoted or bare *)
+```
+
+**Everything not in that grammar is refused with exit 2 and a message naming
+what is missing.** No variable-length paths, no `OR`, no `OPTIONAL MATCH`, no
+aggregation, no `DISTINCT`. Each of those is a decision to make when someone
+needs it, not a gap to fill in silently. One edge per query: a language that
+grows a join planner has stopped being a closed language.
+
+**`AS OF` calls `Store.edges_as_of()`. It does not re-express the predicate.**
+The compiler asks that function which edge ids were alive on the date and
+constrains the result to them. This is the single most likely place in the
+project to end up with the temporal invariant living in two layers — the
+mistake §16 records, that CP-8 has already caught once, and that would be
+invisible here because both copies would agree until one was edited.
+
+**Ambiguity is refused, not resolved.** `WHERE a NAMED 'x'` looks a node up by
+basename, which is how people think about their own notes — the wikilink
+syntax works that way. When a basename matches more than one file the answer
+is `status: "ambiguous"` with the candidates listed, which is what
+`code-review-graph` does and what `codebase-memory-mcp` does not: measured on
+this repository, cbm bound a call to the wrong same-named function and stamped
+the guess with a confidence nothing forces you to read (§24). This project has
+a documented basename collision of its own, so the case is not hypothetical.
+
+**Identifiers never reach SQL as text.** Labels, relation types and property
+names are checked against whitelists derived from `PRAGMA table_info` and the
+distinct values in the store, and every literal is a bound parameter. A
+language that interpolates its own identifiers is one rename away from being
+an injection surface.
+
+**Provenance is queryable from the first version**, which is why §24 came
+first: `e.method` and `e.confidence` are ordinary properties, and a result
+containing derived edges carries the same `provenance_note` warning every
+other read path does.
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

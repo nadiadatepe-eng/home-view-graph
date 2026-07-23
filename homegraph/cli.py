@@ -211,6 +211,45 @@ def cmd_census(args):
     return 0
 
 
+def cmd_query(args):
+    """Run one query. Grammar in DECISIONS.md section 25.
+
+    Refusals exit 2 and name the missing capability, because "syntax error at
+    position 31" sends the reader to look for a typo in a query that is
+    correctly written in a language this one is not.
+    """
+    from .query import QueryError, run
+    from .store import Store
+
+    text = " ".join(args.query)
+    with Store(args.db) as s:
+        try:
+            res = run(s, text)
+        except QueryError as exc:
+            print("REFUSED  %s" % exc, file=sys.stderr)
+            if exc.missing:
+                print("         (not supported: %s)" % exc.missing,
+                      file=sys.stderr)
+            return 2
+
+    if res.status == "ambiguous":
+        # crg's behaviour, and the one cbm does not have: name the candidates
+        # and answer nothing, rather than pick one and look certain.
+        for w in res.warnings:
+            print("AMBIGUOUS  %s" % w, file=sys.stderr)
+        for c in res.candidates:
+            print("  %s" % c, file=sys.stderr)
+        return 2
+
+    print("  ".join(res.columns))
+    for row in res.rows:
+        print("  ".join("" if v is None else str(v) for v in row))
+    print("\n%d row(s)  %s" % (len(res.rows), res.status))
+    for w in res.warnings:
+        print("PARTIAL -- %s" % w)
+    return 0
+
+
 def cmd_status(args):
     from .store import Store
     with Store(args.db) as s:
@@ -584,6 +623,12 @@ def main(argv=None):
     p.add_argument("--all", action="store_true",
                    help="name every excluded directory, no cap")
     p.set_defaults(func=cmd_census)
+
+    p = sub.add_parser("query", help="one closed query over the graph "
+                                     "(grammar: DECISIONS.md section 25)")
+    p.add_argument("db")
+    p.add_argument("query", nargs="+")
+    p.set_defaults(func=cmd_query)
 
     p = sub.add_parser("status", help="store contents and index health")
     p.add_argument("db")

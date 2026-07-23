@@ -89,6 +89,33 @@ TOOLS = [
         },
     },
     {
+        "name": "query",
+        "description": (
+            "One structural query over a single model's graph, in homegraph's "
+            "closed query language. Grammar: "
+            "MATCH (a:label)-[e:REL]->(b:label) [WHERE cond AND cond] "
+            "[AS OF 'YYYY-MM-DD'] RETURN a.prop, b.prop. "
+            "Conditions use = != < <= > >= PREFIX CONTAINS, or "
+            "`a NAMED 'basename'` to look a node up by filename. "
+            "There is no OR, no DISTINCT, no aggregation and no "
+            "variable-length path; anything outside the grammar is refused "
+            "with a message naming what is missing, never partially "
+            "interpreted. A status of 'ambiguous' means a NAMED lookup "
+            "matched several files and none was chosen -- ask again with one "
+            "of the candidates. A status of 'partial' means some returned "
+            "edge was inferred rather than stated; the warning names how."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string",
+                          "description": "which model to query, e.g. m3"},
+                "query": {"type": "string"},
+            },
+            "required": ["model", "query"],
+        },
+    },
+    {
         "name": "mesh_explain",
         "description": (
             "Which models answered a query, at what rank, and how the results "
@@ -154,6 +181,29 @@ class Server:
                            "method": e.method, "confidence": e.confidence}
                           for e in edges]}
 
+    def query(self, model, query):
+        from .query import QueryError, run
+        path = self.model_paths.get(model)
+        if not path:
+            return {"status": "error", "error": "no model %r; this server "
+                    "has %s" % (model, ", ".join(sorted(self.model_paths)))}
+        with Mesh({model: path}) as mesh:
+            try:
+                store = mesh.store(model)
+            except Exception as exc:                            # noqa: BLE001
+                return {"status": "error", "error": repr(exc)}
+            try:
+                res = run(store, query)
+            except QueryError as exc:
+                # Refused, with the capability named. An agent that gets
+                # "syntax error" retries the same shape; one that is told
+                # "this language has no OR" rewrites the query.
+                return {"status": "refused", "error": str(exc),
+                        "unsupported": exc.missing}
+        return {"status": res.status, "columns": res.columns,
+                "rows": [list(r) for r in res.rows],
+                "warnings": res.warnings, "candidates": res.candidates}
+
     def mesh_path(self, src, dst, max_depth=4):
         with self._mesh() as mesh:
             trail = mesh.path(src, dst, max_depth=max_depth)
@@ -182,6 +232,7 @@ class Server:
             name = params.get("name")
             args = params.get("arguments") or {}
             fn = {"mesh_search": self.mesh_search,
+                  "query": self.query,
                   "mesh_neighbors": self.mesh_neighbors,
                   "mesh_path": self.mesh_path,
                   "mesh_explain": self.mesh_explain}.get(name)

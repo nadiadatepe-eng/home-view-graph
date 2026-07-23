@@ -1,0 +1,86 @@
+# CP-10 answer key. WRITTEN BEFORE homegraph/query.py EXISTED.
+#
+# Derived by hand from the graph declared in tests/test_cp10.py (GRAPH_NODES
+# and GRAPH_EDGES), not by running anything. A key produced by the parser is a
+# photograph of the parser -- the same mistake as writing the rules with the
+# answer key in hand, and just as invisible afterwards.
+#
+# The graph, restated here so this file can be checked without opening the
+# test:
+#
+#   nodes                        kind     subtype    title
+#   /w/notes/alpha.md            file     note       Alpha
+#   /w/notes/alpha.md#0          section  note       Alpha, part 1   (no edges)
+#   /w/notes/beta.md             file  note       Beta
+#   /w/raw/index.md              file  note       Index (raw)
+#   /w/summaries/index.md        file  generated  Index (summary)
+#   /w/img/plot.png              file  image      plot
+#   /w/docs/paper.pdf            file  pdf        Paper
+#
+#   edges                                          rel            method       alive
+#   E1 alpha  -> beta                              WIKILINKS_TO   exact        01-01..03-01
+#   E2 alpha  -> summaries/index.md                WIKILINKS_TO   path_prefix  01-01..03-01
+#   E3 beta   -> raw/index.md                      WIKILINKS_TO   exact        01-01..01-15
+#   E4 alpha  -> plot.png                          EMBEDS         exact        02-01..03-01
+#   E5 beta   -> paper.pdf                         MENTIONS_PATH  mention      02-01..03-01
+#   E6 alpha  -> paper.pdf                         MENTIONS_PATH  mention      01-01..03-01
+#
+# Node labels come from `subtype`, so (a:note) and (b:generated) are the
+# labels available here.
+#
+# Results are ordered by the returned columns, ascending. That ordering is
+# part of the language, not an accident of the query planner: an answer key
+# cannot be compared against a result whose order is undefined.
+#
+# columns: id <TAB> query <TAB> expected
+# expected: rows separated by ';', fields within a row by ','
+#           EMPTY        -- zero rows, and that is the right answer
+#           AMBIGUOUS:n  -- refused, n candidates named
+#           REJECT:cap   -- not in the grammar; exit 2 naming `cap` as the
+#                          missing capability. The capability is part of the
+#                          key: a parser that refuses everything for the same
+#                          reason passes a check that only counts refusals.
+#
+Q01	MATCH (a)-[:WIKILINKS_TO]->(b) RETURN a.path, b.path	/w/notes/alpha.md,/w/notes/beta.md;/w/notes/alpha.md,/w/summaries/index.md;/w/notes/beta.md,/w/raw/index.md
+Q02	MATCH (a)-[:EMBEDS]->(b) RETURN b.path	/w/img/plot.png
+Q03	MATCH (a)-[e:WIKILINKS_TO]->(b) WHERE e.method = 'path_prefix' RETURN a.path, b.path	/w/notes/alpha.md,/w/summaries/index.md
+Q04	MATCH (a)-[e]->(b) WHERE e.confidence < 1.0 RETURN e.rel, e.method	MENTIONS_PATH,mention;MENTIONS_PATH,mention;WIKILINKS_TO,path_prefix
+Q05	MATCH (a:note)-[e]->(b:pdf) RETURN a.path, b.path	/w/notes/alpha.md,/w/docs/paper.pdf;/w/notes/beta.md,/w/docs/paper.pdf
+Q06	MATCH (a)-[:WIKILINKS_TO]->(b) AS OF '2026-01-10' RETURN a.path, b.path	/w/notes/alpha.md,/w/notes/beta.md;/w/notes/alpha.md,/w/summaries/index.md;/w/notes/beta.md,/w/raw/index.md
+Q07	MATCH (a)-[:WIKILINKS_TO]->(b) AS OF '2026-02-01' RETURN a.path, b.path	/w/notes/alpha.md,/w/notes/beta.md;/w/notes/alpha.md,/w/summaries/index.md
+Q08	MATCH (a)-[:EMBEDS]->(b) AS OF '2026-01-10' RETURN b.path	EMPTY
+Q09	MATCH (a)-[e]->(b) WHERE a.path PREFIX '/w/notes/' AND e.rel = 'MENTIONS_PATH' RETURN a.path	/w/notes/alpha.md;/w/notes/beta.md
+Q10	MATCH (a)-[e]->(b) WHERE b.subtype = 'generated' RETURN a.path	/w/notes/alpha.md
+Q11	MATCH (a)-[e]->(b) WHERE a NAMED 'alpha' RETURN e.rel	EMBEDS;MENTIONS_PATH;WIKILINKS_TO;WIKILINKS_TO
+Q12	MATCH (a)-[e]->(b) WHERE b NAMED 'index' RETURN a.path	AMBIGUOUS:2
+Q13	MATCH (a)-[e]->(b) WHERE b NAMED 'nowhere' RETURN a.path	EMPTY
+Q14	MATCH (a:image)-[e]->(b) RETURN a.path	EMPTY
+Q15	MATCH (a)-[e]->(b) WHERE e.confidence >= 1.0 RETURN e.rel	EMBEDS;WIKILINKS_TO;WIKILINKS_TO
+Q16	MATCH (a)-[e]->(b) WHERE b.path CONTAINS 'index' RETURN b.path	/w/raw/index.md;/w/summaries/index.md
+Q17	MATCH (a)-[e:MENTIONS_PATH]->(b) AS OF '2026-01-05' RETURN a.path	/w/notes/alpha.md
+Q18	MATCH (a)-[e]->(b) WHERE a.path PREFIX '/w/notes/' AND e.method = 'mention' RETURN a.path, b.path	/w/notes/alpha.md,/w/docs/paper.pdf;/w/notes/beta.md,/w/docs/paper.pdf
+Q19	MATCH (a)-[e]->(b) WHERE a.title = 'Alpha' RETURN e.rel	EMBEDS;MENTIONS_PATH;WIKILINKS_TO;WIKILINKS_TO
+Q20	MATCH (a)-[e]->(b) WHERE e.first_seen >= '2026-02-01' RETURN e.rel	EMBEDS;MENTIONS_PATH
+# PREFIX is anchored. Every path here begins '/w/', so 'notes' matches
+# nothing at the start and two files in the middle -- which is the only
+# query in this key that can tell PREFIX from CONTAINS. Added after a
+# mutation swapping one for the other survived the first twenty.
+Q21	MATCH (a)-[e]->(b) WHERE a.path PREFIX 'notes' RETURN a.path	EMPTY
+Q22	MATCH (a)-[e]->(b) WHERE a.path CONTAINS 'notes' RETURN a.path	/w/notes/alpha.md;/w/notes/alpha.md;/w/notes/alpha.md;/w/notes/alpha.md;/w/notes/beta.md;/w/notes/beta.md
+#
+# Refusals. Each names a capability the language does not have, and the
+# message has to say which one -- "syntax error at position 31" is the
+# failure mode this grammar was published to avoid.
+#
+R01	MATCH (a)-[:WIKILINKS_TO*1..3]->(b) RETURN a.path	REJECT:variable-length paths
+R02	MATCH (a)-[e]->(b) WHERE a.path = 'x' OR b.path = 'y' RETURN a.path	REJECT:OR
+R03	MATCH (a)-[e]->(b) RETURN count(a)	REJECT:COUNT
+R04	MATCH (a)-[e]->(b) RETURN DISTINCT a.path	REJECT:DISTINCT
+R05	OPTIONAL MATCH (a)-[e]->(b) RETURN a.path	REJECT:OPTIONAL
+R06	MATCH (a:nosuchlabel)-[e]->(b) RETURN a.path	REJECT:label nosuchlabel
+R07	MATCH (a)-[:NO_SUCH_REL]->(b) RETURN a.path	REJECT:relation NO_SUCH_REL
+R08	MATCH (a)-[e]->(b) RETURN a.nosuchprop	REJECT:property nosuchprop
+R09	MATCH (a)-[e]->(b) WHERE a.path = 'x'	REJECT:RETURN clause
+R10	MATCH (a)-[e]->(b) RETURN a.path; DROP TABLE nodes	REJECT:statement separators
+R11	MATCH (a)-[e]->(b) WHERE a.path LIKE 'x' RETURN a.path	REJECT:LIKE
+R12	MATCH (a)<-[e]-(b) RETURN a.path	REJECT:reverse arrows

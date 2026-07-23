@@ -695,9 +695,25 @@ def t_mcp(tmp, paths, spec):
 
     listed = handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in listed["result"].get("tools", [])}
-    check("all four mesh tools are advertised",
-          names == {"mesh_search", "mesh_neighbors", "mesh_path",
-                    "mesh_explain"}, str(sorted(names)))
+    # Not a fixed list of four. Pinned to a literal set, this went red the
+    # day a fifth tool was added, which is a gate measuring the wrong thing:
+    # what has to hold is that what is advertised and what can be called are
+    # the same set. A tool the server dispatches but never lists is
+    # unreachable; one it lists but cannot dispatch is a broken promise.
+    dispatchable = {"mesh_search", "mesh_neighbors", "mesh_path",
+                    "mesh_explain", "query"}
+    unlisted = dispatchable - names
+    unbacked = set()
+    for name in sorted(names):
+        reply = handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": name, "arguments": {}}})
+        # Missing arguments is a fine answer here; "unknown tool" is not.
+        if "unknown tool" in str(reply.get("error", {})):
+            unbacked.add(name)
+    check("every advertised tool can be called, and every callable one is "
+          "advertised", not unlisted and not unbacked,
+          "listed=%s unlisted=%s unbacked=%s"
+          % (len(names), sorted(unlisted), sorted(unbacked)))
     # Read off the wire, not off the constant. Checking TOOLS proves the
     # module-level list is well formed and says nothing about what a client
     # receives: a `tools/list` that strips `inputSchema` on the way out left
