@@ -30,6 +30,7 @@ import ctypes
 import os
 import select
 import struct
+import time
 from collections.abc import Callable, Iterable
 
 Prune = Callable[[str], bool]
@@ -38,21 +39,57 @@ Prune = Callable[[str], bool]
 def relevant(path: str, ignore: Iterable[str]) -> bool:
     """True if `path` is a corpus change worth an update.
 
-    False for the stores an update writes -- the store file itself and its
-    SQLite `-wal` / `-shm` / `-journal` siblings. Without this guard the first
-    update's own writes land back in the watch as fresh events and it updates
-    forever. This is the one gate in the module that owns a correctness claim
-    rather than an efficiency one.
+    False for the stores an update writes -- the store file itself, its SQLite
+    `-wal` / `-shm` / `-journal` siblings, and the writer's own `.`-suffixed
+    artifacts (`.lock`, `.tmp`). Without this guard the first update's own writes
+    land back in the watch as fresh events and it updates forever. This is the
+    one gate in the module that owns a correctness claim rather than an
+    efficiency one -- and it must hold on its own, because it is the only thing
+    standing between a store write and a self-trigger if `store_prune` (which
+    normally keeps the store dir unwatched entirely) ever misses.
     """
     p = os.path.abspath(path)
     for db in ignore:
-        if p == db or p.startswith(db + "-"):
+        if p == db or p.startswith(db + "-") or p.startswith(db + "."):
             return False
     return True
 
 
 def _any_relevant(batch: list[tuple[str, int]], ignore: Iterable[str]) -> bool:
     return any(relevant(path, ignore) for path, _mask in batch)
+
+
+def store_prune(root: str, stores: Iterable[str]) -> Prune:
+    """A prune predicate that excludes every directory that holds a store.
+
+    The stores an update writes sit inside the watched tree; left watched, each
+    update's own writes return as a flood of events. `relevant` keeps that flood
+    from *triggering* a second update, but a watched store still arms an inotify
+    watch and the flood wakes the loop -- so prune the directory that holds each
+    store and the kernel never reports it. This is the braces to `relevant`'s
+    belt: the same store paths, excluded a layer earlier.
+
+    Only stores strictly below `root` are pruned. A store sitting *at* `root`
+    would make this prune the whole tree, and one *above* `root` is never
+    walked; both are left to `watch_loop`'s own irrelevant-burst backoff rather
+    than pruned here.
+
+    Paths are compared by `realpath`, not `abspath`: `os.walk` reaches a
+    directory by its real path, so a store reached through a symlinked component
+    (a relocated `.homegraph`, a `~` that is itself a link) must resolve to the
+    same string or the prune fires on a path that is never walked and misses the
+    one that is -- leaving the real store dir watched.
+    """
+    root = os.path.realpath(root)
+    store_dirs = {d for d in
+                  (os.path.dirname(os.path.realpath(p)) for p in stores)
+                  if d.startswith(root + os.sep)}
+
+    def prune(directory: str) -> bool:
+        d = os.path.realpath(directory)
+        return any(d == sd or d.startswith(sd + os.sep) for sd in store_dirs)
+
+    return prune
 
 
 class Source:
@@ -86,6 +123,15 @@ def watch_loop(source: Source, trigger: Callable[[], None], *,
     while True:
         batch = source.read(None)
         if not _any_relevant(batch, ignore):
+            # A batch with nothing relevant (store writes an update just made,
+            # or any churn `ignore` covers) must not begin a burst. Re-reading
+            # at once would spin a core as fast as the kernel delivers such
+            # events; pausing one debounce first caps the wake rate. No relevant
+            # event is lost -- inotify queues it, and it is still waiting on the
+            # next read. (A sustained flood could overflow that queue during the
+            # pause; pruning the store dir upstream is what keeps this path
+            # cold, so this backoff is only a backstop.)
+            time.sleep(debounce)
             continue
         # Coalesce: keep waiting until a full debounce window is quiet of
         # relevant events, so one save that touches five files is one update.

@@ -24,7 +24,7 @@ MUTATIONS = [
     # -- the self-trigger guard (correctness) -----------------------------
     ("nothing is ignored, so the stores look like corpus changes",
      "homegraph/watch.py",
-     "        if p == db or p.startswith(db + \"-\"):\n"
+     "        if p == db or p.startswith(db + \"-\") or p.startswith(db + \".\"):\n"
      "            return False\n"
      "    return True",
      "        pass  # mutated: nothing is ignored\n"
@@ -33,9 +33,15 @@ MUTATIONS = [
 
     ("only the store file is ignored, not its -wal/-shm siblings",
      "homegraph/watch.py",
-     "        if p == db or p.startswith(db + \"-\"):",
+     "        if p == db or p.startswith(db + \"-\") or p.startswith(db + \".\"):",
      "        if p == db:  # mutated: siblings look like corpus changes",
      "an update does not trigger itself"),
+
+    ("SQLite siblings are ignored but the writer's own .lock is not",
+     "homegraph/watch.py",
+     "        if p == db or p.startswith(db + \"-\") or p.startswith(db + \".\"):",
+     "        if p == db or p.startswith(db + \"-\"):  # mutated: .lock relevant",
+     "the writer's own .lock and .tmp are ignored"),
 
     # -- debounce / coalescing --------------------------------------------
     ("the debounce stops coalescing, so each event is its own update",
@@ -52,6 +58,34 @@ MUTATIONS = [
      "        if not _any_relevant(batch, ignore):",
      "        if False:  # mutated: any event starts a burst",
      "store writes alone never trigger an update"),
+
+    ("the irrelevant-burst backoff is gone, so store writes spin the loop",
+     "homegraph/watch.py",
+     "            time.sleep(debounce)",
+     "            pass  # mutated: no backoff, the loop spins",
+     "an irrelevant-only burst backs off instead of spinning"),
+
+    # -- the store-dir prune (the ~40MB flood at its source) --------------
+    ("the store dir is not pruned, so the watch arms on its own output",
+     "homegraph/watch.py",
+     "        return any(d == sd or d.startswith(sd + os.sep) "
+     "for sd in store_dirs)",
+     "        return False  # mutated: stores are watched",
+     "the directory holding a store is pruned from the watch"),
+
+    ("store_prune uses abspath, so a symlinked store escapes the prune",
+     "homegraph/watch.py",
+     "                  (os.path.dirname(os.path.realpath(p)) for p in stores)",
+     "                  (os.path.dirname(os.path.abspath(p)) for p in stores)"
+     "  # mutated: symlink not resolved",
+     "a store reached via a symlink prunes its real directory"),
+
+    # -- the debounce guard (negative crashes, zero re-spins) -------------
+    ("a non-positive debounce is not rejected, so the watch runs anyway",
+     "homegraph/cli.py",
+     "    if args.debounce <= 0:",
+     "    if False:  # mutated: no debounce validation",
+     "a non-positive --debounce is refused, not run"),
 
     # -- the real inotify source ------------------------------------------
     ("new subdirectories are not re-watched",

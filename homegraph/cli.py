@@ -411,6 +411,14 @@ def cmd_watch(args):
     if not os.path.isdir(root):
         print("not a directory: %s" % root, file=sys.stderr)
         return 2
+    # The debounce is now the irrelevant-burst backoff too (watch_loop sleeps
+    # it), so a non-positive value is no longer merely odd: negative raises out
+    # of time.sleep and kills the watch, and zero re-opens the CPU spin. Reject
+    # both here rather than let either reach the loop.
+    if args.debounce <= 0:
+        print("watch  REFUSED  --debounce must be > 0 (got %s)" % args.debounce,
+              file=sys.stderr)
+        return 2
 
     # The stores an update writes, so their own writes never trigger another
     # update. Absolute, because `relevant` compares absolute paths.
@@ -431,7 +439,18 @@ def cmd_watch(args):
     structural = {"L1_dependencies", "L2_app_state", "L3_cache",
                   "L4_vendored_repo"}
 
+    # The stores live inside the watched tree, so every update's own writes come
+    # straight back as events. `ignore` already stops them *triggering* an
+    # update, but a watched store still arms an inotify watch and its ~40MB write
+    # flood spins the loop -- so prune the directories that hold them one layer
+    # earlier. `store_prune` owns that rule (the braces to `ignore`'s belt); the
+    # classifier owns the corpus-exclusion rule. A directory is unwatched if
+    # either says so.
+    stores_pruned = wat.store_prune(root, ignore)
+
     def prune(directory):
+        if stores_pruned(directory):
+            return True
         dec = clf.explain(os.path.join(directory, "__homegraph_probe__"))
         return dec.label == EXCLUDED and dec.layer in structural
 

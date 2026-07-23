@@ -31,6 +31,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -103,6 +104,9 @@ def t_guard():
     check("the store's -wal and -shm siblings are ignored",
           w.relevant("/store/m3.db-wal", IGNORE) is False
           and w.relevant("/store/m3.db-shm", IGNORE) is False)
+    check("the writer's own .lock and .tmp are ignored",
+          w.relevant("/store/m3.db.lock", IGNORE) is False
+          and w.relevant("/store/m3.db.tmp", IGNORE) is False)
 
 
 def t_coalesce():
@@ -137,6 +141,103 @@ def t_no_retrigger():
     one update, not two."""
     n, _ = count_triggers([[EV], [], [DB, WAL], [DB]])
     check("an update does not trigger itself", n == 1, "fired %d" % n)
+
+
+def t_no_spin():
+    """Fasit: a burst of only-irrelevant events (the store writes an update just
+    made) must NOT spin the loop. Before the fix the outer `read(None)` returned
+    instantly on each such batch and `continue` looped as fast as the kernel
+    delivered them -- a pegged core for as long as the churn lasted, which is
+    what a real `watch` did over a home whose stores it watched.
+
+    The loop now pauses one debounce on an irrelevant-only batch, so it wakes at
+    1/debounce rather than flat out. We gate the pause directly: two irrelevant
+    batches fire zero updates AND back off once each; a relevant burst never
+    reaches this path (t_coalesce already proves it triggers)."""
+    slept = []
+    real = w.time
+    w.time = types.SimpleNamespace(sleep=lambda s: slept.append(s))
+    try:
+        n, _ = count_triggers([[DB], [DB, WAL]])
+    finally:
+        w.time = real
+    check("an irrelevant-only burst backs off instead of spinning",
+          n == 0 and slept.count(0.01) >= 2,
+          "fired %d, backoffs %r" % (n, slept))
+
+
+def t_store_prune():
+    """Fasit for the store-dir prune, by hand. Root `/home`; a store at
+    `/home/.hg/stores/m.db` means `/home/.hg/stores` and anything under it is
+    pruned -- unwatched -- while the corpus dirs beside it are not. A store *at*
+    root or *above* it is not pruned: pruning at root would take the whole tree,
+    and one above root is never walked, so both are left to the loop's backoff.
+    """
+    p = w.store_prune("/home", ["/home/.hg/stores/m.db",
+                                "/home/.hg/stores/mesh.db"])
+    check("the directory holding a store is pruned from the watch",
+          p("/home/.hg/stores") is True and p("/home/.hg/stores/sub") is True)
+    check("a sibling corpus directory is still watched",
+          p("/home/projects") is False and p("/home/.hg") is False)
+    check("a store at root does not prune the whole tree",
+          w.store_prune("/home", ["/home/m.db"])("/home/projects") is False)
+    check("a store above root is not pruned",
+          w.store_prune("/home/corpus", ["/home/m.db"])("/home/corpus/sub")
+          is False)
+    # A store reached through a symlinked component must still prune the real
+    # directory os.walk visits, not the link the kernel never reports events
+    # under -- so the comparison resolves symlinks, not just `..`/`.`.
+    import shutil
+    d = tempfile.mkdtemp(prefix="cp13-symlink-")
+    try:
+        real = os.path.join(d, "stores")
+        os.mkdir(real)
+        link = os.path.join(d, "lnk")
+        os.symlink(d, link)                 # link/stores -> real
+        p = w.store_prune(d, [os.path.join(link, "stores", "m.db")])
+        check("a store reached via a symlink prunes its real directory",
+              p(real) is True)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def t_debounce_rejected():
+    """Fasit: the debounce is now the anti-spin backoff too (watch_loop sleeps
+    it on every irrelevant burst), so a non-positive value is no longer merely
+    odd -- negative raises out of time.sleep and kills the watch, zero re-opens
+    the CPU spin. cmd_watch must refuse both with exit 2 and never arm the loop.
+
+    A correct watch returns immediately; a watch that ran anyway would block in
+    inotify. So we run each in a thread and treat 'still alive' as failure --
+    the gate reddens whether the guard is removed (block) or weakened (either
+    value slips through)."""
+    from homegraph import cli
+    d = tempfile.mkdtemp(prefix="cp13-debounce-")
+    results = {}
+
+    def run(key, deb):
+        args = types.SimpleNamespace(
+            config=None, root=d, model=["m=%s/m.db" % d], mesh_db=None,
+            debounce=deb, as_of=None, code_root=None,
+            allow_config_change=False)
+        try:
+            results[key] = cli.cmd_watch(args)
+        except BaseException as exc:      # noqa: BLE001 -- report, don't mask
+            results[key] = "exc:%r" % exc
+
+    try:
+        ok = True
+        for key, deb in [("neg", -1.0), ("zero", 0.0)]:
+            t = threading.Thread(target=run, args=(key, deb), daemon=True)
+            t.start()
+            t.join(3.0)
+            if t.is_alive() or results.get(key) != 2:
+                ok = False
+        check("a non-positive --debounce is refused, not run", ok,
+              "results=%r" % results)
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def t_real_inotify():
@@ -322,6 +423,9 @@ def main():
     t_separated()
     t_self_trigger()
     t_no_retrigger()
+    t_no_spin()
+    t_store_prune()
+    t_debounce_rejected()
     t_real_inotify()
     t_prune()
     t_through_the_cli()
