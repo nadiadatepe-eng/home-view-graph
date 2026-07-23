@@ -523,6 +523,28 @@ still worth taking:
 - A **closed query language** over the graph.
 - A **portable artifact** (`--persistence`), which is TODO-E.
 
+### `colbymchenry/codegraph`
+
+Measured against `code-review-graph` on 2026-07-23 with the same five
+known-answer cases. It lost the same way cbm did -- three silent misses on the
+function-local-import homonyms (`scan`, `build`), with no confidence field at
+all this time -- so `code-review-graph` stays the code model. One idea was
+worth building and one was worth recording as a warning:
+
+- **React to OS filesystem events instead of polling**, which became
+  `homegraph watch` (`watch.py`). Taken *without* codegraph's daemon: this
+  package runs no long-lived services, so the watch is foreground and opt-in --
+  inotify while the command runs, nothing after Ctrl-C. It triggers the same
+  `update` a user would run by hand, and reuses the corpus classifier to watch
+  only the corpus tree (676 directories on this home, not the 51 661 a naive
+  recursive watch would arm).
+- **Its single `explore` tool, taken *inverted* as an anti-pattern.** codegraph
+  wraps a silently-wrong answer in "this is the verbatim on-disk source, do not
+  read the file yourself" -- authority framing that makes a miss harder to
+  catch, not easier. The lesson here: never dress an uncertain answer in
+  language that discourages verification. It is why `provenance_note` says
+  `partial` out loud rather than presenting a guessed edge as fact.
+
 ### `DataExpert-io/data-engineer-handbook`
 
 - **Cumulative table design** and the `datelist_int` bitmask behind the

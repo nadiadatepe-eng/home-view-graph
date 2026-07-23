@@ -393,6 +393,75 @@ def cmd_update(args):
     return 0
 
 
+def cmd_watch(args):
+    """Foreground: re-run `update` whenever the corpus changes on disk.
+
+    Opt-in and non-persistent -- inotify while this process lives, nothing
+    after Ctrl-C. The borrowed idea (react to OS events, measured against
+    codegraph 2026-07-23) without the daemon homegraph has deliberately never
+    had. Each change fires the very same `update` the user would run by hand:
+    the watch is a trigger, not a second path into the graph.
+    """
+    from datetime import datetime
+
+    from . import watch as wat
+
+    cfg = userconfig.load(getattr(args, "config", None))
+    root = os.path.abspath(os.path.expanduser(args.root or cfg.root))
+    if not os.path.isdir(root):
+        print("not a directory: %s" % root, file=sys.stderr)
+        return 2
+
+    # The stores an update writes, so their own writes never trigger another
+    # update. Absolute, because `relevant` compares absolute paths.
+    ignore = set()
+    for spec in args.model:
+        _name, _, path = spec.partition("=")
+        ignore.add(os.path.abspath(os.path.expanduser(path)))
+    if args.mesh_db:
+        ignore.add(os.path.abspath(os.path.expanduser(args.mesh_db)))
+
+    # Watch only the tree the corpus cares about. The classifier owns the
+    # exclusion rule; watch borrows it rather than re-deriving one, so the two
+    # can never disagree about what `.cache`/`.venv`/a vendored repo is. Only
+    # the directory-structural layers prune -- a per-file reason (a secret
+    # name, an image outside its root) still lets its directory be watched.
+    from .corpus import EXCLUDED, Classifier
+    clf = Classifier(home=root)
+    structural = {"L1_dependencies", "L2_app_state", "L3_cache",
+                  "L4_vendored_repo"}
+
+    def prune(directory):
+        dec = clf.explain(os.path.join(directory, "__homegraph_probe__"))
+        return dec.label == EXCLUDED and dec.layer in structural
+
+    try:
+        source = wat.Inotify()
+        source.add_tree(root, prune=prune)
+    except wat.InotifyUnavailable as exc:
+        print("watch  REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+
+    def trigger():
+        stamp = datetime.now().strftime("%H:%M:%S")
+        print("[%s] change -> update" % stamp, flush=True)
+        # `as_of` stays None across the whole run so each update stamps the day
+        # it actually runs, not the day the watch was launched.
+        rc = cmd_update(args)
+        if rc != 0:
+            print("[%s] update reported problems (exit %d) -- watch continues"
+                  % (stamp, rc), file=sys.stderr, flush=True)
+
+    print("watching %s (inotify) -- Ctrl-C to stop" % root, flush=True)
+    try:
+        wat.watch_loop(source, trigger, ignore=ignore, debounce=args.debounce)
+    except KeyboardInterrupt:
+        print("\nstopped. nothing persists.", flush=True)
+    finally:
+        source.close()
+    return 0
+
+
 def _models_from(specs):
     out = {}
     for spec in specs:
@@ -1032,6 +1101,29 @@ def main(argv=None):
                         "will then mix two configurations")
     p.add_argument("--config", default=None)
     p.set_defaults(func=cmd_update)
+
+    p = sub.add_parser("watch",
+                       help="foreground: re-run update when the corpus changes")
+    p.add_argument("--model", action="append", required=True,
+                   metavar="NAME=PATH",
+                   help="repeatable, e.g. --model m3=/path/m3.db")
+    p.add_argument("--root", default=None,
+                   help="directory to watch; defaults to the configured root")
+    p.add_argument("--as-of", dest="as_of", default=None,
+                   help="pin the date; by default each update stamps its own")
+    p.add_argument("--mesh-db", dest="mesh_db", default=None,
+                   help="also refresh the federation on each change")
+    p.add_argument("--code-root", dest="code_root", default=None,
+                   metavar="DIR",
+                   help="re-walk DIR for the code inventory on each change")
+    p.add_argument("--allow-config-change", dest="allow_config_change",
+                   action="store_true",
+                   help="update anyway after the layout changed")
+    p.add_argument("--debounce", type=float, default=1.5, metavar="SECONDS",
+                   help="quiet period after the last change before updating "
+                        "(default 1.5)")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("build", help="build one or more models from scratch")
     p.add_argument("--model", action="append", required=True, metavar="M=PATH",
