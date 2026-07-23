@@ -297,6 +297,26 @@ def t_no_personal_identifiers(files):
               else "%d pattern(s)" % len(plaintext))
     # Without this the loop above proves nothing when the file list is empty.
     # `all()` over nothing is True, and so is "no offenders in no files".
+    # A file this gate cannot READ is a file it cannot clear. `.coverage` --
+    # a SQLite database naming every source file by absolute path -- was
+    # tracked for three commits and scanned by nobody: it has no suffix, so it
+    # matched the empty-extension entry in TEXT_SUFFIXES, and every band here
+    # then found nothing in bytes it could not decode. **A scanner that
+    # silently skips what it cannot parse reports clean on exactly the files
+    # most likely to be dirty.**
+    unreadable = []
+    for rel in files:
+        try:
+            with open(os.path.join(REPO, rel), "rb") as fh:
+                fh.read().decode("utf-8")
+        except (UnicodeDecodeError, OSError):
+            unreadable.append(rel)
+    check("every publishable file is text this gate can read",
+          not unreadable,
+          "%d unreadable file(s)%s" % (len(unreadable),
+                                       "" if not unreadable
+                                       else "  %s" % unreadable[:3]))
+
     check("the publishable tree is non-empty", len(files) > 20,
           "%d file(s) would be committed" % len(files))
     # The exemptions must name files that are actually there. An exemption for

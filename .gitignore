@@ -40,3 +40,11 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Coverage's own database. It is a SQLite file full of ABSOLUTE paths from the
+# machine that produced it, and it has no suffix -- so it slipped past a
+# privacy gate that reads text and matched the empty-extension entry in its
+# own suffix list. It was tracked for three commits. The gate now refuses any
+# tracked file it cannot decode, which is the general form of this mistake.
+.coverage
+.coverage.*
