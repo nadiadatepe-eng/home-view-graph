@@ -152,26 +152,17 @@ class Mesh:
             queried.append(model)
             if not expr:
                 continue
-            sql = ("SELECT n.id node_id, n.node_key, n.title, n.subtype, "
-                   "n.path, n.content_hash, bm25(nodes_fts) score "
-                   "FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid "
-                   "WHERE nodes_fts MATCH ?")
-            args = [expr]
-            if not include_all:
-                sql += " AND (n.subtype IS NULL OR n.subtype != 'transcript')"
-            if as_of:
-                # Time travel: a node counts as it stood on that date.
-                sql += " AND n.first_seen <= ?"
-                args.append(as_of)
-            sql += " ORDER BY score LIMIT ?"
-            args.append(limit)
             try:
-                rows = s.db.execute(sql, args).fetchall()
+                rows = self._fts_rows(s, expr, limit, as_of, include_all)
             except sqlite3.Error as exc:
                 missing.append(model)
                 warnings.append("%s failed mid-query: %r" % (model, exc))
                 continue
             rankings[model] = [dict(r, model=model) for r in rows]
+
+        if expr:
+            self._search_code(expr, limit, as_of, include_all,
+                              rankings, queried, warnings)
 
         hits = self._rrf(rankings, limit)
         if missing:
@@ -179,6 +170,85 @@ class Mesh:
                                 "and ranking are incomplete."
                             % ", ".join(sorted(set(missing))))
         return MeshResult(hits, queried, sorted(set(missing)), warnings)
+
+    @staticmethod
+    def _fts_rows(store, expr, limit, as_of, include_all, kind=None):
+        """One FTS query, one place. The models and the code stubs share it.
+
+        Written out twice, the `transcript` filter and the `as_of` predicate
+        would agree until one of them was edited -- and the one that stopped
+        being edited would be the one nobody reads. `kind` is the only thing
+        the two callers differ by.
+        """
+        sql = ("SELECT n.id node_id, n.node_key, n.title, n.subtype, "
+               "n.path, n.content_hash, bm25(nodes_fts) score "
+               "FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid "
+               "WHERE nodes_fts MATCH ?")
+        args: list[object] = [expr]
+        if not include_all:
+            sql += " AND (n.subtype IS NULL OR n.subtype != 'transcript')"
+        if kind is not None:
+            sql += " AND n.kind = ?"
+            args.append(kind)
+        if as_of:
+            # Time travel: a node counts as it stood on that date.
+            sql += " AND n.first_seen <= ?"
+            args.append(as_of)
+        sql += " ORDER BY score LIMIT ?"
+        args.append(limit)
+        return store.db.execute(sql, args).fetchall()
+
+    def _search_code(self, expr, limit, as_of, include_all,
+                     rankings, queried, warnings):
+        """Search the code stubs, which live in mesh.db and in no model.
+
+        `code` is a corpus category with no store -- reading source is
+        `code-review-graph`'s job -- so the federation cannot search code the
+        way it searches the four models. What it can do is answer **which
+        file**, by name and path, because that is exactly what a stub carries.
+        A CITES_CODE edge could name a file that no search could then find,
+        which made the graph able to point at something the user could not
+        look up.
+
+        Three states, and they are kept apart:
+
+          * no `mesh_db` at all -- the caller asked for a search over the
+            models it named, and gets one. Not a partial result, and no
+            warning: nothing was dropped that was ever offered.
+          * a mesh with code stubs -- `code` joins the ranking as a source.
+          * a mesh with none -- a warning naming the fix, because zero hits
+            from an inventory nobody built looks exactly like a corpus with
+            no source files in it. Same distinction `build_edges` draws
+            between `absent` and 0.
+
+        A stub cannot answer for its CONTENTS, and this is careful not to
+        imply otherwise: the body is the basename. Searching for a function
+        name will not find the file that defines it, and that is a real limit
+        rather than a bug -- see DECISIONS.md section 26.
+        """
+        if not self.mesh_db or not os.path.exists(self.mesh_db):
+            return
+        try:
+            mesh = Store(self.mesh_db)
+        except (sqlite3.Error, OSError) as exc:
+            warnings.append("code stubs unavailable: %r" % exc)
+            return
+        try:
+            rows = self._fts_rows(mesh, expr, limit, as_of, include_all,
+                                  kind=self.CODE_MODEL)
+            if not self._has_code_stubs(mesh):
+                warnings.append(
+                    "no code inventory in this federation: source files are "
+                    "not searchable until `mesh build --code-root DIR` has "
+                    "run. This is not 'no matches'.")
+                return
+            queried.append(self.CODE_MODEL)
+            rankings[self.CODE_MODEL] = [dict(r, model=self.CODE_MODEL)
+                                         for r in rows]
+        except sqlite3.Error as exc:
+            warnings.append("code stubs failed mid-query: %r" % exc)
+        finally:
+            mesh.close(commit=False)
 
     @staticmethod
     def _fusion_key(row):

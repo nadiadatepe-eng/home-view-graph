@@ -138,6 +138,7 @@ def corpus():
         "code_ambiguous": syn.CITES_CODE_AMBIGUOUS,
         "code_phantom": syn.CITES_CODE_PHANTOM,
         "code_glued": syn.CITES_CODE_GLUED,
+        "code_findable": syn.CITES_CODE_FINDABLE,
         "descriptive_queries": ["trails", "bush", "memex", "graphify", "art",
                                 "wiki", "report", "paper", "note", "search"],
     }
@@ -600,6 +601,36 @@ def t_cites_code(tmp, paths, by_label, spec):
           "%d edge(s) to %s"
           % (len([1 for _, b, _ in got if b == glued]),
              os.path.basename(glued)))
+
+    # Searchable, and the answer says WHICH file. Until this existed a
+    # CITES_CODE edge could name a file no search could then find: the stubs
+    # sat in mesh.db's FTS index and `search` only ever read the models.
+    with Mesh(paths, mesh_db=meshdb) as mesh:
+        found = mesh.search(spec["code_findable"], limit=20)
+        hits = [h for h in found.hits if h["model"] == "code"]
+        missing_q = mesh.search(spec["code_phantom"].split(".")[0], limit=20)
+    check("a code file is findable by name, and named by path",
+          len(hits) == 1 and hits[0]["path"].endswith(spec["code_findable"])
+          and "code" in found.models_queried,
+          "%d code hit(s): %s"
+          % (len(hits), [os.path.basename(h["path"] or "") for h in hits]))
+    # The negative half: the search finds code because the corpus has that
+    # file, not because `code` answers every query.
+    check("a source file that does not exist is not found either",
+          not [h for h in missing_q.hits if h["model"] == "code"],
+          "%d code hit(s) for %s"
+          % (len([h for h in missing_q.hits if h["model"] == "code"]),
+             spec["code_phantom"]))
+
+    # A federation built without an inventory must say so rather than answer
+    # zero. Same distinction `build_edges` draws between `absent` and 0.
+    with Mesh(paths, mesh_db=bare) as mesh:
+        quiet = mesh.search(spec["code_findable"], limit=20)
+    check("a federation with no inventory says so instead of finding nothing",
+          "code" not in quiet.models_queried
+          and any("mesh build --code-root" in w for w in quiet.warnings),
+          "queried=%s warnings=%s"
+          % (quiet.models_queried, [w[:40] for w in quiet.warnings]))
 
     with Store(meshdb) as m:
         phantom = m.db.execute(

@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (246 of
-418)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (249 of
+421)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:
@@ -1028,6 +1028,34 @@ nothing — the gate was green and untestable at once. And the extension filter
 had no decoy to reject, so removing it outright left the mention gate green.
 Both were only visible because the needles were written at the same time as
 the gates.
+
+**Code is searchable by name, and only by name.** A `CITES_CODE` edge could
+name a file that no search would then find: the stubs sit in `mesh.db`'s FTS
+index and `Mesh.search` only ever read the model stores. `_search_code` now
+queries them as a fifth source called `code`, through the same `_fts_rows`
+helper the models use -- one copy of the `transcript` filter and the `as_of`
+predicate, because two copies is how one of them stops being edited.
+
+What a stub can answer is **which file**: basename and path, which is what the
+CLI prints under a code hit, since a basename alone is ambiguous by
+construction. It cannot answer for contents. Searching for a function name
+will not find the file that defines it, and that is the boundary this package
+keeps: reading source is `code-review-graph`'s job.
+
+Three states, kept apart. **No `mesh_db`** -- the caller asked for a search
+over the models it named and gets exactly that, with no warning, because
+nothing was dropped that was ever offered. **A mesh with stubs** -- `code`
+joins the ranking. **A mesh with none** -- a warning naming the fix, because
+zero hits from an inventory nobody built looks identical to a corpus with no
+source files in it.
+
+Refactoring for this rotted a mutation needle: `_fts_rows` moved the `as_of`
+predicate out of `search`, and the needle aimed at the old location reported
+`needle missing`, which the harness scores as a survivor. That is the second
+time in two days a needle has rotted, and the summary line is the only place
+it shows -- **a rotted needle and an untested gate are indistinguishable from
+the total.**
+
 
 ### What the adversarial audit found in this change
 

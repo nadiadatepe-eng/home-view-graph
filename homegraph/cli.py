@@ -637,6 +637,12 @@ def cmd_mesh_search(args):
             print("  %2d  %-6s %-44s %s"
                   % (hit["rank"], hit["model"], (hit.get("title") or "")[:44],
                      ",".join(hit["sources"])))
+            # A code stub's title is its basename, and a basename is ambiguous
+            # by construction -- two `handler.js` is the case CITES_CODE's
+            # uniqueness rule exists for. Printing the path is the whole point
+            # of making these searchable: the answer is WHICH file.
+            if hit["model"] == "code" and hit.get("path"):
+                print("      %s" % hit["path"])
     return 0 if not res.partial else 3
 
 

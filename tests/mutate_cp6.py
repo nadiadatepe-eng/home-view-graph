@@ -17,6 +17,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    ("the code stubs are never searched",
+     "homegraph/mesh.py",
+     "        if expr:\n"
+     "            self._search_code(expr, limit, as_of, include_all,\n"
+     "                              rankings, queried, warnings)",
+     "        pass  # mutated: a CITES_CODE target no search can find",
+     "a code file is findable by name, and named by path"),
+
+    ("an unbuilt inventory answers zero instead of saying so",
+     "homegraph/mesh.py",
+     "            if not self._has_code_stubs(mesh):",
+     "            if False:  # mutated: not asked reads as no matches",
+     "a federation with no inventory says so instead of finding nothing"),
+
+    ("the code search ignores the transcript and as-of predicates",
+     "homegraph/mesh.py",
+     "            rows = self._fts_rows(mesh, expr, limit, as_of, include_all,\n"
+     "                                  kind=self.CODE_MODEL)",
+     "            rows = mesh.db.execute(  # mutated: a second, looser query\n"
+     "                \"SELECT n.id node_id, n.node_key, n.title, n.subtype, \"\n"
+     "                \"n.path, n.content_hash, 0 score FROM nodes n \"\n"
+     "                \"WHERE n.kind = 'code' LIMIT ?\", (limit,)).fetchall()",
+     "a source file that does not exist is not found either"),
+
     ("a refused prune has already written by the time it refuses",
      "homegraph/mesh.py",
      "        if prune:\n"
@@ -283,10 +307,14 @@ MUTATIONS = [
      "        for model in ():  # mutated: no note ever links to an image",
      "FIGURE_FOR links a note to the image it names"),
 
+    # Re-aimed 2026-07-23: `_fts_rows` took the predicate out of `search`,
+    # and the needle stayed pointed at the old location -- reported as
+    # `needle missing`, which the harness scores as a survivor on purpose. A
+    # rotted needle and an untested gate look identical from the summary line.
     ("time travel ignores as_of",
      "homegraph/mesh.py",
-     '                sql += " AND n.first_seen <= ?"\n                args.append(as_of)',
-     "                pass  # mutated: as_of has no effect",
+     '            sql += " AND n.first_seen <= ?"\n            args.append(as_of)',
+     "            pass  # mutated: as_of has no effect",
      "as-of filters by first_seen"),
 
     ("a corrupt store crashes the federation",

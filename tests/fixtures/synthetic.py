@@ -390,6 +390,10 @@ CITES_CODE_FASIT = frozenset({
 # containment is not naming: measured on the real corpus, 89 of 1 253 basename
 # edges rested on exactly this shape (`runner.py` inside `live_runner.py`).
 CITES_CODE_GLUED = "proj/api/runner.js"
+# Searched for by name in CP-6. A stub carries the basename and the path and
+# no contents, so this is a name, not a term from inside the file -- which is
+# the whole of what `mesh search` can promise about code.
+CITES_CODE_FINDABLE = "suite.test.mjs"
 # Written in the same note, and deliberately NOT also named by its full path:
 # a file named both ways draws its edge from the path, and the uniqueness
 # condition below would then be untestable -- dropping it changes nothing,
