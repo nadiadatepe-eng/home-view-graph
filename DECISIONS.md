@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (265 of
-450)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (269 of
+457)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:
@@ -1136,6 +1136,117 @@ archive entries, and across ten descriptive queries they were 4 of 200 fused
 hits (2.0%). They stay searchable, because "which archive holds `notes.md`" is
 a question worth being able to ask, and the dilution is stated here rather than
 left for someone to discover as a ranking oddity.
+
+---
+## 27 · The portable artifact, and what it does not promise
+
+`export` writes lzma-compressed JSON Lines: a manifest, the nodes, the edges,
+a digest. Text rather than a copy of the SQLite file, for one reason that
+outweighs the extra work: **the importer writes through `Store.upsert_node`**,
+the same writer every builder uses, so an imported graph cannot diverge from a
+built one. A shipped `.db` would be imported by raw SQL, and raw SQL is a
+second builder.
+
+**The root is whatever the user chose.** `portable.py` replaces it with `~`,
+which is a marker and never a home directory -- the corpus root may be a home
+directory, one project, or a disk full of them, and a converter that assumed
+`$HOME` would work on exactly one of the three. A node key IS the path here,
+so this rewrites the identity of every file node without losing an edge.
+
+**A path outside the root is refused, never rewritten.** The tempting fallback
+is `../../elsewhere/file.md`, which imports into a directory the reader never
+named.
+
+### Three levels, and the default is the one that leaves your text behind
+
+`full` · `structure` (default) · `shape`. The default was chosen on a
+measurement, not a preference: `body` in M1 and M3 is the FULL TEXT of every
+file -- 4.9 million characters of markdown and 1.0 million of document text on
+the measured corpus, and 86% of a `full` artifact. That is not a side effect
+of exporting; it IS the export.
+
+`shape` hashes names and paths with sha256 and **keeps the first prefix
+segment**, so `author:` stays `author:` and a path keeps its `~/` marker: what
+a node IS survives, which file it is does not. Titles are hashed, and `body`
+and `mtime` are dropped -- a timestamp to the second fingerprints a machine as
+well as a name does.
+
+**`shape` is not anonymisation, and calling it that would be the failure this
+package exists to avoid.** The digests are unsalted and deterministic, so
+anyone who can enumerate candidate paths can hash them and look for a match:
+"is there a file called `~/Documents/CV.pdf`?" is answerable against a `shape`
+artifact. What it prevents is READING the graph. A per-artifact salt would
+close that and would make two exports of one corpus incomparable, which is a
+trade nobody has asked for; it is written here so the question is visible
+rather than assumed away.
+
+### What the artifact does not carry, and why
+
+  * **The FTS index** -- derived. The import rebuilds it. Shipping it would be
+    a second opinion about what is searchable.
+  * **The config fingerprint** -- it describes the exporting machine's layout.
+    Importing it would make the next `update` compare against a layout that
+    was never local.
+  * **The mesh** (TODO-E6, decided rather than deferred). Also derived: import
+    the models and run `mesh build`. Shipping it would mean shipping code
+    stubs that point at files the receiving machine does not have, and a
+    federation is cheap to recompute from the models it federates. **A derived
+    artifact inside a derived artifact is a second source of truth for
+    something that already has one.**
+
+### The digest is a trailer, and it covers the manifest
+
+The plan put the digest in the manifest, which cannot be written first and
+also cover what follows. As a trailer it keeps the file streamable and makes
+truncation detectable -- an artifact whose last line is missing is refused
+rather than imported as a smaller graph.
+
+It covers the manifest too. It did not, on the argument that a checksum must
+not include the line announcing it -- true while the digest lived in the
+manifest, and false the moment it moved. The manifest carries the redaction
+level, the model list and the counts, so leaving it uncovered meant an
+artifact could be **relabelled `structure` after the fact and still verify.**
+
+### The negative control that could not pass, and the one that replaced it
+
+The plan's gate: search the decompressed artifact for the export root, one hit
+is red. Measured: **zero absolute paths survive, and the root's name survives
+anyway**, twice over.
+
+  * A directory INSIDE the root can be named after the root --
+    `.claude/projects/-home-<user>-<project>/` encodes the very path it sits
+    under -- so a root-relative key still carries it as a component.
+  * At `full`, prose names absolute paths: 155 bodies did. **Rewriting a
+    user's own text to hide a path would be a lie about what the file says.**
+
+So the gate covers the STRUCTURAL fields -- `node_key`, `path`, `src`, `dst`
+-- which are provable, and `root_in_user_data` is measured beside it and
+checked against an independent recount rather than trusted. CP-12 also asserts
+the consequence directly: **user text is carried verbatim, so a title naming
+the old root still names it after import.**
+
+### What CP-12's mutation harness found, which is the part worth keeping
+
+Six mutations survived the first run, and none of them were about the feature:
+
+  * **two duplicated invariants, written the same hour as the rule against
+    them** -- a second `row.pop("body")` beside `redact()`, and a level check
+    in both `export()` and `redact()`. Deleting either rule left the other
+    answering. Both collapsed to one place; the remaining backstop is
+    documented as unreachable, and the gate now checks the message so the
+    primary guard can fail.
+  * **three gates whose fixture could not exhibit the property.** M4 writes
+    only `exact` edges, all seen on one day, and no title named the root -- so
+    provenance, edge dates and the leak counter had nothing to bite on. The
+    corpus is seeded deliberately now, and the seeding says so in its
+    docstring. **A fixture that cannot show the property makes its gate
+    vacuous**, which is the same shape as an empty gate and harder to see.
+  * **one refusal with nothing to refuse**: no path in the corpus lies outside
+    its root, so the guard against it was unreachable. A stray node is planted
+    for it now.
+
+And one crash-kill became a gate: `load()` raising ended the run instead of
+failing a check.
 
 ---
 

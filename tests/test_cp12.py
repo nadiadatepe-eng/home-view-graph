@@ -363,19 +363,117 @@ def t_redaction(tmp, db_a, root_a):
           "%d node(s) with text at full, %d at structure"
           % (bodies(full), bodies(struct)))
 
+    from homegraph.export import IMPLEMENTED, LEVELS
+
     raised = None
     try:
-        export({"m4": db_a}, os.path.join(tmp, "shape.hgx"), root_a,
-               redaction="shape")
+        export({"m4": db_a}, os.path.join(tmp, "bogus.hgx"), root_a,
+               redaction="not-a-level")
     except Exception as exc:                                    # noqa: BLE001
         raised = "%s: %s" % (type(exc).__name__, exc)
-    # The MESSAGE, not just the type. `redact` keeps an unreachable backstop
+    # The MESSAGE, not just the type: `redact` keeps an unreachable backstop
     # that raises the same class, so a check on the class alone passed while
-    # the guard that produces the user-facing refusal was deleted -- the
-    # mutation harness found it, twice removed from where the bug would be.
-    check("a level that is not implemented is refused, not approximated",
-          raised is not None and "not implemented yet" in raised,
-          "%s" % (raised or "produced an artifact")[:78])
+    # the guard producing the user-facing refusal was deleted.
+    check("an unknown redaction level is refused, not approximated",
+          raised is not None and "unknown redaction level" in raised,
+          "%s" % (raised or "produced an artifact")[:70])
+    # This gate replaced one that asserted `shape` was refused -- true until
+    # E3 shipped, and then a gate testing that a finished feature was still
+    # missing. What survives the change is the invariant underneath: a level
+    # this build DECLARES must be one it can produce, or the label lies.
+    check("every declared level is one this build can produce",
+          set(LEVELS) == set(IMPLEMENTED),
+          "declared %s, implemented %s"
+          % (sorted(LEVELS), sorted(IMPLEMENTED)))
+
+
+def t_shape(tmp, db_a, root_a):
+    """`shape` hides which file, keeps what kind, and still connects.
+
+    The level exists to be shareable, so every check here is about what does
+    NOT survive -- with a positive control for each, because "no readable
+    name in the artifact" passes trivially on an artifact with no names.
+    """
+    art = os.path.join(tmp, "shape.hgx")
+    export({"m4": db_a}, art, root_a, redaction="shape")
+    full = os.path.join(tmp, "shape-full.hgx")
+    export({"m4": db_a}, full, root_a, redaction="full")
+
+    def rows(path):
+        with lzma.open(path, "rt", encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh]
+
+    shaped = [r for r in rows(art) if r.get("t") in ("node", "edge")]
+    plain = [r for r in rows(full) if r.get("t") in ("node", "edge")]
+
+    # Nothing that looks like a name. The `~/` marker and the archive `!`
+    # seam are structure, not names, so they are the only separators allowed.
+    leaked = []
+    for row in shaped:
+        for field in ("node_key", "path", "src", "dst", "title"):
+            value = row.get(field)
+            if not isinstance(value, str):
+                continue
+            tail = value.replace("~/", "").replace("!", "").split(":")[-1]
+            if "/" in tail or "." in tail:
+                leaked.append((field, value[:50]))
+    check("shape leaves no readable name behind",
+          not leaked, "%d leak(s)%s" % (len(leaked),
+                                        "" if not leaked else "  %s" % leaked[:2]))
+    readable = sum(1 for r in plain
+                   if "/" in str(r.get("node_key", "")).replace("~/", ""))
+    check("and the same corpus at full is full of them",
+          readable > 5, "%d readable path(s) at full" % readable)
+
+    # The type survives: every prefix the source used is still there.
+    def prefixes(items):
+        out = set()
+        for row in items:
+            key = row.get("node_key")
+            if isinstance(key, str) and ":" in key and not key.startswith("~"):
+                out.add(key.split(":")[0])
+        return out
+    check("the type prefix survives the hashing",
+          prefixes(shaped) == prefixes(plain) and prefixes(shaped),
+          "%s" % sorted(prefixes(shaped)))
+
+    # Text and timestamps are gone, and the control shows they were there.
+    def has(items, field):
+        return sum(1 for r in items if r.get(field) is not None)
+    check("shape carries no text and no timestamps",
+          has(shaped, "body") == 0 and has(shaped, "mtime") == 0
+          and has(plain, "body") > 0 and has(plain, "mtime") > 0,
+          "body %d/%d, mtime %d/%d at shape/full"
+          % (has(shaped, "body"), has(plain, "body"),
+             has(shaped, "mtime"), has(plain, "mtime")))
+
+    # Deterministic: the same corpus hashes the same way twice, or two
+    # artifacts of one graph could never be compared.
+    again = os.path.join(tmp, "shape2.hgx")
+    export({"m4": db_a}, again, root_a, redaction="shape")
+    check("hashing is deterministic across runs",
+          open(art, "rb").read() == open(again, "rb").read(),
+          "two exports are byte-identical")
+
+    # And the graph still IS a graph: the edges connect the hashed nodes.
+    imported = os.path.join(tmp, "shape.db")
+    with Store(imported, model="m4") as s:
+        _, failure = safe_load(art, {"m4": s}, os.path.join(tmp, "shape-root"))
+    with Store(imported) as s:
+        n = s.node_count()
+        e = s.db.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+        degrees = sorted(r["d"] for r in s.db.execute(
+            "SELECT COUNT(*) d FROM edges GROUP BY src"))
+    with Store(db_a) as s:
+        want_n = s.node_count()
+        want_e = s.db.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+        want_d = sorted(r["d"] for r in s.db.execute(
+            "SELECT COUNT(*) d FROM edges GROUP BY src"))
+    check("a shaped graph still has the shape it came from",
+          failure is None and (n, e, degrees) == (want_n, want_e, want_d),
+          "%d/%d nodes, %d/%d edges, degree sequences %s%s"
+          % (n, want_n, e, want_e,
+             "equal" if degrees == want_d else "DIFFER", failure or ""))
 
 
 def t_refusals(tmp, art):
@@ -559,6 +657,7 @@ def main():
         t_negative_control(tmp, art, root_a, report)
         t_outside_root(tmp, db_a, root_a)
         t_redaction(tmp, db_a, root_a)
+        t_shape(tmp, db_a, root_a)
         t_refusals(tmp, art)
         t_rollback(tmp, art)
         t_fts(tmp, db_a, root_a)

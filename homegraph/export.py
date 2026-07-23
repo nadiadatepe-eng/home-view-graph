@@ -47,7 +47,8 @@ import lzma
 import os
 from typing import Any
 
-from .portable import OutsideRoot, to_portable
+from .portable import (ARCHIVE_PREFIX, MARKER, MODEL_SEP, OutsideRoot,
+                       to_portable)
 from .store import Store
 
 FORMAT_VERSION = 1
@@ -61,7 +62,11 @@ LEVELS = {
     "shape": "hashed names and paths; topology only",
 }
 # `shape` is declared above and refused below -- see the module docstring.
-IMPLEMENTED = ("full", "structure")
+IMPLEMENTED = ("full", "structure", "shape")
+
+# 64 bits of sha256, hex. Enough that a collision inside one graph is not a
+# practical concern, short enough that an artifact stays readable as a shape.
+DIGEST_CHARS = 16
 
 # Columns copied verbatim. `first_seen`, `last_seen` and the datelist columns
 # are here because `upsert_node` cannot set them: it stamps `as_of` and starts
@@ -96,6 +101,44 @@ def check_level(level: str) -> None:
             % (level, ", ".join(IMPLEMENTED), level, level))
 
 
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:DIGEST_CHARS]
+
+
+def shape_key(key: str) -> str:
+    """A portable key with its names hashed and its TYPE left readable.
+
+    The rule is the one the decision names: **keep the first prefix segment,
+    hash the rest.** `author:` stays `author:`, `ref:` stays `ref:`, a path
+    keeps its `~/` marker, an archive keeps its `!` seam, a mesh key keeps its
+    model. What each node IS survives; which file it is does not.
+
+    Deterministic and unsalted, and that is a real limit rather than an
+    oversight: **sha256 of a short path is guessable.** Anyone who can list
+    candidate paths can hash them and check for a match -- "is there a file
+    called `~/Documents/CV.pdf`?" is answerable against a `shape` artifact.
+    What `shape` prevents is READING the graph; it is not anonymisation, and
+    calling it that would be the kind of claim this package exists to avoid.
+    A per-artifact salt would close that gap and would also make two exports
+    of the same corpus incomparable, which is a trade nobody has asked for
+    yet. See DECISIONS.md section 27.
+    """
+    if key.startswith(ARCHIVE_PREFIX):
+        inner, sep, entry = key[len(ARCHIVE_PREFIX):].partition("!")
+        return "%s%s%s" % (ARCHIVE_PREFIX, shape_key(inner),
+                           ("!" + _digest(entry)) if sep else "")
+    head, sep, rest = key.partition(MODEL_SEP)
+    if sep and "/" not in head and rest:
+        return "%s%s%s" % (head, MODEL_SEP, shape_key(rest))
+    if key.startswith(MARKER):
+        # `~` alone is the root itself and names nothing.
+        return key if key == MARKER else "%s/%s" % (MARKER, _digest(key[2:]))
+    prefix, colon, value = key.partition(":")
+    if colon:
+        return "%s:%s" % (prefix, _digest(value))
+    return _digest(key)
+
+
 def redact(row: dict[str, Any], level: str) -> dict[str, Any]:
     """Apply a redaction level to one node row. The only place it happens.
 
@@ -108,6 +151,19 @@ def redact(row: dict[str, Any], level: str) -> dict[str, Any]:
         return row
     if level == "structure":
         return {k: v for k, v in row.items() if k != "body"}
+    if level == "shape":
+        out = {k: v for k, v in row.items()
+               # `body` is text, not a name, so it is dropped rather than
+               # hashed. `mtime` is dropped because a timestamp to the second
+               # fingerprints a machine as well as a name does -- and `shape`
+               # is the level someone reaches for when they intend to share.
+               if k not in ("body", "mtime")}
+        for field in ("node_key", "path", "src", "dst"):
+            if field in out:
+                out[field] = shape_key(out[field])
+        if out.get("title") is not None:
+            out["title"] = _digest(out["title"])
+        return out
     # Unreachable by construction: `check_level` runs first and refuses
     # anything not in IMPLEMENTED. Kept as a loud failure rather than a
     # silent pass-through, because "unreachable" is a claim about today's
@@ -240,17 +296,17 @@ def export(model_paths: dict[str, str], out_path: str, root: str, *,
                 s = Store(path)
                 try:
                     for row in _rows(s, model, root):
-                        if row["t"] == "node":
-                            # `redact` is the ONLY place a level is applied.
-                            # A second `row.pop("body")` stood here and did
-                            # the same job, so deleting the rule inside
-                            # `redact` changed nothing and the gate stayed
-                            # green -- a duplicated invariant across two
-                            # layers, in the package that forbids it.
-                            row = redact(row, redaction)
-                            written["nodes"] += 1
-                        else:
-                            written["edges"] += 1
+                        # `redact` is the ONLY place a level is applied, and
+                        # it is applied to EDGES too: an edge carries two
+                        # keys, and hashing the nodes while leaving the edges
+                        # readable would publish the very paths the level
+                        # exists to hide. A second `row.pop("body")` stood
+                        # here once and did `redact`'s job, so deleting the
+                        # rule inside `redact` changed nothing -- a
+                        # duplicated invariant, in the package that forbids
+                        # them.
+                        written["nodes" if row["t"] == "node" else "edges"] += 1
+                        row = redact(row, redaction)
                         note_leak(row)
                         emit(fh, row)
                 except OutsideRoot as exc:

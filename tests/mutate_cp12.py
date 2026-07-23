@@ -62,11 +62,51 @@ MUTATIONS = [
      "    if level == \"structure\":\n        return row  # mutated: labelled structure, shaped full",
      "structure carries no file text, and full carries some"),
 
-    ("an unimplemented level is produced anyway",
+    ("an unknown level is accepted",
      "homegraph/export.py",
-     "    if level not in IMPLEMENTED:",
-     "    if False:  # mutated: `shape` ships unshaped",
-     "a level that is not implemented is refused, not approximated"),
+     "    if level not in LEVELS:",
+     "    if False:  # mutated: any string is a redaction level",
+     "an unknown redaction level is refused, not approximated"),
+
+    ("a level is declared without being implemented",
+     "homegraph/export.py",
+     'IMPLEMENTED = ("full", "structure", "shape")',
+     'IMPLEMENTED = ("full", "structure")  # mutated: shape declared, absent',
+     "every declared level is one this build can produce"),
+
+    # -- shape ------------------------------------------------------------
+    ("shape leaves the paths readable",
+     "homegraph/export.py",
+     '        for field in ("node_key", "path", "src", "dst"):\n'
+     "            if field in out:\n"
+     "                out[field] = shape_key(out[field])",
+     "        pass  # mutated: hashed titles, readable paths",
+     "shape leaves no readable name behind"),
+
+    ("shape hashes the type away with the name",
+     "homegraph/export.py",
+     '    prefix, colon, value = key.partition(":")\n'
+     "    if colon:\n"
+     '        return "%s:%s" % (prefix, _digest(value))',
+     '    prefix, colon, value = key.partition(":")\n'
+     "    if colon:\n"
+     "        return _digest(key)  # mutated: author: and ref: vanish",
+     "the type prefix survives the hashing"),
+
+    ("shape keeps the timestamps",
+     "homegraph/export.py",
+     '               if k not in ("body", "mtime")}',
+     '               if k not in ("body",)}  # mutated: mtime fingerprints',
+     "shape carries no text and no timestamps"),
+
+    ("edges keep readable keys while the nodes are hashed",
+     "homegraph/export.py",
+     '                        written["nodes" if row["t"] == "node" else "edges"] += 1\n'
+     "                        row = redact(row, redaction)",
+     '                        written["nodes" if row["t"] == "node" else "edges"] += 1\n'
+     '                        if row["t"] == "node":  # mutated: edges unshaped\n'
+     "                            row = redact(row, redaction)",
+     "shape leaves no readable name behind"),
 
     ("the manifest is left out of the digest",
      "homegraph/export.py",

@@ -215,9 +215,21 @@ homegraph import graph.hgx --model m3=/tmp/new.db --root ~/somewhere-else
 
 `export` defaults to `--redaction structure`: paths, titles and every edge,
 but no file text. On a measured home corpus the text is 86% of the artifact
-and all of it is yours. `full` carries it and says so on stderr; `shape` is
-declared and refused until E3 ships its hashing, because an artifact labelled
-`shape` that was not shaped is worse than no artifact.
+and all of it is yours. `full` carries it and says so on stderr. `shape`
+hashes names and paths with sha256 and keeps the first prefix segment, so
+`author:` stays `author:` and the graph keeps its shape while losing which
+files it is about.
+
+**`shape` is not anonymisation.** The digests are unsalted, so anyone who can
+enumerate candidate paths can hash them and look for a match. It prevents
+reading the graph; it does not prevent confirming a guess. `DECISIONS.md`
+section 27 says so in full, including what a salt would cost.
+
+The root is whatever you chose -- a home directory, one project, or a disk
+full of them -- and an artifact imports under any other one. The mesh is not
+in it: import the models and run `mesh build`, because a federation is cheap
+to recompute and shipping it would mean shipping code stubs pointing at files
+the receiving machine does not have.
 
 ## Updating without rebuilding
 
@@ -309,7 +321,7 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Thirteen checkpoints plus a privacy check. 328 mutations, 0 survived, 0
+**Thirteen checkpoints plus a privacy check. 333 mutations, 0 survived, 0
 detected only by a crash**, measured 2026-07-23 after the portable artifact
 landed. CP-3's count is 27, not the 26 printed here for a day -- recounted
 rather than carried forward, which this file has had to do before. The split of *how* they died is the
@@ -333,8 +345,8 @@ than trusting the numbers here.
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| CP-12 portable artifact | 18 | 18 |
-| **total** | **328** | **327** |
+| CP-12 portable artifact | 23 | 23 |
+| **total** | **333** | **332** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -543,7 +555,7 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 328 mutations name 265 of 450
+- **Mutation coverage is a minority of checks.** 333 mutations name 269 of 457
   checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**
