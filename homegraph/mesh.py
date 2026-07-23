@@ -213,8 +213,13 @@ class Mesh:
         Three states, and they are kept apart:
 
           * no `mesh_db` at all -- the caller asked for a search over the
-            models it named, and gets one. Not a partial result, and no
-            warning: nothing was dropped that was ever offered.
+            models it named, and gets one. Not a partial result, since no
+            model failed, but it SAYS SO: the header otherwise reads
+            `COMPLETE -- n hit(s) from m1, m3, m4` while code was never
+            consulted, and a user who has just built an inventory has no way
+            to tell that from "your file is not in the corpus". This was
+            silent for exactly one session, and that session produced the
+            question "why does searching for my file show nothing".
           * a mesh with code stubs -- `code` joins the ranking as a source.
           * a mesh with none -- a warning naming the fix, because zero hits
             from an inventory nobody built looks exactly like a corpus with
@@ -226,7 +231,16 @@ class Mesh:
         name will not find the file that defines it, and that is a real limit
         rather than a bug -- see DECISIONS.md section 26.
         """
-        if not self.mesh_db or not os.path.exists(self.mesh_db):
+        if not self.mesh_db:
+            warnings.append(
+                "code was not consulted: no --mesh-db, so the code inventory "
+                "was not available to this search. Source files live in no "
+                "model.")
+            return
+        if not os.path.exists(self.mesh_db):
+            warnings.append(
+                "code was not consulted: no federation at %s. Run "
+                "`mesh build --code-root DIR`." % self.mesh_db)
             return
         try:
             mesh = Store(self.mesh_db)

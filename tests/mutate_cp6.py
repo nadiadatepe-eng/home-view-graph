@@ -17,6 +17,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    ("a search with no federation omits code in silence",
+     "homegraph/mesh.py",
+     "        if not self.mesh_db:\n"
+     "            warnings.append(\n"
+     '                "code was not consulted: no --mesh-db, so the code inventory "',
+     "        if not self.mesh_db:\n"
+     "            return  # mutated: COMPLETE, with a source never asked\n"
+     "        if False:\n"
+     "            warnings.append(\n"
+     '                "code was not consulted: no --mesh-db, so the code inventory "',
+     "a search that cannot reach code says so"),
+
     ("the code stubs are never searched",
      "homegraph/mesh.py",
      "        if expr:\n"
@@ -208,10 +220,17 @@ MUTATIONS = [
      "        mesh = Store(self.mesh_db)  # mutated: creates on read",
      "a query against a mesh that does not exist refuses"),
 
+    # Anchored on the raise, not on the `if` alone. `_search_code` grew an
+    # identical `if not os.path.exists(self.mesh_db):` and sits EARLIER in the
+    # file, so the bare needle silently moved to the other subject and this
+    # gate went green while testing nothing. A needle matched by text is a
+    # needle that can change what it means without changing a character.
     ("the missing-mesh check accepts a path that is not there",
      "homegraph/mesh.py",
-     "        if not os.path.exists(self.mesh_db):",
-     "        if False:  # mutated: absent is as good as present",
+     "        if not os.path.exists(self.mesh_db):\n"
+     '            raise ModelUnavailable("no mesh database at %s; run "',
+     "        if False:  # mutated: absent is as good as present\n"
+     '            raise ModelUnavailable("no mesh database at %s; run "',
      "and it creates no database while refusing"),
 
     ("mesh_path keeps its own way of opening the store",

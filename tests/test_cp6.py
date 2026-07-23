@@ -632,6 +632,19 @@ def t_cites_code(tmp, paths, by_label, spec):
           "queried=%s warnings=%s"
           % (quiet.models_queried, [w[:40] for w in quiet.warnings]))
 
+    # The silent case, and the one a user actually hit: `mesh search` with no
+    # --mesh-db answers COMPLETE, lists the models it asked, and says nothing
+    # about the source files it could not reach. "Your file is not in the
+    # corpus" and "code was never consulted" are the same output otherwise.
+    with Mesh(paths) as mesh:
+        blind = mesh.search(spec["code_findable"], limit=20)
+    check("a search that cannot reach code says so",
+          "code" not in blind.models_queried
+          and any("code was not consulted" in w for w in blind.warnings)
+          and not blind.partial,
+          "queried=%s warnings=%s"
+          % (blind.models_queried, [w[:34] for w in blind.warnings]))
+
     with Store(meshdb) as m:
         phantom = m.db.execute(
             "SELECT COUNT(*) c FROM nodes WHERE kind='code' "

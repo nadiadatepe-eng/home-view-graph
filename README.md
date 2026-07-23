@@ -137,8 +137,10 @@ layout would still be imposed.
 `mesh search` answers from the four models **and** from the code inventory,
 which appears as a fifth source called `code`. A code stub carries a basename
 and a path and no contents, so it answers *which file* -- printed under the
-hit, since a basename alone is ambiguous -- and never *what is in it*. Without
-`--code-root` having been run, the search says so rather than returning zero.
+hit, since a basename alone is ambiguous -- and never *what is in it*. Without a
+`--mesh-db`, or without `--code-root` having been run, the search says that
+code was not consulted rather than returning zero hits and calling itself
+complete.
 
 Every edge carries the method it was derived by -- `exact` 1.0, `path_prefix`
 0.7, `basename` 0.6, `mention` 0.5, `cohort` 0.4 -- and any answer containing
@@ -282,7 +284,7 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twelve checkpoints plus a privacy check. 305 mutations, 0 survived, 0 detected
+**Twelve checkpoints plus a privacy check. 306 mutations, 0 survived, 0 detected
 only by a crash**, measured 2026-07-23 on the final tree, after the three
 missing edge types, the audit that followed them, and making code searchable
 by name. The split of *how* they died is the
@@ -300,13 +302,13 @@ than trusting the numbers here.
 | CP-3 documents | 26 | 26 |
 | CP-4 images | 17 | 17 |
 | CP-5 misc | 20 | 20 |
-| CP-6 mesh | 37 | 36 |
+| CP-6 mesh | 38 | 37 |
 | CP-7 config | 33 | 33 |
 | CP-8 update | 32 | 32 |
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| **total** | **305** | **304** |
+| **total** | **306** | **305** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -473,7 +475,7 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 305 mutations name 249 of 421
+- **Mutation coverage is a minority of checks.** 306 mutations name 250 of 422
   checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**

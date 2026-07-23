@@ -475,8 +475,8 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **59% (249 of
-421)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (250 of
+422)** across twelve checkpoints -- the ratio barely moved because CP-7 through
 CP-11, and then the three missing edge types, added checks and mutations
 together. Every batch found something the
 checkpoint had been reporting as green:
@@ -1042,19 +1042,31 @@ construction. It cannot answer for contents. Searching for a function name
 will not find the file that defines it, and that is the boundary this package
 keeps: reading source is `code-review-graph`'s job.
 
-Three states, kept apart. **No `mesh_db`** -- the caller asked for a search
-over the models it named and gets exactly that, with no warning, because
-nothing was dropped that was ever offered. **A mesh with stubs** -- `code`
-joins the ranking. **A mesh with none** -- a warning naming the fix, because
-zero hits from an inventory nobody built looks identical to a corpus with no
-source files in it.
+Three states, kept apart, and each one says which it is. **No `mesh_db`** --
+the search runs over the models named and is not partial, since no model
+failed, but it says that code was not consulted. **A mesh with stubs** --
+`code` joins the ranking. **A mesh with none** -- a warning naming the fix.
 
-Refactoring for this rotted a mutation needle: `_fts_rows` moved the `as_of`
-predicate out of `search`, and the needle aimed at the old location reported
-`needle missing`, which the harness scores as a survivor. That is the second
-time in two days a needle has rotted, and the summary line is the only place
-it shows -- **a rotted needle and an untested gate are indistinguishable from
-the total.**
+That first warning was absent for one session, on the argument that nothing
+had been dropped which was ever offered. The cost showed up immediately: a
+search for a file that IS in the inventory printed `COMPLETE -- 2 hit(s) from
+m1, m3, m4` and no code hit, which is byte-for-byte what "your file is not in
+the corpus" looks like. **A source that was never asked has to say so, even
+when asking it was never possible** -- the same rule the federation already
+applies to a model that failed mid-query.
+
+Two mutation needles broke on this work, in two different ways, and both are
+worth keeping. The first rotted: `_fts_rows` moved the `as_of` predicate out
+of `search`, so the needle aimed at the old location reported `needle
+missing`. The second **changed subject without changing a character**:
+`_search_code` grew an `if not os.path.exists(self.mesh_db):` identical to
+`_read_mesh`'s, and sits earlier in the file, so a needle matched by that text
+silently moved to the new occurrence and its gate went green while testing
+nothing at all. It is now anchored on the `raise` beneath it.
+
+**A rotted needle, a re-aimed needle and an untested gate are
+indistinguishable from the total** -- only the `SURVIVORS` block tells them
+apart, so it has to be read rather than the number above it.
 
 
 ### What the adversarial audit found in this change
