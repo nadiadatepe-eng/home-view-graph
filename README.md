@@ -108,7 +108,9 @@ layout would still be imposed.
 | `scan.py` | `init`'s one-shot role proposal, from extension mix |
 | `corpus.py` | the single `classify(path)`. Path-only, never opens a file |
 | `rules/*.toml` | exclusion layers, category map, image filename grammar |
-| `store.py` | SQLite schema v1, migration chain, versioned edges, FTS5 |
+| `store.py` | SQLite schema, migration chain v1→v2, versioned edges with method/confidence, FTS5 |
+| `lock.py` | one writer per store: lock file plus `BEGIN IMMEDIATE`, refuses rather than queues |
+| `query.py` | the closed query language; grammar in `DECISIONS.md` section 25 |
 | `temporal.py` | observations, `datelist_int` bitmask, 90-day retention |
 | `search.py` | FTS5, RRF fusion, `_out_mode` |
 | `incremental.py` | mtime+size, then hash to confirm |
@@ -120,7 +122,7 @@ layout would still be imposed.
 | `mesh.py` | M5: federates the models, never merges them |
 | `visualize.py` | force layout in Python, canvas in the browser, one file |
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
-| `cli.py` | `init`, `config`, `explain`, `census`, `status`, `search`, `md …`, `mesh …`, `update`, `visualize`, `mcp` |
+| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `build` |
 
 ## Install
 
@@ -224,8 +226,9 @@ panel rather than quietly drawing a smaller graph.
 ## Tests
 
 ```sh
-uvx pytest -q tests/                                            # 10 modules
-for t in 0 1 2 3 4 5 6 7 8; do python3 tests/mutate_cp$t.py; done
+uvx pytest -q tests/                                            # 13 modules
+for t in 0 1 2 3 4 5 6 7 8 9 10 11; do python3 tests/mutate_cp$t.py; done
+python3 tests/mutation_coverage.py         # which checks no mutation aims at
 python3 tests/test_cp0.py                  # any checkpoint runs standalone too
 ```
 
@@ -233,8 +236,13 @@ Neither line needs `uv`: after `pip install .`, `python3 -m pytest -q tests/`
 does the same thing, and every checkpoint runs standalone with no test runner
 at all.
 
-**Nine checkpoints plus a privacy check. 99 mutations, 0 survived, 0 detected
-only by a crash**, measured 2026-07-22. The split of *how* they died is the
+`test_no_real_paths.py` fails in a fresh clone, and that is deliberate: the
+material it proves is not published is gitignored and therefore absent, so the
+gate refuses to pass rather than report "nothing leaked" when there was nothing
+present to leak.
+
+**Twelve checkpoints plus a privacy check. 282 mutations, 0 survived, 0 detected
+only by a crash**, measured 2026-07-23. The split of *how* they died is the
 fragile number and is timestamped for a reason: it has moved twice within an
 hour of measurement. **0 survived is the load-bearing claim**; a mutation
 moving between *the named gate said no* and *the suite died* changes how much
@@ -243,16 +251,30 @@ than trusting the numbers here.
 
 | harness | mutations | killed by the named gate |
 |---|---|---|
-| CP-0 corpus | 10 | 10 |
-| CP-1 substrate | 8 | 8 |
-| CP-2 markdown | 9 | 9 |
-| CP-3 documents | 8 | 8 |
-| CP-4 images | 10 | 10 |
-| CP-5 misc | 8 | 8 |
-| CP-6 mesh | 9 | 9 |
-| CP-7 config | 16 | 16 |
-| CP-8 update | 21 | 21 |
-| **total** | **99** | **99** |
+| CP-0 corpus | 18 | 18 |
+| CP-1 substrate | 22 | 22 |
+| CP-2 markdown | 22 | 22 |
+| CP-3 documents | 21 | 21 |
+| CP-4 images | 17 | 17 |
+| CP-5 misc | 15 | 15 |
+| CP-6 mesh | 27 | 26 |
+| CP-7 config | 33 | 33 |
+| CP-8 update | 30 | 30 |
+| CP-9 provenance | 31 | 31 |
+| CP-10 query | 26 | 26 |
+| CP-11 write barrier | 20 | 20 |
+| **total** | **282** | **281** |
+
+The one CP-6 mutation not in the right-hand column was killed by a *different*
+gate than the one that named it — recorded rather than rounded away, because a
+kill by the wrong gate means the named gate still tests nothing.
+
+Two mutations rotted and were repaired on 2026-07-23: each one finds its target
+by exact source text, and when CP-9 made `method` a required argument on
+`upsert_edge`, the needles in CP-1 and CP-2 stopped matching. The harness
+reports an unappliable needle as a **survivor**, which is the right call — a
+score you did not earn is worse than a red line — but it only helps if someone
+reads the summary.
 
 An earlier revision claimed "48/48 killed". That was wrong: the harness counted
 a crashed suite as a kill, which made the `expected` field decorative -- an
@@ -309,8 +331,8 @@ fallow does not read Python), so the substitute stack is static analysis via
 | `uvx bandit -r homegraph/` | **found a real vulnerability** (below) |
 | `uvx radon cc -a homegraph/` | average complexity **A**; two D blocks |
 | `uvx vulture --min-confidence 80` | clean; at 60% it found real dead code |
-| `uvx pytest -q tests/` | 10 passed |
-| `uvx mypy homegraph/` | clean, with strict on five modules (see `pyproject.toml`) |
+| `uvx pytest -q tests/` | 13 passed |
+| `uvx mypy homegraph/` | clean on 25 files, with strict on seven modules (see `pyproject.toml`) |
 
 **Bandit found what a code review had not:** `xml.etree` parsing `.docx` and
 `.odt` is open to entity expansion, and these documents come from the internet.

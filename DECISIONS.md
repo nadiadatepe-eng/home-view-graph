@@ -226,7 +226,7 @@ reduces, and its sums must reconcile against the raw counts.
 
 ---
 
-## 13 · `mypy --strict` on five modules, not on all sixteen
+## 13 · `mypy --strict` on seven modules, not on all twenty-five
 
 The plan asked for `mypy --strict` clean on new modules. Run over everything it
 reports 370 errors -- and the decisive measurement is that **plain mypy reports
@@ -243,9 +243,17 @@ So strict applies where a wrong type would be **silent and load-bearing**:
 | `temporal` | an int that means a set of dates, with a bit convention M5 relies on |
 | `search` | fused hits, where a wrong key halves a rank invisibly |
 | `incremental` | the changed/touched distinction that decides re-extraction |
+| `lock` | the identity of a held lock -- nonce, pid and start time decide whether a lock file is ours, someone else's, or a dead writer's orphan |
+| `config` | the declared layout; the roles that decide which directory holds what |
 
-Not strict: `models/`, `mesh.py`, `cli.py`, `tests/`. Their failures are loud --
-an extractor that mishandles a type raises, and a checkpoint goes red.
+Not strict: `models/`, `mesh.py`, `cli.py`, `query.py`, `visualize.py`,
+`mcp_server.py`, `tests/`. Their failures are loud -- an extractor that
+mishandles a type raises, and a checkpoint goes red.
+
+`lock` and `config` were added when CP-11 and CP-7 landed, on the same test:
+would a wrong type here be silent? A lock that mis-identifies its own holder
+and a config that mis-declares a role both fail by quietly doing the wrong
+thing rather than by raising.
 
 Annotating found one real defect rather than none: `upsert_node` returned
 `cur.lastrowid`, which sqlite3 types as `int | None`. Every caller uses that id
@@ -467,8 +475,10 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and every batch found something
-the checkpoint had been reporting as green:
+load-bearing half took it to 57% (163 of 286), and it stands at **58% (232 of
+397)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+CP-11 added checks and mutations together. Every batch found something the
+checkpoint had been reporting as green:
 
 - **CP-3** — `doctype is filterable in the store` counted `DISTINCT subtype`,
   which carries `doctype/status`, so four distinct *strings* was a bar one
@@ -930,9 +940,24 @@ a model is rebuilt, not when it is migrated.
 
 ## 14 · Deferred
 
+Kept current, because a deferral list that is not re-read becomes a list of
+things that were done and a list of things that were forgotten, indistinguishable
+from each other.
+
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,
-  rather than run per module.
-- **D3 visualisation** and the **MCP server** -- specified in the plan, not yet
-  built. The CLI covers the same queries.
+  rather than run per module. Still outstanding: codex was out of monthly quota,
+  and the four external rounds that did run were a different reviewer.
 - **Embeddings** -- off, and off by default. Enabling requires naming both a
   provider and a model, so a build path can never quietly load one.
+- **M1's update path** -- implemented, and covered by CP-11 only as far as
+  "it can be built from the command line". It has no equivalence gate of the
+  kind CP-8 holds the other models to.
+- **The visualisation's rendering** -- CP-9 gates the data reaching the page and
+  the derived-edge counts, in both directions. Whether the dashes actually draw
+  needs a browser, and this package has no runtime dependency that could open
+  one. Listed as a claim, not counted as a proven gate.
+
+**No longer deferred**, and recorded here because this list said otherwise for a
+day after they shipped: the **visualisation** (`visualize.py`, self-contained
+HTML, layout computed in Python -- D3 was dropped deliberately, see the plan)
+and the **MCP server** (`mcp_server.py`, hand-written JSON-RPC over stdio).
