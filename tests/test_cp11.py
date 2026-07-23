@@ -350,7 +350,15 @@ def t_every_writer_takes_the_lock():
     tree = ast.parse(src)
     writers, unguarded = [], []
     for fn in tree.body:
-        if not isinstance(fn, ast.FunctionDef) or not fn.name.startswith("cmd_"):
+        # EVERY top-level function, not just `cmd_*`. The first version
+        # scanned command handlers only, and a refactor that moved the
+        # writing into a shared `_build_model` helper walked straight around
+        # it: the gate reported three writers, all guarded, while a fourth
+        # sat outside its view. A structural gate that only looks where the
+        # code used to be is a gate that stops looking.
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        if fn.name in ("_writing", "_barrier"):
             continue
         why = _writes(fn)
         if why is None:
@@ -361,13 +369,111 @@ def t_every_writer_takes_the_lock():
     # Two gates. The second is empty-truth insurance: "no unguarded writers"
     # is also true of a file with no writers at all, which is what a rename
     # of the command prefix would produce.
-    check("the CLI has writers to guard", len(writers) >= 3,
+    check("the CLI has writers to guard", len(writers) >= 4,
           "found %s" % [n for n, _ in writers])
     check("every CLI writer is inside the barrier", not unguarded,
           "; ".join(unguarded) or "all guarded")
 
 
 # -- 9. the lock does not outlive an interrupted writer --------------------
+
+def t_every_model_can_be_built(tmp, root, cfg):
+    """Every model the package defines is buildable from the command line.
+
+    It was not. `homegraph build` printed "not implemented yet", `md build`
+    covered M3 alone, and M1, M2 and M4 could be built only by importing
+    their modules from a script -- while `update` refused M4 with the advice
+    "Rebuild M4", an instruction for an action the product did not have. The
+    four stores in `~/.homegraph` had been made by hand.
+
+    No behavioural gate could see it, because everything that *was* reachable
+    worked. The claim has to be about the surface: the set of models with a
+    builder and the set with a command are the same set.
+    """
+    from homegraph import update as up
+    from homegraph.cli import MODELS
+
+    # Both directions. "Every model has a command" is satisfied by a package
+    # with one model; "every command has a model" by a command table nobody
+    # can reach.
+    incremental = set(up.SPECS) | set(up.NO_INCREMENTAL)
+    check("every model update knows about can be built",
+          incremental <= set(MODELS),
+          "buildable=%s update knows=%s"
+          % (sorted(MODELS), sorted(incremental)))
+
+    built = []
+    for name in sorted(MODELS):
+        db = os.path.join(tmp, "built-%s.db" % name)
+        proc = run([sys.executable, "-m", "homegraph.cli", "build",
+                    "--model", "%s=%s" % (name, db), "--root", root], cfg)
+        ok = proc.returncode == 0 and os.path.exists(db)
+        built.append((name, ok, proc.returncode))
+    bad = [(n, c) for n, ok, c in built if not ok]
+    check("every model builds through the command a user runs", not bad,
+          "failed: %s" % bad if bad else "%d built" % len(built))
+
+    # And the store is not merely created. An empty database is a file too.
+    empties = []
+    for name in sorted(MODELS):
+        db = os.path.join(tmp, "built-%s.db" % name)
+        if os.path.exists(db) and counts(db)[0] == 0:
+            empties.append(name)
+    check("no model builds an empty store", not empties,
+          "empty: %s" % empties if empties else "all populated")
+
+
+def t_build_reports_what_it_could_not_read(tmp, syn):
+    """A file that vanishes or is unreadable leaves a node with nothing in it.
+
+    `update` has warned about this since CP-8. `build` did not: it printed the
+    count inside a summary and exited 0, which is the partial result nobody
+    notices. Measured rather than imagined -- the first real run of the new
+    command hit 56 of them, transient cache files that were readable again a
+    minute later.
+
+    Its own corpus, because the shared fixture's declared totals are what
+    every other checkpoint measures against.
+    """
+    root = os.path.join(tmp, "unreadable-corpus", "notes")
+    os.makedirs(root, exist_ok=True)
+    ok_file = os.path.join(root, "fine.md")
+    with open(ok_file, "w", encoding="utf-8") as fh:
+        fh.write("# Fine\n\ntext\n")
+    corpus = os.path.dirname(root)
+    cfg = syn.write_config(corpus, roles={"image": []})
+
+    db = os.path.join(tmp, "readable.db")
+    clean = run([sys.executable, "-m", "homegraph.cli", "build",
+                 "--model", "m3=%s" % db, "--root", corpus], cfg)
+    # The negative control first: without an unreadable file the command must
+    # exit 0, or "warns about unreadable files" is being tested against a
+    # command that always warns.
+    check("a build with nothing unreadable exits 0", clean.returncode == 0,
+          "exit %d  %s" % (clean.returncode, clean.stderr[-80:]))
+
+    locked = os.path.join(root, "locked.md")
+    with open(locked, "w", encoding="utf-8") as fh:
+        fh.write("# Locked\n")
+    os.chmod(locked, 0o000)
+    try:
+        if os.access(locked, os.R_OK):
+            # Running as root, or on a filesystem that ignores the mode.
+            check("build warns about unreadable files (not run: readable "
+                  "anyway)", True, "n/a")
+            return
+        db2 = os.path.join(tmp, "unreadable.db")
+        proc = run([sys.executable, "-m", "homegraph.cli", "build",
+                    "--model", "m3=%s" % db2, "--root", corpus], cfg)
+        check("a build that could not read a file exits 2",
+              proc.returncode == 2, "exit %d" % proc.returncode)
+        check("the build names what it could not read",
+              "WARNING" in proc.stderr and "locked.md" in proc.stderr,
+              proc.stderr.strip().splitlines()[-1][:64]
+              if proc.stderr else "(silent)")
+    finally:
+        os.chmod(locked, 0o644)
+
 
 def t_lock_is_released_on_interrupt(tmp):
     """CP-8 says an interrupted update commits nothing. A lock file is
@@ -450,6 +556,8 @@ def main():
         t_reader_is_not_blocked(tmp, syn.ROOT, cfg)
         t_single_writer_never_refuses(tmp, syn.ROOT, cfg)
         t_every_writer_takes_the_lock()
+        t_every_model_can_be_built(tmp, syn.ROOT, cfg)
+        t_build_reports_what_it_could_not_read(tmp, syn)
         t_lock_is_released_on_interrupt(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -393,6 +393,93 @@ def cmd_unbuilt(args):
     return 2
 
 
+# Which builder owns each model. One table, beside the one `update` already
+# keeps: `update.BUILDERS` says how to move a model forward, this says how to
+# make one in the first place.
+#
+# It did not exist until now, and the gap was load-bearing: `homegraph build`
+# printed "not implemented yet", `md build` covered M3 alone, and M1, M2 and
+# M4 could be built only by importing their modules from a script. `update`
+# refuses M4 with the advice "Rebuild M4" -- an instruction for an action the
+# product did not have. The four stores in `~/.homegraph` were made by hand.
+MODELS = {
+    "m1": ("document", "m1_build"),
+    "m2": ("image", "m2_build"),
+    "m3": ("markdown", "m3_build"),
+    "m4": ("misc", "m4_misc"),
+}
+
+
+def _build_model(model, db, root, as_of, config):
+    """Build one model from scratch. The one path; `md build` calls it too.
+
+    A second builder entry point would be two answers to "what does this
+    model contain", and they would agree until one was edited.
+    """
+    import importlib
+    from datetime import date
+
+    from . import update as up
+    from .corpus import Classifier
+
+    label, module = MODELS[model]
+    as_of = as_of or date.today().isoformat()
+    clf = Classifier(home=root, config=config)
+    paths, excluded = up.corpus_paths(root, label, config=config)
+    print("%-6s %s" % (model, excluded.line()))
+
+    mod = importlib.import_module(".models.%s" % module, __package__)
+    kwargs = {}
+    if model == "m3":
+        kwargs["rules"] = mod.rules_from_config(clf.config)
+    with _writing(db, model=model,
+                  fingerprint=up.fingerprint(config)) as store:
+        report = mod.build(store, paths, as_of, **kwargs)
+        store.rebuild_fts()
+        # Which layout this store was built under, so a later `update` can
+        # tell a file change from a structural one.
+        up.write_fingerprint(store, up.fingerprint(config))
+    return report
+
+
+def cmd_build(args):
+    """Build one or more models from scratch."""
+    cfg = userconfig.load(getattr(args, "config", None))
+    root = os.path.abspath(os.path.expanduser(args.root or cfg.root))
+    failed = False
+    for spec in args.model:
+        name, _, db = spec.partition("=")
+        if name not in MODELS:
+            print("%-6s REFUSED  unknown model; known: %s"
+                  % (name, ", ".join(sorted(MODELS))), file=sys.stderr)
+            failed = True
+            continue
+        if not db:
+            print("%-6s REFUSED  no path; use --model %s=/path/to.db"
+                  % (name, name), file=sys.stderr)
+            failed = True
+            continue
+        report = _build_model(name, db, root, args.as_of, cfg)
+        for key, value in report.summary().items():
+            print("  %-20s %s" % (key, value))
+        # The same warning `update` gives, for the same reason. A file that
+        # was there when the tree was walked and gone when it was read leaves
+        # a node with no text and no relations, and a build that reports it
+        # only as a number in a summary and exits 0 is the partial result
+        # nobody notices. Measured, not hypothetical: the first real run of
+        # this command hit 56 of them -- transient cache files, all readable
+        # again a minute later.
+        stale = getattr(report, "unreadable", None)
+        if stale:
+            print("%-6s WARNING  %d file(s) could not be read during the "
+                  "build; their nodes are missing or empty. Re-run."
+                  % (name, len(stale)), file=sys.stderr)
+            for path, why in stale[:5]:
+                print("         %s  %s" % (path, why), file=sys.stderr)
+            failed = True
+    return 2 if failed else 0
+
+
 def cmd_md_build(args):
     from datetime import date
 
@@ -723,9 +810,17 @@ def main(argv=None):
     p.add_argument("--config", default=None)
     p.set_defaults(func=cmd_update)
 
-    for name in ("build", "embed"):
-        p = sub.add_parser(name, help="not implemented until TODO-2")
-        p.set_defaults(func=cmd_unbuilt)
+    p = sub.add_parser("build", help="build one or more models from scratch")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH",
+                   help="m1|m2|m3|m4 and where its store goes; repeatable")
+    p.add_argument("--root", default=None,
+                   help="corpus root; defaults to the configured one")
+    p.add_argument("--as-of", dest="as_of", default=None)
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("embed", help="not implemented")
+    p.set_defaults(func=cmd_unbuilt)
 
     args = ap.parse_args(argv)
     try:

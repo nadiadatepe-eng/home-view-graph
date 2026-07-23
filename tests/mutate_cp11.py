@@ -191,6 +191,29 @@ MUTATIONS = [
      '        print("REFUSED  %s" % exc, file=sys.stderr)  # mutated',
      "the refusal says waiting is not offered"),
 
+    # -- every model has a build path ------------------------------------
+    #
+    # The state the package was in before: three models buildable only by
+    # importing their modules. Nothing behavioural sees it, because what was
+    # reachable worked.
+    ("a model loses its build command",
+     "homegraph/cli.py",
+     '    "m4": ("misc", "m4_misc"),',
+     "    # mutated: m4 has no build path",
+     "every model update knows about can be built"),
+
+    ("build creates the store and puts nothing in it",
+     "homegraph/cli.py",
+     "        report = mod.build(store, paths, as_of, **kwargs)",
+     "        report = mod.build(store, [], as_of, **kwargs)  # mutated",
+     "no model builds an empty store"),
+
+    ("build stops warning about files it could not read",
+     "homegraph/cli.py",
+     '        stale = getattr(report, "unreadable", None)',
+     "        stale = None  # mutated: silence",
+     "a build that could not read a file exits 2"),
+
     # -- the structural gate --------------------------------------------
     #
     # A new writer added without the barrier. This is the shape the gate
@@ -200,7 +223,7 @@ MUTATIONS = [
      "homegraph/cli.py",
      "def cmd_md_build(args):\n"
      "    from datetime import date",
-     "def cmd_md_rebuild(args):  # mutated: a new, unguarded writer\n"
+     "def _md_rebuild(args):  # mutated: a new, unguarded writer\n"
      "    from .store import Store\n"
      "    with Store(args.db, model=\"m3\") as s:\n"
      "        s.rebuild_fts()\n"

@@ -892,6 +892,34 @@ unescaped string unchanged, so a href with a raw space round-tripped
 cleanly. It now requires the URL to be ASCII and space-free as well. **The
 click itself is still not gated** -- that needs a browser.
 
+**Three of the five models had no build command at all.** `homegraph build`
+printed "not implemented yet", `md build` covered M3 alone, and M1, M2 and M4
+could be built only by importing their modules from a script -- while `update`
+refused M4 with the advice *"Rebuild M4"*, an instruction for an action the
+product did not have. The four stores in `~/.homegraph` had been made by hand.
+No behavioural gate could see it, because everything reachable worked; the
+claim has to be about the surface, so CP-11 now asserts that the models
+`update` knows about and the models `build` offers are the same set, in both
+directions.
+
+`homegraph build --model m1=... --model m2=...` builds any of them, through
+one `_build_model` that `md build` also calls -- a second entry point would be
+two answers to "what does this model contain", agreeing until one was edited.
+
+**That refactor immediately walked around CP-11's own structural gate.** The
+gate scanned functions named `cmd_*`; moving the writing into `_build_model`
+put a fourth writer outside its view, and it reported three writers, all
+guarded, while green. It scans every top-level function now. **A structural
+gate that only looks where the code used to be is a gate that has stopped
+looking.**
+
+**`build` warns about files it could not read, and exits 2.** `update` has
+since CP-8; the new command printed the count inside a summary and exited 0.
+Measured rather than imagined: the first real run hit 56 of them -- transient
+cache files, all readable again a minute later -- and a build that reports
+that as a number nobody reads is the partial result this project keeps
+designing against.
+
 **A store built before migration v2 reports zero derived edges, and that is
 correct rather than a bug.** The migration defaults existing rows to
 `exact`/1.0 because the code that wrote them recorded nothing else; which of
