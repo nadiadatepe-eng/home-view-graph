@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import collections
 import os
+import typing
 import sqlite3
 
 from .search import RRF_K, fts_query
@@ -45,6 +46,26 @@ from .store import Store
 
 class ModelUnavailable(Exception):
     pass
+
+
+class Neighbour(typing.NamedTuple):
+    """One traversed edge, with how it was derived.
+
+    A NamedTuple so `for src, rel, dst in neighbours(...)` keeps working for
+    three-field unpacking while `row["method"]` reaches the provenance --
+    which is what `provenance_note` reads, so the caller does not have to
+    know which shape it was handed.
+    """
+    src: str
+    rel: str
+    dst: str
+    method: str
+    confidence: float
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return getattr(self, key)
+        return tuple.__getitem__(self, key)
 
 
 class MeshResult:
@@ -321,7 +342,8 @@ class Mesh:
                     if name in body:
                         mesh.upsert_edge("%s::%s" % (model, row["node_key"]),
                                          "m2::%s" % image_key,
-                                         "FIGURE_FOR", as_of)
+                                         "FIGURE_FOR", as_of,
+                                         method="basename")
                         report["FIGURE_FOR"] += 1
 
     def _mentions_file(self, mesh, loaded, as_of, report):
@@ -343,7 +365,8 @@ class Mesh:
                     if path in row["body"]:
                         mesh.upsert_edge("%s::%s" % (model, row["node_key"]),
                                          "%s::%s" % (target_model, target_key),
-                                         "MENTIONS_FILE", as_of)
+                                         "MENTIONS_FILE", as_of,
+                                         method="mention")
                         report["MENTIONS_FILE"] += 1
 
     def _temporal_cohort(self, mesh, loaded, as_of, report, min_days=2):
@@ -394,7 +417,7 @@ class Mesh:
                 # `cohort_overlap(mask, mask)` would compare a value against
                 # itself -- the shape that hid a dead cross-validation in CP-5.
                 mesh.upsert_edge("%s::%s" % first, "%s::%s" % other,
-                                 "TEMPORAL_COHORT", as_of)
+                                 "TEMPORAL_COHORT", as_of, method="cohort")
                 report["TEMPORAL_COHORT"] += 1
 
     # -- graph queries -----------------------------------------------------
@@ -440,14 +463,18 @@ class Mesh:
                     if nid is None:
                         continue
                     for row in mesh.db.execute(
-                            "SELECT d.node_key k, e.rel FROM edges e "
+                            "SELECT d.node_key k, e.rel, e.method, "
+                            "e.confidence FROM edges e "
                             "JOIN nodes d ON d.id=e.dst WHERE e.src=?", (nid,)):
-                        out.append((key, row["rel"], row["k"]))
+                        out.append(Neighbour(key, row["rel"], row["k"],
+                                             row["method"], row["confidence"]))
                         nxt.append(row["k"])
                     for row in mesh.db.execute(
-                            "SELECT s.node_key k, e.rel FROM edges e "
+                            "SELECT s.node_key k, e.rel, e.method, "
+                            "e.confidence FROM edges e "
                             "JOIN nodes s ON s.id=e.src WHERE e.dst=?", (nid,)):
-                        out.append((row["k"], row["rel"], key))
+                        out.append(Neighbour(row["k"], row["rel"], key,
+                                             row["method"], row["confidence"]))
                         nxt.append(row["k"])
                 frontier = nxt
             return out

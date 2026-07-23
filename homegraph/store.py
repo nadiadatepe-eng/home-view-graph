@@ -30,8 +30,72 @@ which.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
+from typing import Any
+
+# How an edge was derived, and how much weight that derivation carries.
+#
+# **The number is an ordering, not a probability.** Nothing here estimates how
+# often `basename` is right; it says a basename match is worth less than a
+# resolved path and more than a shared change-day. A continuous scale would
+# invite arithmetic nobody can defend -- multiplying two of these together
+# produces a number with no meaning at all -- so there are five values, fixed
+# per method, and adding a sixth is a decision rather than a tuning knob.
+#
+# This is the idea borrowed from codebase-memory-mcp, inverted. Its CALLS edges
+# carry a confidence too (0.17 and 0.28 on the three that were measurably
+# wrong), and the query answer comes out as clean JSON with no warning: a field
+# nothing forces you to read is decoration. Here, anything below 1.0 makes the
+# answer say `partial`.
+EDGE_METHODS: dict[str, float] = {
+    # The relation is stated by the data: a section is in its file, a tag is
+    # written in the text, a resolved relative link points where it points.
+    "exact": 1.0,
+    # Two files share a wikilink target name and the nearest common path
+    # prefix picked one. A real ambiguity, resolved by a rule.
+    "path_prefix": 0.7,
+    # Same filename in two directories, or a figure named after a note. No
+    # bytes were read -- M2 never opens a file -- so this is a guess about
+    # names, which is why the relation is LIKELY_COPY and not SAME_AS.
+    "basename": 0.6,
+    # One document's text names another file.
+    "mention": 0.5,
+    # Two nodes changed on the same days. The weakest evidence here, and the
+    # one most likely to be coincidence on a busy day.
+    "cohort": 0.4,
+}
+
+def provenance_note(rows: "Iterable[Any]") -> str | None:
+    """One warning naming every derivation below 1.0 in `rows`, or None.
+
+    **This is the whole of the honesty rule, and it lives here once.** Every
+    read path that hands back edges calls it; none of them re-implements
+    "which of these was a guess". Two copies of that question is how one of
+    them ends up always answering no -- the failure this package has now
+    found in its own gates four times.
+
+    Takes anything with `method` and `confidence` keys, so it works on a
+    `sqlite3.Row` from `edges_as_of` and on a tuple-with-fields from mesh
+    traversal without either side converting for the other.
+    """
+    seen: dict[str, int] = {}
+    for row in rows:
+        try:
+            conf = row["confidence"]
+            method = row["method"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        if conf is not None and conf < 1.0:
+            seen[method] = seen.get(method, 0) + 1
+    if not seen:
+        return None
+    parts = ", ".join("%d by %s (%.1f)" % (n, m, EDGE_METHODS.get(m, 0.0))
+                      for m, n in sorted(seen.items()))
+    return ("derived, not stated: %s -- these relations were inferred, and "
+            "the inference can be wrong" % parts)
+
 
 MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "initial schema: nodes, edges, observations, fts, embeddings", """
@@ -118,6 +182,21 @@ CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- Standalone FTS5, rowid == nodes.id. No external-content table and no
 -- triggers: population is an explicit postprocessing step, always.
 CREATE VIRTUAL TABLE nodes_fts USING fts5(title, body, tokenize='unicode61');
+"""),
+
+    (2, "edges carry how they were derived", """
+-- Provenance. Until this migration an edge derived from a filename collision
+-- and one stated outright by the text were the same row: the ambiguity was
+-- counted in the build report and lost by the time anyone queried the graph.
+-- The aggregate was honest and the individual fact was not.
+--
+-- The DEFAULTs make the migration total -- every existing edge becomes
+-- `exact`/1.0, which is what the code that wrote them believed -- but
+-- `upsert_edge` takes `method` as a required keyword, so nothing new can
+-- inherit `exact` by omission.
+ALTER TABLE edges ADD COLUMN method     TEXT NOT NULL DEFAULT 'exact';
+ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
+CREATE INDEX idx_edges_confidence ON edges(confidence);
 """),
 ]
 
@@ -265,7 +344,19 @@ class Store:
     # -- edges ------------------------------------------------------------
 
     def upsert_edge(self, src_key: str, dst_key: str, rel: str,
-                    as_of: str | None = None) -> None:
+                    as_of: str | None = None, *, method: str) -> None:
+        """`method` is required and keyword-only, on purpose.
+
+        A default would be inherited by every future edge whose author did not
+        think about it, and the ones worth marking are exactly the ones added
+        in a hurry. Making it a keyword the language refuses to supply is a
+        stronger guarantee than a test that checks for it: there is no green
+        run in which someone forgot.
+        """
+        if method not in EDGE_METHODS:
+            raise ValueError("unknown edge method %r; known: %s"
+                             % (method, ", ".join(sorted(EDGE_METHODS))))
+        confidence = EDGE_METHODS[method]
         as_of = as_of or today()
         src, dst = self.node_id(src_key), self.node_id(dst_key)
         if src is None or dst is None:
@@ -276,11 +367,18 @@ class Store:
             (src, dst, rel)).fetchone()
         if row is None:
             self.db.execute(
-                """INSERT INTO edges(src, dst, rel, first_seen, last_seen)
-                   VALUES (?,?,?,?,?)""", (src, dst, rel, as_of, as_of))
+                """INSERT INTO edges(src, dst, rel, first_seen, last_seen,
+                                     method, confidence)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (src, dst, rel, as_of, as_of, method, confidence))
         else:
-            self.db.execute("UPDATE edges SET last_seen=? WHERE id=?",
-                            (as_of, row["id"]))
+            # Latest assertion wins, including a downgrade. A link that was
+            # unambiguous and now collides with a new file is genuinely less
+            # certain than it was, and keeping the old 1.0 because it is
+            # higher would freeze a claim the corpus stopped supporting.
+            self.db.execute(
+                "UPDATE edges SET last_seen=?, method=?, confidence=? "
+                "WHERE id=?", (as_of, method, confidence, row["id"]))
 
     def edges_as_of(self, when: str,
                     rel: str | None = None) -> list[sqlite3.Row]:

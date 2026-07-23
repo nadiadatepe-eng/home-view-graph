@@ -143,16 +143,16 @@ def build(store, paths, as_of, report: DocBuildReport | None = None) -> DocBuild
             continue
         data = extract(path)
         for i, _ in enumerate(data["sections"]):
-            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of)
+            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of, method="exact")
             report.edges["CONTAINS"] += 1
         author = (data["metadata"].get("author") or "").strip()
         if author:
-            store.upsert_edge(path, "author:%s" % author, "AUTHORED_BY", as_of)
+            store.upsert_edge(path, "author:%s" % author, "AUTHORED_BY", as_of, method="exact")
             report.edges["AUTHORED_BY"] += 1
         for ref in data["outbound_refs"][:MAX_REFS_PER_DOC]:
             key = "ref:%s:%s" % (ref["kind"], ref["value"])
             if store.node_id(key):
-                store.upsert_edge(path, key, "CITES", as_of)
+                store.upsert_edge(path, key, "CITES", as_of, method="exact")
                 report.edges["CITES"] += 1
 
     _same_author(store, as_of, report)
@@ -175,5 +175,5 @@ def _same_author(store, as_of, report):
         by_author[r["author"]].append(r["doc"])
     for docs in by_author.values():
         for a, b in zip(docs, docs[1:]):
-            store.upsert_edge(a, b, "SAME_AUTHOR", as_of)
+            store.upsert_edge(a, b, "SAME_AUTHOR", as_of, method="exact")
             report.edges["SAME_AUTHOR"] += 1

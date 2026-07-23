@@ -83,9 +83,9 @@ MUTATIONS = [
     ("citations are collected but never linked",
      "homegraph/models/m1_build.py",
      '            if store.node_id(key):\n'
-     '                store.upsert_edge(path, key, "CITES", as_of)',
+     '                store.upsert_edge(path, key, "CITES", as_of, method="exact")',
      '            if False:  # mutated: no CITES edge is ever written\n'
-     '                store.upsert_edge(path, key, "CITES", as_of)',
+     '                store.upsert_edge(path, key, "CITES", as_of, method="exact")',
      "CITES edges exist"),
 
     ("every section is stored without its offset",

@@ -162,37 +162,46 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
     for data in extractions:
         path = data["path"]
         for i, _ in enumerate(data["sections"]):
-            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of)
+            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of, method="exact")
             report.edges["CONTAINS"] += 1
 
         for target in data["wikilinks"]:
             hits = index.get(target)
             if not hits:
                 store.upsert_edge(path, "wikilink:%s" % target,
-                                  "WIKILINKS_TO", as_of)
+                                  "WIKILINKS_TO", as_of, method="exact")
                 report.broken_links[target] += 1
                 report.broken_by_subtype[data["subtype"]] += 1
             else:
-                if len(hits) > 1:
+                # The edge carries the ambiguity, not just the report. Until
+                # migration v2 this counter was the only trace: the tally said
+                # "N ambiguous" and the row in the graph was indistinguishable
+                # from a link the text resolved outright. Anyone querying the
+                # store -- or reading a backlink -- got a guess that looked
+                # like a fact.
+                ambiguous = len(hits) > 1
+                if ambiguous:
                     report.ambiguous_targets[target] = len(hits)
                 store.upsert_edge(path, resolve_target(target, path, index),
-                                  "WIKILINKS_TO", as_of)
+                                  "WIKILINKS_TO", as_of,
+                                  method="path_prefix" if ambiguous
+                                  else "exact")
             report.edges["WIKILINKS_TO"] += 1
 
         for tag in data["tags"]:
-            store.upsert_edge(path, "tag:%s" % tag, "TAGGED", as_of)
+            store.upsert_edge(path, "tag:%s" % tag, "TAGGED", as_of, method="exact")
             report.edges["TAGGED"] += 1
 
         for target in data["links"]:
             resolved = _resolve_relative(path, target)
             if resolved and store.node_id(resolved):
-                store.upsert_edge(path, resolved, "LINKS_TO", as_of)
+                store.upsert_edge(path, resolved, "LINKS_TO", as_of, method="exact")
                 report.edges["LINKS_TO"] += 1
 
         for target in data["embeds"]:
             resolved = _resolve_relative(path, target)
             if resolved and store.node_id(resolved):
-                store.upsert_edge(path, resolved, "EMBEDS", as_of)
+                store.upsert_edge(path, resolved, "EMBEDS", as_of, method="exact")
                 report.edges["EMBEDS"] += 1
 
         for mention in data["path_mentions"]:
@@ -201,7 +210,8 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
                 resolved = os.path.normpath(
                     os.path.join(os.path.dirname(path), resolved))
             if store.node_id(resolved):
-                store.upsert_edge(path, resolved, "MENTIONS_PATH", as_of)
+                store.upsert_edge(path, resolved, "MENTIONS_PATH", as_of,
+                                  method="mention")
                 report.edges["MENTIONS_PATH"] += 1
             else:
                 report.unresolved_mentions += 1
@@ -253,16 +263,26 @@ def backlinks(store, node_key, rel="WIKILINKS_TO", as_of=None):
     dates into this SQL instead would have given the system a second opinion
     about what "alive on a date" means, which is how the boundary rule in
     DECISIONS.md section 2 gets broken by a helpful shortcut.
+
+    Returns `(sources, note)`. The note names any inbound link that was
+    inferred rather than stated -- a wikilink whose target name matched two
+    files and was resolved by path prefix looks exactly like an unambiguous
+    one once it is a row, and a backlink list is precisely where someone
+    treats it as a fact.
     """
+    from ..store import provenance_note
     nid = store.node_id(node_key)
     if nid is None:
-        return []
+        return [], None
     if as_of:
-        return sorted(r["src_key"] for r in store.edges_as_of(as_of, rel)
-                      if r["dst"] == nid)
-    return [r["node_key"] for r in store.db.execute(
-        "SELECT s.node_key FROM edges e JOIN nodes s ON s.id = e.src "
-        "WHERE e.dst = ? AND e.rel = ? ORDER BY s.node_key", (nid, rel))]
+        rows = [r for r in store.edges_as_of(as_of, rel) if r["dst"] == nid]
+        return sorted(r["src_key"] for r in rows), provenance_note(rows)
+    rows = store.db.execute(
+        "SELECT s.node_key, e.method, e.confidence FROM edges e "
+        "JOIN nodes s ON s.id = e.src "
+        "WHERE e.dst = ? AND e.rel = ? ORDER BY s.node_key",
+        (nid, rel)).fetchall()
+    return [r["node_key"] for r in rows], provenance_note(rows)
 
 
 def broken_links(store):

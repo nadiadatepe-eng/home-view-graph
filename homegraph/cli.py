@@ -390,7 +390,7 @@ def cmd_md_backlinks(args):
     from .store import Store
     with Store(args.db) as s:
         as_of = getattr(args, "as_of", None)
-        found = backlinks(s, os.path.abspath(args.path), as_of=as_of)
+        found, note = backlinks(s, os.path.abspath(args.path), as_of=as_of)
         # The date is echoed because "3 inbound links" means something
         # different on two dates, and a reader scrolling back through a
         # terminal has no other way to tell which run was which.
@@ -398,6 +398,8 @@ def cmd_md_backlinks(args):
               % (len(found), " as of %s" % as_of if as_of else ""))
         for src in found:
             print("  %s" % src)
+        if note:
+            print("\nPARTIAL -- %s" % note)
     return 0
 
 
@@ -420,7 +422,7 @@ def cmd_md_broken(args):
 
 def backlink_sources(store, name):
     from .models.m3_build import backlinks
-    return backlinks(store, "wikilink:%s" % name)
+    return backlinks(store, "wikilink:%s" % name)[0]
 
 
 @contextlib.contextmanager
@@ -509,9 +511,18 @@ def cmd_mesh_explain(args):
 
 
 def cmd_mesh_neighbors(args):
+    from .store import provenance_note
     with _mesh(args) as mesh:
-        for src, rel, dst in mesh.neighbours(args.node, depth=args.depth):
-            print("  %-52s --%s--> %s" % (src[-52:], rel, dst[-52:]))
+        edges = mesh.neighbours(args.node, depth=args.depth)
+        for e in edges:
+            # The marker is on the row that carries the guess, not only in a
+            # footer: a reader who scans the list and stops has still seen it.
+            mark = "" if e.confidence >= 1.0 else "  [%s]" % e.method
+            print("  %-52s --%s--> %s%s"
+                  % (e.src[-52:], e.rel, e.dst[-52:], mark))
+        note = provenance_note(edges)
+        if note:
+            print("\nPARTIAL -- %s" % note)
     return 0
 
 

@@ -62,8 +62,19 @@ def t_roundtrip(tmp):
                 bad.append(key)
         check("round trip 1000 nodes", not bad and s.node_count() == 1000,
               "%d nodes, %d mismatched" % (s.node_count(), len(bad)))
-        check("schema version is 1 from the start", s.version == 1,
-              "version %d" % s.version)
+        # The claim is that the chain existed before the first node, not that
+        # it never grows. Pinned to a literal 1 this went red the day the
+        # second migration landed, which is a gate measuring the wrong thing:
+        # what must hold is that the recorded versions run 1..N with no gap,
+        # so no migration was ever back-filled onto data that predates it.
+        from homegraph.store import MIGRATIONS
+        recorded = [r["version"] for r in s.db.execute(
+            "SELECT version FROM schema_version ORDER BY version")]
+        expected = [v for v, _, _ in MIGRATIONS]
+        check("the migration chain runs 1..N with no gap",
+              recorded == expected == list(range(1, len(MIGRATIONS) + 1))
+              and s.version == len(MIGRATIONS),
+              "recorded %s, version %d" % (recorded, s.version))
 
 
 # -- 2. FTS postprocessing -------------------------------------------------
@@ -329,14 +340,15 @@ def t_history(tmp):
         for day in (last_week, yesterday):
             body = "see [[b]] and [[c]]"
             for target in WIKILINK.findall(body):
-                s.upsert_edge(note, "/notes/%s.md" % target, "WIKILINKS_TO",
-                              as_of=day.isoformat())
+                s.upsert_edge(note, "/notes/%s.md" % target,
+                              "WIKILINKS_TO", as_of=day.isoformat(),
+                              method="exact")
         # Today the link to c is gone. The edge is not re-touched, so its
         # last_seen stops at yesterday. Nothing is deleted.
         body = "see [[b]]"
         for target in WIKILINK.findall(body):
             s.upsert_edge(note, "/notes/%s.md" % target, "WIKILINKS_TO",
-                          as_of=today.isoformat())
+                          as_of=today.isoformat(), method="exact")
         s.commit()
 
         now = {(e["src_key"], e["dst_key"])

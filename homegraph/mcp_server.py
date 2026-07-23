@@ -27,6 +27,7 @@ import sys
 
 from . import __version__
 from .mesh import Mesh
+from .store import provenance_note
 
 PROTOCOL_VERSION = "2024-11-05"
 # Read the version rather than repeat it: this string goes out to every client
@@ -140,8 +141,18 @@ class Server:
     def mesh_neighbors(self, node, depth=1):
         with self._mesh() as mesh:
             edges = mesh.neighbours(node, depth=depth)
+        # An agent never sees the terminal, so this is the one caller for
+        # which a derived edge that looks stated is entirely undetectable.
+        # `status` is `partial` here for the same reason it is when a model
+        # is missing: the answer is not the whole truth about its own
+        # certainty.
+        note = provenance_note(edges)
         return {"node": node, "depth": depth, "count": len(edges),
-                "edges": [{"src": a, "rel": r, "dst": b} for a, r, b in edges]}
+                "status": "partial" if note else "complete",
+                "warnings": [note] if note else [],
+                "edges": [{"src": e.src, "rel": e.rel, "dst": e.dst,
+                           "method": e.method, "confidence": e.confidence}
+                          for e in edges]}
 
     def mesh_path(self, src, dst, max_depth=4):
         with self._mesh() as mesh:

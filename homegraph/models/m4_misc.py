@@ -251,7 +251,7 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
         if store.node_id(path) is None:
             continue
         app = owning_app(path)
-        store.upsert_edge(path, "app:%s" % app, "BELONGS_TO_APP", as_of)
+        store.upsert_edge(path, "app:%s" % app, "BELONGS_TO_APP", as_of, method="exact")
         report.edges["BELONGS_TO_APP"] += 1
         detected = None
         try:
@@ -260,12 +260,12 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
             pass
         if detected and store.node_id("format:%s" % detected):
             store.upsert_edge(path, "format:%s" % detected, "SAME_FORMAT",
-                              as_of)
+                              as_of, method="exact")
             report.edges["SAME_FORMAT"] += 1
 
     for (app, month) in sorted(rollup):
         store.upsert_edge("rollup:%s:%s" % (app, month), "app:%s" % app,
-                          "BELONGS_TO_APP", as_of)
+                          "BELONGS_TO_APP", as_of, method="exact")
         report.edges["BELONGS_TO_APP"] += 1
 
     return report

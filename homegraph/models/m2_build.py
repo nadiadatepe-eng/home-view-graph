@@ -236,19 +236,22 @@ def build(store, paths, as_of, parser=None, report=None, roots=None):
     for info, _ in infos:
         path = info.path
         coll = collection_of(path, roots)
-        store.upsert_edge(path, "collection:%s" % coll, "IN_COLLECTION", as_of)
+        store.upsert_edge(path, "collection:%s" % coll, "IN_COLLECTION",
+                          as_of, method="exact")
         report.edges["IN_COLLECTION"] += 1
         if info.date:
-            store.upsert_edge(path, "date:%s" % info.date, "NAMED_DATE", as_of)
+            store.upsert_edge(path, "date:%s" % info.date, "NAMED_DATE",
+                              as_of, method="exact")
             report.edges["NAMED_DATE"] += 1
         if info.resolution:
             store.upsert_edge(path, "resolution:%s" % info.resolution,
-                              "SAME_RESOLUTION", as_of)
+                              "SAME_RESOLUTION", as_of, method="exact")
             report.edges["SAME_RESOLUTION"] += 1
         if info.indices and info.series_stem:
             key = "series:%s/%s" % (coll, info.series_stem)
             if report.series[key] > 1:
-                store.upsert_edge(path, key, "SERIES_MEMBER", as_of)
+                store.upsert_edge(path, key, "SERIES_MEMBER", as_of,
+                                  method="exact")
                 report.edges["SERIES_MEMBER"] += 1
 
     _link_copies(store, infos, as_of, report)
@@ -269,7 +272,8 @@ def _link_copies(store, infos, as_of, report):
     for paths in by_base.values():
         if len(paths) > 1:
             for a, b in zip(sorted(paths), sorted(paths)[1:]):
-                store.upsert_edge(a, b, "LIKELY_COPY", as_of)
+                store.upsert_edge(a, b, "LIKELY_COPY", as_of,
+                                  method="basename")
                 report.edges["LIKELY_COPY"] += 1
 
     by_stripped = collections.defaultdict(list)
@@ -282,5 +286,6 @@ def _link_copies(store, infos, as_of, report):
     for info, _ in infos:
         if not info.copy and info.stem.strip() in by_stripped:
             for other in by_stripped[info.stem.strip()]:
-                store.upsert_edge(info.path, other, "LIKELY_COPY", as_of)
+                store.upsert_edge(info.path, other, "LIKELY_COPY", as_of,
+                                  method="basename")
                 report.edges["LIKELY_COPY"] += 1

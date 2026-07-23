@@ -69,8 +69,8 @@ MUTATIONS = [
     # did this note have last week" as the reason, and no command asked.
     ("--as-of is accepted and then ignored",
      "homegraph/cli.py",
-     "        found = backlinks(s, os.path.abspath(args.path), as_of=as_of)",
-     "        found = backlinks(s, os.path.abspath(args.path))  # mutated",
+     "        found, note = backlinks(s, os.path.abspath(args.path), as_of=as_of)",
+     "        found, note = backlinks(s, os.path.abspath(args.path))  # mutated",
      "--as-of hides a link that did not exist yet"),
 
     ("the flag never reaches the parser",

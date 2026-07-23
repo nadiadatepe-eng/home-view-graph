@@ -705,6 +705,89 @@ gap in the plan.
 
 ---
 
+## 24 · An edge says how it was derived, and the answer says when it was a guess
+
+`m3_build` counted ambiguous wikilink targets in `report.ambiguous_targets`
+and then wrote an edge indistinguishable from one the text stated outright.
+**The aggregate was honest and the individual fact was not** — and the
+individual fact is what a query returns. `mesh.py` had the same shape three
+times over: `_figure_for`, `_mentions_file` and `_temporal_cohort` derive
+relations from evidence of very different strength and all landed as identical
+rows.
+
+Migration v2 adds `method` and `confidence` to `edges`. Five methods, fixed
+values: `exact` 1.0 · `path_prefix` 0.7 · `basename` 0.6 · `mention` 0.5 ·
+`cohort` 0.4.
+
+**The number is an ordering, not a probability.** Nothing estimates how often
+a basename match is right; the scale says a basename match is worth less than
+a resolved path and more than a shared change-day. A continuous scale would
+invite arithmetic nobody can defend — multiplying two of these produces a
+number with no meaning — so adding a sixth value is a decision, not a tuning
+knob.
+
+**`method` is a required keyword argument.** A default would be inherited by
+every future edge whose author did not think about it, and the ones worth
+marking are exactly the ones added in a hurry. The language refusing to supply
+it is a stronger guarantee than a test that checks for it: there is no green
+run in which someone forgot.
+
+**Re-assertion updates provenance in both directions, including downwards.** A
+link that was unambiguous and now collides with a new file is genuinely less
+certain than it was; keeping the old 1.0 because it is higher would freeze a
+claim the corpus stopped supporting.
+
+**The honesty rule lives in one function.** `store.provenance_note(rows)`
+returns one warning naming every derivation below 1.0, or `None`. Every read
+path that hands back edges calls it — `md backlinks`, `mesh neighbors`, and
+the MCP `mesh_neighbors`, which reports `status: partial` for the same reason
+it does when a model is missing. None of them re-implements "which of these
+was a guess", because two copies of that question is how one of them ends up
+always answering no.
+
+**This is the borrowed idea inverted.** `codebase-memory-mcp` puts a
+`confidence` on its CALLS edges too — 0.17 and 0.28 on the three that measured
+wrong — and hands the answer back as clean JSON with no warning. A field
+nothing forces you to read is decoration, which is the same category as a gate
+that cannot say no (§20).
+
+**Three of this checkpoint's own gates were weak, and the mutation harness
+said so each time:**
+
+1. "Unambiguous wikilinks are NOT marked" counted the broken-link stubs, whose
+   thirteen `exact` rows kept the check green against a build that marked
+   *every* resolved link. Now compared within the population the rule applies
+   to.
+2. `mention` and `cohort` were produced by nothing. Neither was broken — the
+   shared fixture is single-day and its path mentions resolve to files no
+   model holds. A fixture that cannot see a rule, exactly as §18 found for
+   `[symlinks]`. CP-9 plants its own two-day corpus rather than perturbing the
+   shared one's declared totals.
+3. The reach corpus passed standalone and failed under pytest, because
+   CP-2/3/4/6 `setdefault` `HOMEGRAPH_ROOT` at import time and
+   `_pathish(home_root())` decides what counts as a path mention. **A result
+   that depends on which other checkpoints were imported first is not a
+   result.**
+
+**Measured on the real corpus:** 7 832 `exact`, 23 `path_prefix`, 44
+`mention`. Sixty-seven edges that looked like stated facts are inferences —
+and nine of the twenty-three cluster on two target names that each exist in
+two directories, a collision noted when the markdown model was built and
+invisible in the graph until now.
+
+Writing that sentence with the target names in it is what tripped
+`test_no_real_paths`. The guard was right and the first draft was wrong: a
+measurement on a private corpus is reportable as a shape, not as a list of
+its filenames.
+
+**CP-9: 20 checks, 20 mutations, 20 killed by a named gate, 0 by another, 0
+crash-kills, 0 survivors, coverage 80%.** No mutation for "the migration ran":
+skipping it leaves `upsert_edge` writing to a column that does not exist, so it
+is detected by the process dying rather than by a gate — §21, a mutation that
+cannot produce a wrong answer only tests error handling.
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

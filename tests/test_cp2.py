@@ -323,7 +323,7 @@ def t_known_answers(db, spec):
                 # only that the name exists somewhere in the corpus threw that
                 # away and would pass if a completely different note carried it.
                 try:
-                    sources = backlinks(s, "wikilink:%s" % target)
+                    sources = backlinks(s, "wikilink:%s" % target)[0]
                     names = broken_links(s)
                 except Exception as exc:                        # noqa: BLE001
                     sources, names = [], ["raised:%s" % type(exc).__name__]
@@ -352,7 +352,7 @@ def t_backlinks(db, spec):
         ours = set()
         for c in (winner, loser):
             try:
-                ours |= {os.path.abspath(p) for p in backlinks(s, c)}
+                ours |= {os.path.abspath(p) for p in backlinks(s, c)[0]}
             except Exception:                                   # noqa: BLE001
                 ours.add("raised")
         proc = subprocess.run(
@@ -404,9 +404,9 @@ def t_backlinks_time_travel(tmp):
         for key in (target, "/notes/early.md", "/notes/late.md"):
             s.upsert_node(key, kind="file", path=key, as_of="2026-01-01")
         # early.md linked on both days; late.md only on the second.
-        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-01")
-        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-05")
-        s.upsert_edge("/notes/late.md", target, "WIKILINKS_TO", "2026-01-05")
+        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-01", method="exact")
+        s.upsert_edge("/notes/early.md", target, "WIKILINKS_TO", "2026-01-05", method="exact")
+        s.upsert_edge("/notes/late.md", target, "WIKILINKS_TO", "2026-01-05", method="exact")
         s.commit()
 
     def run(*extra):
@@ -508,7 +508,7 @@ def t_broken_are_nodes(db, spec):
         leaked = set()
         for name in spec["artefacts"]:
             try:
-                sources = backlinks(s, "wikilink:%s" % name)
+                sources = backlinks(s, "wikilink:%s" % name)[0]
             except Exception:                                   # noqa: BLE001
                 sources = ["raised"]
             for src in sources:
