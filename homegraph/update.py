@@ -58,6 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import incremental
+from .config import home_root
 
 
 class NotBuilt(RuntimeError):
@@ -80,7 +81,16 @@ class ModelSpec:
     use_hash: bool      # False for M2: hashing means reading
     # Models whose extraction depends on the rest of the corpus need a wider
     # rebuild set than the files that changed. M3 does, because its wikilink
-    # index is global; M1 and M2 read one file at a time and do not.
+    # index is global. M1 does too, since REFERENCES_FILE only draws an edge
+    # when the file named in prose is already a node -- so a document's own
+    # graph depends on which OTHER documents exist. M2 reads one file at a
+    # time and does not.
+    #
+    # This line said "M1 and M2 read one file at a time and do not" for a day
+    # after REFERENCES_FILE shipped, and it was the only place the assumption
+    # was written down. An adversarial audit found it by building corpus A,
+    # updating to B, and comparing edge sets -- the equivalence CP-8 asserts,
+    # on the model CP-8 does not cover.
     affected: Callable[..., list[str]] | None = None
 
 
@@ -155,8 +165,51 @@ def _m3_affected(store, changes, all_paths):
                   - set(changes.changed) - set(changes.removed))
 
 
+def _m1_affected(store, changes, all_paths):
+    """Documents whose REFERENCES_FILE answer changes because a file moved.
+
+    Narrower than M3's, because the relation is narrower: M1 resolves a
+    mention against paths, not against a flat name index, so only a document
+    whose text contains one of the moved paths -- in any of the three forms
+    `_resolve_mention` accepts -- can gain or lose an edge.
+
+    Both directions matter. An added file makes an unresolved mention resolve;
+    a removed one leaves a document holding an edge a full rebuild would not
+    draw. Called BEFORE anything is forgotten, so the bodies it reads are the
+    ones about to be replaced.
+
+    A heuristic, like M3's, and safe for the same reason: nothing takes its
+    word for it. The equivalence gate compares the updated store against a
+    full rebuild as sets, so an expansion that is too narrow shows up red.
+    """
+    moved = list(changes.added) + list(changes.removed)
+    if not moved:
+        return []
+    # The written forms: the absolute path, the corpus-relative one, and the
+    # bare name a sibling reference uses. Whether a given document's mention
+    # resolves is `_references_file`'s question -- this only has to be wide
+    # enough not to miss it.
+    root = home_root()
+    forms = set()
+    for path in moved:
+        forms.add(path)
+        rel = os.path.relpath(path, root)
+        if not rel.startswith(".."):
+            forms.add(rel)
+        forms.add(os.path.basename(path))
+    extra = set()
+    for row in store.db.execute(
+            "SELECT node_key, body FROM nodes "
+            "WHERE body IS NOT NULL AND kind = 'document'"):
+        if any(f in row["body"] for f in forms):
+            extra.add(row["node_key"])
+    current = set(all_paths)
+    return sorted((extra & current) - set(changes.added)
+                  - set(changes.changed) - set(changes.removed))
+
+
 SPECS = {
-    "m1": ModelSpec("m1", "document", "document", True),
+    "m1": ModelSpec("m1", "document", "document", True, _m1_affected),
     # use_hash=False is not an optimisation. Hashing an image means opening it,
     # and M2's entire safety argument is that it never does.
     "m2": ModelSpec("m2", "image", "image", False),
@@ -449,7 +502,7 @@ def update(store, model: str, paths, as_of, config, *,
     return report
 
 
-def refresh_mesh(model_paths, mesh_db, as_of):
+def refresh_mesh(model_paths, mesh_db, as_of, code_paths=None):
     """Rebuild the federation after the models beneath it moved.
 
     Mesh mirrors every model node as a stub so cross-model edges have
@@ -457,10 +510,14 @@ def refresh_mesh(model_paths, mesh_db, as_of):
     exists is the federation answering about a world that is gone -- and it
     would answer confidently, since the stub carries a title and a path.
     `build_edges(prune=True)` drops every stub the mirror did not just write.
+
+    The code inventory travels with it for the same reason: pruning without
+    one would delete the code stubs CITES_CODE hangs off, so `build_edges`
+    refuses that combination outright rather than quietly shrinking the graph.
     """
     from .mesh import Mesh
     with Mesh(model_paths, mesh_db=mesh_db) as mesh:
-        return mesh.build_edges(as_of, prune=True)
+        return mesh.build_edges(as_of, prune=True, code_paths=code_paths)
 
 
 def corpus_paths(root, label, config=None, cap=None):

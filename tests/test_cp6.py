@@ -50,6 +50,9 @@ from homegraph.temporal import refresh_all_datelists           # noqa: E402
 
 AS_OF = date(2026, 7, 22).isoformat()
 LAST_WEEK = (date(2026, 7, 22) - timedelta(days=7)).isoformat()
+# A date AFTER the builds, so a write during a refused call is visible as a
+# moved `last_seen` rather than as an unchanged row.
+LATER = (date(2026, 7, 22) + timedelta(days=3)).isoformat()
 INVENTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "gold", "inventory-2026-07-22.tsv")
 
@@ -130,6 +133,11 @@ def corpus():
         # Measured 130 nodes in the rendered graph; the floor sits at half so
         # the gate is about the graph existing, not about the fixture's size.
         "min_graph_nodes": 65,
+        "cites_code": {(os.path.join(root, note), os.path.join(root, code), m)
+                       for note, code, m in syn.CITES_CODE_FASIT},
+        "code_ambiguous": syn.CITES_CODE_AMBIGUOUS,
+        "code_phantom": syn.CITES_CODE_PHANTOM,
+        "code_glued": syn.CITES_CODE_GLUED,
         "descriptive_queries": ["trails", "bush", "memex", "graphify", "art",
                                 "wiki", "report", "paper", "note", "search"],
     }
@@ -517,6 +525,122 @@ def t_no_false_edges(tmp, paths, spec):
           % (len(connected), len(pairs), limit))
 
 
+def t_cites_code(tmp, paths, by_label, spec):
+    """CITES_CODE, and the three ways it must decline to draw an edge.
+
+    `code` is a corpus category with no model behind it, so the inventory is
+    passed in. That is the interesting property to hold onto: without one,
+    the relation is NOT COMPUTED, which is a different answer from "computed,
+    found nothing" and has to survive all the way into the report. A federation
+    that answers 0 either way tells a reader the notes name no source files
+    when in fact nobody ever asked.
+    """
+    code_paths = sorted(by_label["code"])
+    meshdb = os.path.join(tmp, "mesh-code.db")
+    with Mesh(paths, mesh_db=meshdb) as mesh:
+        report = mesh.build_edges(AS_OF, code_paths=code_paths)
+    check("the code inventory is mirrored, not indexed",
+          report["code_inventory"] == len(code_paths) and code_paths,
+          "%s stub(s) for %d code file(s)"
+          % (report["code_inventory"], len(code_paths)))
+
+    bare = os.path.join(tmp, "mesh-nocode.db")
+    with Mesh(paths, mesh_db=bare) as mesh:
+        silent = mesh.build_edges(AS_OF)
+    check("without an inventory CITES_CODE is absent, not zero",
+          silent["code_inventory"] == "absent"
+          and "CITES_CODE" not in silent["edges"],
+          "code_inventory=%r edges=%s"
+          % (silent["code_inventory"], sorted(silent["edges"])))
+
+    declared = spec.get("cites_code")
+    if declared is None:
+        print("SKIP  CITES_CODE exact-set check: no declared list for the "
+              "real corpus")
+        return
+    with Store(meshdb) as m:
+        got = {(r["s"].split("::", 1)[1], r["d"].split("::", 1)[1],
+                r["method"])
+               for r in m.db.execute(
+                   "SELECT s.node_key s, d.node_key d, e.method FROM edges e "
+                   "JOIN nodes s ON s.id=e.src JOIN nodes d ON d.id=e.dst "
+                   "WHERE e.rel='CITES_CODE'")}
+    check("CITES_CODE is exactly the declared set, with its methods",
+          bool(declared) and got == declared,
+          "%d edge(s); unexpected %s; missing %s"
+          % (len(got),
+             sorted((os.path.basename(b), m) for _, b, m in got - declared)
+             or "none",
+             sorted((os.path.basename(b), m) for _, b, m in declared - got)
+             or "none"))
+
+    # The uniqueness condition, stated as a fact about the corpus first: if
+    # only one file were called handler.js the gate below would pass while
+    # testing nothing at all.
+    ambiguous = [p for p in code_paths
+                 if os.path.basename(p) == spec["code_ambiguous"]]
+    # By METHOD, not by target. One of the two handler.js files is also named
+    # by its full path in that note, and that edge is declared and correct --
+    # the claim here is narrower: no edge to either of them may rest on the
+    # bare name they share.
+    by_name = [b for _, b, m in got if b in ambiguous and m == "basename"]
+    check("an ambiguous basename names no file, so draws no basename edge",
+          len(ambiguous) >= 2 and not by_name,
+          "%d file(s) called %s, %d basename edge(s) to them"
+          % (len(ambiguous), spec["code_ambiguous"], len(by_name)))
+
+    # Containment is not naming. `runner.js` appears in the note only inside
+    # `live_runner.js`, and the edge to live_runner.js above is what makes
+    # this gate non-vacuous: the text does reach that neighbourhood, and the
+    # claim is that the shorter name gets nothing out of it.
+    glued = os.path.join(spec["home"], spec["code_glued"])
+    check("a name that only occurs inside a longer one draws no edge",
+          not [b for _, b, _ in got if b == glued]
+          and any(b.endswith("live_runner.js") for _, b, _ in got),
+          "%d edge(s) to %s"
+          % (len([1 for _, b, _ in got if b == glued]),
+             os.path.basename(glued)))
+
+    with Store(meshdb) as m:
+        phantom = m.db.execute(
+            "SELECT COUNT(*) c FROM nodes WHERE kind='code' "
+            "AND node_key LIKE ?", ("%" + spec["code_phantom"],)).fetchone()["c"]
+    check("a source file that does not exist gets no stub and no edge",
+          phantom == 0 and not any(spec["code_phantom"] in b
+                                   for _, b, _ in got),
+          "%d stub(s) for %s" % (phantom, spec["code_phantom"]))
+
+    # Pruning would delete the stubs the edges hang off. Refusing is the same
+    # answer `prune` already gives for a model that is merely unreadable: the
+    # stubs are not stale, they are unlisted.
+    def snapshot():
+        with Store(meshdb) as m:
+            return sorted(
+                (r["node_key"], r["last_seen"]) for r in
+                m.db.execute("SELECT node_key, last_seen FROM nodes"))
+
+    before = snapshot()
+    refused = None
+    with Mesh(paths, mesh_db=meshdb) as mesh:
+        try:
+            mesh.build_edges(LATER, prune=True)
+        except ModelUnavailable as exc:
+            refused = str(exc)
+    check("pruning without an inventory is refused, not silent",
+          refused is not None and "code" in refused,
+          "%s" % (refused or "pruned the code stubs away"))
+    # A refusal that has already written is not a refusal. The check runs at a
+    # LATER as_of than the build, because the mirror loop's only visible trace
+    # on an unchanged corpus is `last_seen` moving -- and that is exactly what
+    # it did: the refusal used to sit after the mirror, and `Store.close()`
+    # commits by default, so a store that announced it did nothing came away
+    # with every node dated later than the edges it carries.
+    check("a refused prune leaves the store exactly as it was",
+          snapshot() == before and before,
+          "%d node(s) before, %d changed"
+          % (len(before), sum(1 for a, b in zip(before, snapshot()) if a != b)))
+
+
 def t_time_travel(paths, spec):
     with Mesh(paths) as mesh:
         now = mesh.search(spec["query"], limit=50)
@@ -806,6 +930,7 @@ def main():
         t_rrf_ranking()
         t_figure_for(tmp)
         t_no_false_edges(tmp, paths, spec)
+        t_cites_code(tmp, paths, by_label, spec)
         t_time_travel(paths, spec)
         t_visualise(tmp, paths, spec)
         t_queries_never_create_a_store(tmp)

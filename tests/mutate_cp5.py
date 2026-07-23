@@ -18,6 +18,40 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    # -- ARCHIVE_CONTAINS -------------------------------------------------
+    ("an archive lists every member, not one level",
+     "homegraph/models/m4_misc.py",
+     '                entry = head + ("/" if sep else "")',
+     '                entry = name  # mutated: every member becomes an entry',
+     "ARCHIVE_CONTAINS is exactly the declared listing"),
+
+    ("an unlistable archive reports as an empty one",
+     "homegraph/models/m4_misc.py",
+     "        return None\n    return names",
+     "        return []  # mutated: broken and empty become one answer\n"
+     "    return names",
+     "an empty archive and an unlistable one differ"),
+
+    ("the archive that could not be opened is not counted",
+     "homegraph/models/m4_misc.py",
+     '        report.unlistable_archives.append((path, "not listable"))',
+     "        pass  # mutated: the failure is swallowed",
+     "an unlistable archive is counted, a gzip is not an error"),
+
+    ("entries are listed but never linked to their archive",
+     "homegraph/models/m4_misc.py",
+     '        store.upsert_edge(path, key, "ARCHIVE_CONTAINS", as_of, method="exact")',
+     "        pass  # mutated: the entry node floats free",
+     "ARCHIVE_CONTAINS is exactly the declared listing"),
+
+    ("an archive entry claims a path on disk",
+     "homegraph/models/m4_misc.py",
+     '        store.upsert_node(key, kind="archive_entry", subtype="entry",\n'
+     "                          path=None, title=entry,",
+     '        store.upsert_node(key, kind="archive_entry", subtype="entry",\n'
+     "                          path=path, title=entry,  # mutated: a path no stat can confirm",
+     "an archive entry carries no filesystem path"),
+
     # -- the barrier M4 exists behind -------------------------------------
     #
     # M4 reaches the widest part of the disk, so the claim that it stores

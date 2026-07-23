@@ -475,9 +475,10 @@ attribute a kill. Deliberately strict: a check that happens to go red under an
 unrelated mutation is not evidence that anyone chose to test it.
 
 It was 37% (104 of 281) when first measured. Writing mutations for the
-load-bearing half took it to 57% (163 of 286), and it stands at **58% (232 of
-397)** across twelve checkpoints -- the ratio barely moved because CP-7 through
-CP-11 added checks and mutations together. Every batch found something the
+load-bearing half took it to 57% (163 of 286), and it stands at **59% (246 of
+418)** across twelve checkpoints -- the ratio barely moved because CP-7 through
+CP-11, and then the three missing edge types, added checks and mutations
+together. Every batch found something the
 checkpoint had been reporting as green:
 
 - **CP-3** — `doctype is filterable in the store` counted `DISTINCT subtype`,
@@ -938,6 +939,145 @@ a model is rebuilt, not when it is migrated.
 
 ---
 
+## 26 · The three edge types the plan named and the code never drew
+
+The plan's model sections list the relations each model produces. Three of
+them existed only there: `REFERENCES_FILE` (M1), `ARCHIVE_CONTAINS` (M4) and
+`CITES_CODE` (M5). Every other relation on those lists was built, tested and
+counted, so the lists read as descriptions of the system rather than as three
+descriptions and three intentions. **This is the same failure as a mechanism
+that lives only in `tests/` — see section 21 — with the documentation playing
+the part the test played: a reader has no way to tell a shipped relation from
+a planned one.** All three are now built.
+
+**`REFERENCES_FILE` — a document names another file in this store.** The M1
+counterpart to M3's `MENTIONS_PATH`, deliberately the same shape and the same
+weight (`mention`, 0.5). Prose is scanned for path-shaped tokens whose suffix
+is one `categories.toml` names, and a token becomes an edge only when it
+resolves to a node that already exists. Three anchors are tried in a fixed
+order — home-relative, sibling-relative, root-relative — because prose uses
+all three, and the first hit wins so an ambiguous token always means the same
+file. **A mention that resolves to nothing is counted, not dropped:** a run
+where every mention is unresolved is a broken resolver, and it looks exactly
+like a corpus whose documents do not cite each other unless the number is
+visible.
+
+The extractor owns no extension list. `corpus.known_extensions()` reads them
+from the rules, which is the third time this package has had to remove a
+hand-written copy of that list — the shortest copy was the one that filed
+`.heic` embeds as ordinary links.
+
+**URLs are excluded structurally, not by pattern.** The regex cannot start a
+match after `/`, `.`, `-` or `@`, so no position inside `https://host/a/b.pdf`
+is a candidate at all. Spaces are not path characters, which is the deliberate
+cost: `Gallery Notes.docx` is not found, and the alternative — admitting
+spaces — makes every sentence that ends in a filename a candidate.
+
+**`ARCHIVE_CONTAINS` — one level, and only for zip.** `method="exact"`, and
+that is why this relation is allowed to exist: the archive's own central
+directory states the names. Nothing about what is *inside* those members is
+inferred. Gzip, xz and bzip2 carry no member list that can be read without
+decompressing them, so they get no entries rather than guessed ones.
+
+**It is the one place in `m4_misc` that reads past the 512-byte header**, and
+the module docstring now says so. Listing a zip seeks to the end of the file;
+no member is opened and nothing is decompressed, so a zip bomb is a list of
+names here. Entry nodes carry **no `path`** — nothing exists at
+`bundle.zip/notes.md`, and giving it a path would put a location into the
+graph that no `stat()` can confirm and that the mesh would mirror as a file.
+
+**An unlistable archive is counted; an empty one is a fact.** `None` and `[]`
+are different answers all the way to the report, because a build where every
+archive is corrupt otherwise looks identical to one where every archive is
+empty.
+
+**`CITES_CODE` — prose that names a source file.** The plan deferred this one
+with a reason: `code` is a corpus category with no store behind it, since the
+code model is `code-review-graph`, a separate tool with its own database. That
+reason is still true, so the inventory is **passed in** rather than read from a
+model: `mesh build --code-root DIR` walks the corpus for the one category no
+model owns, and mirrors those paths as stubs — a path and a name, no body, no
+index. The federation's claim about code is exactly one relation wide.
+
+**Not asked and asked-and-found-nothing stay distinct.** Without an inventory
+the report says `code_inventory: absent` and the relation is not computed. A
+zero would tell a reader the corpus names no source files when in fact nobody
+looked. For the same reason, `prune` **refuses** when it holds code stubs and
+was given no inventory: those stubs are not stale, they are unlisted — the
+identical argument `prune` already makes for a model that is merely
+unreadable.
+
+**A bare filename only counts when it is unique in the inventory.** A tree of
+any size holds a dozen `index.ts`; a note saying "see utils.py" names none of
+them in particular, and an edge to whichever one sorted first would be a coin
+flip wearing a confidence of 0.6. A full path gets `mention` (0.5) and a
+unique bare name gets `basename` (0.6) — the two forms are never merged, so
+the answer says which kind of evidence it rests on. **The two written forms of
+a path both count** — absolute, and relative to the corpus root — and nothing
+between them: matching any suffix would turn `api/handler.js`, and then
+`handler.js`, into "path" mentions that skip the uniqueness condition.
+
+Only M1 and M3 are sources. M2 bodies are filenames by construction and M4
+bodies are a basename plus, for a database, its table names; neither is prose,
+and this relation is about prose.
+
+**What the mutation harness found in these gates, which is the part worth
+keeping:** the fixture named the ambiguous file by its full path as well, so
+the edge came from the path and deleting the uniqueness condition changed
+nothing — the gate was green and untestable at once. And the extension filter
+had no decoy to reject, so removing it outright left the mention gate green.
+Both were only visible because the needles were written at the same time as
+the gates.
+
+### What the adversarial audit found in this change
+
+Three findings, all reproduced with probes against the running code rather than
+by reading it. The lens was deliberately new: *a new edge is an addition to a
+graph that already has invariants -- where does one of these change an existing
+answer without anything noticing?*
+
+**1. M1 became corpus-dependent, and `update` still believed it was not.**
+`REFERENCES_FILE` only draws an edge when the file named in prose is already a
+node, so a document's own graph depends on which OTHER documents exist. That is
+exactly the property `_m3_affected` exists for, and `SPECS["m1"]` carried
+`affected=None` -- so adding a document never rebuilt the neighbour that names
+it, the edge never appeared, and no later run recovered it. `update` reported
+success. The comment in `update.py` said "M1 and M2 read one file at a time and
+do not", which was true when it was written and was the only place the
+assumption was recorded. **CP-8 could not catch it: its equivalence run covers
+M3 alone.** Fixed with `_m1_affected`, and CP-8 now runs an M1 equivalence on a
+corpus of its own.
+
+**2. A refused prune had already written by the time it refused.** The check
+sat after the mirror loop, and `Store.close()` commits by default, so
+`build_edges(prune=True)` without an inventory advanced `last_seen` on every
+mirrored node, committed that, and *then* raised -- leaving nodes dated later
+than the edges they carry, a state neither `build` nor a completed `update` can
+produce. Both refusals now run before the first write and close with
+`commit=False`. **A refusal that has already written is not a refusal.**
+
+The same call reached the user as an uncaught traceback and exit 1, in a CLI
+whose every other refusal is exit 2 with a message. Both `mesh build` and
+`update` catch it now.
+
+**3. Containment is not naming.** `CITES_CODE` matched a bare filename as a
+plain substring, so `runner.py` matched inside `live_runner.py`: 89 of 1 253
+basename edges on the real corpus pointed at a file the text never mentions,
+each carrying a confident 0.6. `Mesh._boundary` requires the name to stand on
+its own -- and the first version of that rule was too strict in the other
+direction, refusing a bare name that follows a slash, which cost 663 of 1 233
+edges. Both numbers were measured; neither was visible by reading the regex.
+
+**And one measurement, recorded rather than acted on.** Archive entries are
+ordinary nodes, so they enter M4's FTS index and compete for its 20 slots
+before fusion. Measured on the real corpus: 78 of 1 308 M4 nodes (6.0%) are
+archive entries, and across ten descriptive queries they were 4 of 200 fused
+hits (2.0%). They stay searchable, because "which archive holds `notes.md`" is
+a question worth being able to ask, and the dilution is stated here rather than
+left for someone to discover as a ranking oddity.
+
+---
+
 ## 14 · Deferred
 
 Kept current, because a deferral list that is not re-read becomes a list of
@@ -946,12 +1086,14 @@ from each other.
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,
   rather than run per module. Still outstanding: codex was out of monthly quota,
-  and the four external rounds that did run were a different reviewer.
+  and the five external rounds that did run were a different reviewer.
 - **Embeddings** -- off, and off by default. Enabling requires naming both a
   provider and a model, so a build path can never quietly load one.
-- **M1's update path** -- implemented, and covered by CP-11 only as far as
-  "it can be built from the command line". It has no equivalence gate of the
-  kind CP-8 holds the other models to.
+- **M1's update path** -- no longer deferred. It gained an equivalence gate in
+  CP-8 on 2026-07-23, because REFERENCES_FILE made M1 corpus-dependent and the
+  absence of that gate is what let the widening bug ship. The gate runs on a
+  three-document corpus of its own; the fixture's `evolve()` moves markdown,
+  not documents.
 - **The visualisation's rendering** -- CP-9 gates the data reaching the page and
   the derived-edge counts, in both directions. Whether the dashes actually draw
   needs a browser, and this package has no runtime dependency that could open

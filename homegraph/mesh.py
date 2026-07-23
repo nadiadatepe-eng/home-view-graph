@@ -36,10 +36,13 @@ that simply has less in it.
 from __future__ import annotations
 
 import collections
+import functools
 import os
+import re
 import typing
 import sqlite3
 
+from .config import home_root
 from .search import RRF_K, fts_query
 from .store import Store
 
@@ -248,7 +251,7 @@ class Mesh:
 
     # -- cross-model graph -------------------------------------------------
 
-    def build_edges(self, as_of, prune=False):
+    def build_edges(self, as_of, prune=False, code_paths=None):
         """Compute cross-model edges into mesh.db. Never touches model stores.
 
         `prune` drops every stub the mirror below did not just write. It is off
@@ -257,6 +260,14 @@ class Mesh:
         is on for `homegraph update`, where the federation has to stop
         answering about files that are gone: a stale stub carries a title and a
         path and answers confidently about a world that no longer exists.
+
+        `code_paths` is the code inventory CITES_CODE needs, and passing it is
+        the caller's decision because there is no code STORE to read it from.
+        `code` is a corpus category with no model behind it -- the plan's code
+        model is `code-review-graph`, a separate tool with its own database --
+        so the paths arrive from the same corpus walk the models are built
+        from. Omit it and CITES_CODE is not computed, which the report says in
+        as many words rather than reporting zero edges.
         """
         if not self.mesh_db:
             raise ValueError("mesh_db path required to build edges")
@@ -270,6 +281,20 @@ class Mesh:
                 loaded[model] = self.store(model)
             except ModelUnavailable:
                 missing.append(model)
+
+        # Both refusals happen HERE, before the first write. They used to sit
+        # after the mirror loop, where `mesh.close()` commits by default, so a
+        # refused prune advanced `last_seen` on every mirrored node and
+        # committed it -- a store announcing it did nothing while leaving
+        # nodes dated later than the edges they carry, a state neither `build`
+        # nor a completed `update` can produce. **A refusal that has already
+        # written is not a refusal**, and the ordering is what makes it one;
+        # the rollback below is the second lock on the same door.
+        if prune:
+            refusal = self._unsafe_prune(mesh, code_paths, missing)
+            if refusal:
+                mesh.close(commit=False)
+                raise ModelUnavailable(refusal)
 
         # Mirror every model node into mesh as a lightweight stub, so edges
         # have endpoints without copying bodies or duplicating the indexes.
@@ -293,16 +318,10 @@ class Mesh:
                 by_basename[os.path.basename(row["path"])].append(
                     (model, row["node_key"]))
 
+        code_index = self._mirror_code(mesh, code_paths, as_of, mirrored)
+
         removed = 0
         if prune:
-            if missing:
-                # Refusing rather than pruning: with a model unreadable its
-                # stubs are not stale, they are unqueried, and deleting them
-                # would turn a temporary outage into permanent data loss.
-                mesh.close()
-                raise ModelUnavailable(
-                    "cannot prune the federation while %s is unreadable"
-                    % ", ".join(sorted(missing)))
             for row in mesh.db.execute("SELECT node_key FROM nodes").fetchall():
                 if row["node_key"] not in mirrored:
                     mesh.delete_node(row["node_key"])
@@ -310,11 +329,14 @@ class Mesh:
 
         self._figure_for(mesh, loaded, by_basename, as_of, report)
         self._mentions_file(mesh, loaded, as_of, report)
+        self._cites_code(mesh, loaded, code_index, as_of, report)
         self._temporal_cohort(mesh, loaded, as_of, report)
         mesh.rebuild_fts()
         mesh.close()
         return {"edges": dict(report), "models": sorted(loaded),
-                "missing": sorted(missing), "stubs_removed": removed}
+                "missing": sorted(missing), "stubs_removed": removed,
+                "code_inventory": ("absent" if code_index is None
+                                   else len(code_index))}
 
     def _figure_for(self, mesh, loaded, by_basename, as_of, report):
         """A document or note naming an image file points at that image.
@@ -345,6 +367,160 @@ class Mesh:
                                          "FIGURE_FOR", as_of,
                                          method="basename")
                         report["FIGURE_FOR"] += 1
+
+    CODE_MODEL = "code"
+
+    @staticmethod
+    @functools.lru_cache(maxsize=8192)
+    def _boundary(form, is_path):
+        """`form` where it is a name of its own, not glued inside a longer one.
+
+        Substring containment is not naming. Measured on the real corpus before
+        this existed: 89 of 1 253 basename edges rested on a name that occurs
+        ONLY inside a longer filename -- `runner.py` found in `live_runner.py`,
+        `bridge.py` in `signoz-bridge.py` -- each one a confident 0.6 pointing
+        at a file the text never mentions.
+
+        The right side excludes word characters either way, so `main.py` never
+        matches `main.pyc`. A trailing dot is allowed: prose ends sentences.
+
+        The left side differs by what is being matched, and the difference is
+        the whole point:
+
+          * a BARE NAME may follow a slash. `orchestrator/bin/memory.py` names
+            `memory.py`, and when that basename is unique in the inventory it
+            names exactly one file. Blocking it was the first version of this
+            rule and it cost 663 of 1 233 edges on the real corpus -- caught
+            by counting them, not by reading the regex.
+          * a PATH may not. `proj/api/handler.js` inside
+            `vendor/proj/api/handler.js` is a different tree that happens to
+            end the same way, and the path forms exist precisely to be more
+            specific than the name.
+        """
+        left = r"(?<![\w.\-/])" if is_path else r"(?<![\w.\-])"
+        return re.compile(left + re.escape(form) + r"(?![\w])")
+
+    @classmethod
+    def _names(cls, form, body, is_path=False):
+        """Cheap containment first, then the boundary. Same answer, less work:
+        the regex runs only where the plain substring already matched."""
+        return (form in body
+                and cls._boundary(form, is_path).search(body) is not None)
+
+    def _unsafe_prune(self, mesh, code_paths, missing):
+        """Why this prune must not run, or None. Asks only; writes nothing.
+
+        Both cases are the same argument: a stub whose source was not consulted
+        is not stale, it is unlisted, and deleting it turns a missing argument
+        or a temporary outage into permanent data loss.
+        """
+        if code_paths is None and self._has_code_stubs(mesh):
+            return ("cannot prune the federation without a code inventory: "
+                    "the code stubs already here would be deleted as stale "
+                    "when they are merely unlisted. Pass --code-root.")
+        if missing:
+            return ("cannot prune the federation while %s is unreadable"
+                    % ", ".join(sorted(missing)))
+        return None
+
+    def _has_code_stubs(self, mesh):
+        row = mesh.db.execute(
+            "SELECT 1 FROM nodes WHERE kind='code' LIMIT 1").fetchone()
+        return row is not None
+
+    def _mirror_code(self, mesh, code_paths, as_of, mirrored):
+        """Mirror the code inventory as stubs. Returns the index, or None.
+
+        Stubs and not a model: a code node here carries a path and a name and
+        nothing else -- no body, no sections, no FTS content of its own -- so
+        the mesh cannot be mistaken for a place where code is indexed. Reading
+        code is `code-review-graph`'s job, and the federation's claim about
+        code is exactly one relation wide.
+
+        `None` (no inventory offered) and `{}` (an inventory with no code in
+        it) are kept apart all the way to the report, because "not asked" and
+        "asked, found nothing" are the two answers a zero would merge.
+        """
+        if code_paths is None:
+            return None
+        index = {}
+        for path in code_paths:
+            path = os.path.normpath(path)
+            key = "%s::%s" % (self.CODE_MODEL, path)
+            mesh.upsert_node(key, kind="code", subtype="code/inventory",
+                             path=path, title=os.path.basename(path),
+                             body=os.path.basename(path), as_of=as_of)
+            mirrored.add(key)
+            index[path] = key
+        return index
+
+    def _cites_code(self, mesh, loaded, code_index, as_of, report):
+        """CITES_CODE: prose that names a source file.
+
+        Two ways to say it, weighted differently and never merged:
+
+          * the full path -- `method="mention"` (0.5), the same weight
+            MENTIONS_FILE gives the same evidence;
+          * the bare filename, and ONLY when that filename is unique in the
+            inventory -- `method="basename"` (0.6).
+
+        The uniqueness condition is the whole gate. A tree of any size holds a
+        dozen `index.ts` and thirty `__init__.py`, and a note saying "see
+        utils.py" names none of them in particular. Emitting an edge to
+        whichever one sorted first would be a coin flip wearing a confidence
+        of 0.6, which is worse than the missing edge it replaces: a gap is
+        visible and a wrong edge is not.
+
+        M2 and M4 are not sources here. M2 bodies are filenames by
+        construction -- every image would "mention" a code file whose name it
+        shares -- and M4 bodies are a basename plus, for a database, its table
+        names. Neither is prose, and this relation is about prose.
+        """
+        if not code_index:
+            return
+        by_basename = collections.defaultdict(list)
+        for path in code_index:
+            by_basename[os.path.basename(path)].append(path)
+        unique = {name: paths[0] for name, paths in by_basename.items()
+                  if len(paths) == 1}
+
+        # How a path is WRITTEN, which is not how it is stored. The store
+        # holds an absolute path; prose says `proj/api/handler.js`, relative
+        # to the corpus root, because that is what the project calls it. Both
+        # forms count as naming the path -- and only those two. Matching any
+        # suffix would make `api/handler.js` and then `handler.js` a "path"
+        # mention, which is the basename case wearing a different label and
+        # skipping the uniqueness condition that makes it safe.
+        root = home_root()
+        written = collections.defaultdict(list)
+        for path in code_index:
+            written[path].append(path)
+            rel = os.path.relpath(path, root)
+            if not rel.startswith(".."):
+                written[path].append(rel)
+
+        for model in ("m1", "m3"):
+            if model not in loaded:
+                continue
+            for row in loaded[model].db.execute(
+                    "SELECT node_key, body FROM nodes WHERE body IS NOT NULL "
+                    "AND kind IN ('file','document')"):
+                body = row["body"]
+                src = "%s::%s" % (model, row["node_key"])
+                hit_paths = [p for p, forms in written.items()
+                             if any(self._names(f, body, is_path=True)
+                                    for f in forms)]
+                for path in hit_paths:
+                    mesh.upsert_edge(src, code_index[path], "CITES_CODE",
+                                     as_of, method="mention")
+                    report["CITES_CODE"] += 1
+                named = set(hit_paths)
+                for name, path in unique.items():
+                    if path in named or not self._names(name, body):
+                        continue
+                    mesh.upsert_edge(src, code_index[path], "CITES_CODE",
+                                     as_of, method="basename")
+                    report["CITES_CODE"] += 1
 
     def _mentions_file(self, mesh, loaded, as_of, report):
         """A node whose text contains another model's file path."""

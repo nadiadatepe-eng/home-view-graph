@@ -37,9 +37,10 @@ if not REAL:
     from tests.fixtures.synthetic import ROOT as SYNTH_ROOT
     os.environ.setdefault("HOMEGRAPH_ROOT", SYNTH_ROOT)
 
-from homegraph.corpus import Classifier                       # noqa: E402
+from homegraph.corpus import Classifier, known_extensions     # noqa: E402
 from homegraph.models.m1_build import DocBuildReport, build   # noqa: E402
-from homegraph.models.m1_extractors import extract            # noqa: E402
+from homegraph.models.m1_extractors import (                  # noqa: E402
+    extract, file_mentions)
 from homegraph.store import Store                             # noqa: E402
 
 AS_OF = date(2026, 7, 22).isoformat()
@@ -162,6 +163,10 @@ def corpus():
         "empty": {os.path.join(root, r): st
                   for r, st in syn.DOCUMENTS_EMPTY.items()},
         "doctypes": 4,
+        "references": {(os.path.join(root, a), os.path.join(root, b))
+                       for a, b in syn.REFERENCES_FILE_FASIT},
+        "ref_phantom": os.path.join(root, syn.REFERENCES_FILE_PHANTOM),
+        "ref_url": syn.REFERENCES_FILE_URL,
     }
     return _paths_from_walk(root), spec
 
@@ -308,6 +313,70 @@ def t_graph(db, report):
               "%d section(s) carry an offset" % page)
 
 
+def t_references(db, report, spec):
+    """REFERENCES_FILE: the declared set, and nothing the corpus did not say.
+
+    Three gates, and the order matters. The extractor is checked first and on
+    its own, because it is the half that can be wrong without the graph ever
+    showing it: a resolver that refuses everything and an extractor that finds
+    nothing both produce zero edges.
+    """
+    # Two calls, because the two rules need decoys the other one would eat.
+    #
+    # First, against the extension set the BUILD uses. `N.R` and `M.C` are
+    # initials out of a reference list -- PDF extraction drops the space after
+    # the first period -- and `.r` and `.c` are real source extensions, so the
+    # extension filter cannot tell them from files and the stem length is the
+    # only thing that can. Both were produced by the real corpus, which is
+    # where this rule came from.
+    found = file_mentions(
+        "The data are in Documents/review.odt.\n"
+        "After N.R and M.C, whose initials lost their space in extraction.\n"
+        "A preprint sits at %s -- a URL, not a path.\n" % spec["ref_url"],
+        known_extensions())
+    check("a path in prose is a mention, a URL and an initial are not",
+          found == ["Documents/review.odt"],
+          "found %s" % (found,))
+
+    # Second, against a narrow set, so the decoys are path-SHAPED tokens whose
+    # suffix the rules do not name. Without this the extension filter could be
+    # deleted outright and the check above stayed green.
+    narrow = file_mentions(
+        "The data are in Documents/review.odt.\n"
+        "Rebuilt with make.sh; see figure 2.4b for the residuals.\n",
+        frozenset({".odt", ".pdf", ".tex"}))
+    check("only the suffixes the rules name count as files",
+          narrow == ["Documents/review.odt"],
+          "found %s" % (narrow,))
+
+    declared = spec.get("references")
+    if declared is None:
+        return
+    with Store(db) as s:
+        got = {(r["src_key"], r["dst_key"])
+               for r in s.edges_as_of(AS_OF, rel="REFERENCES_FILE")}
+    check("REFERENCES_FILE is exactly the declared set",
+          bool(declared) and got == declared,
+          "%d edge(s), %d declared; extra %s; missing %s"
+          % (len(got), len(declared),
+             sorted(os.path.basename(a) + "->" + os.path.basename(b)
+                    for a, b in got - declared) or "none",
+             sorted(os.path.basename(a) + "->" + os.path.basename(b)
+                    for a, b in declared - got) or "none"))
+
+    # The negative half. A named file that was never written must produce no
+    # edge AND no node -- resolving it to the nearest existing document would
+    # satisfy the gate above and be a fabrication.
+    with Store(db) as s:
+        phantom_node = s.node_id(spec["ref_phantom"])
+    phantom_edges = [1 for _, dst in got if dst == spec["ref_phantom"]]
+    check("a document naming a file that does not exist gets no edge",
+          not phantom_node and not phantom_edges
+          and report.unresolved_refs >= 1,
+          "node=%s edges=%d unresolved=%d"
+          % (phantom_node, len(phantom_edges), report.unresolved_refs))
+
+
 def t_damaged(tmp):
     """Encrypted, corrupt and unknown files must degrade, never raise."""
     corrupt = os.path.join(tmp, "broken.docx")
@@ -403,6 +472,7 @@ def main():
         t_fasit(spec)
         db, report = t_build(tmp, paths, classified, spec)
         t_graph(db, report)
+        t_references(db, report, spec)
         t_damaged(tmp)
         t_degradation(tmp)
         print("\nbuild report: %s" % report.summary())

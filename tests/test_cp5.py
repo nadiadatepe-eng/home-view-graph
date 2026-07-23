@@ -31,6 +31,7 @@ import shutil
 import sys
 import tempfile
 import time
+import zipfile
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,7 +43,8 @@ if not REAL:
 
 from homegraph.corpus import Classifier                       # noqa: E402
 from homegraph.models.m4_misc import (MiscBuildReport,        # noqa: E402
-                                      build, sniff, sqlite_schema)
+                                      archive_entries, build, sniff,
+                                      sqlite_schema)
 from homegraph.search import fts_search                       # noqa: E402
 from homegraph.store import Store                             # noqa: E402
 
@@ -119,7 +121,13 @@ def corpus():
             "files": syn.MISC_TOTAL,
             "large": len(syn.LARGE_FILES), "large_exact": True,
             "seconds": 900,
-            "unknown_fraction": 0.25}
+            "unknown_fraction": 0.25,
+            "archives": {os.path.join(syn.ROOT, rel): set(entries)
+                         for rel, entries in syn.ARCHIVE_FASIT.items()},
+            "unlistable": {os.path.join(syn.ROOT, r)
+                           for r in syn.ARCHIVE_UNLISTABLE},
+            "not_listed": {os.path.join(syn.ROOT, r)
+                           for r in syn.ARCHIVE_NOT_LISTED}}
 
 
 def t_build(tmp, by_label, spec):
@@ -342,6 +350,69 @@ def t_secrets_gate(tmp):
                  len(control)))
 
 
+def t_archives(tmp, db, report, spec):
+    """ARCHIVE_CONTAINS: the table of contents, one level, and nothing else.
+
+    The listing is checked twice on purpose -- once through `archive_entries`
+    on a zip written here, and once through the edges the corpus build drew.
+    A gate that only reads the helper passes while the builder never calls it,
+    which is the failure this package has now found four times.
+    """
+    nested = os.path.join(tmp, "nested.zip")
+    with zipfile.ZipFile(nested, "w") as z:
+        z.writestr("top.txt", "x")
+        z.writestr("dir/a.txt", "x")
+        z.writestr("dir/deeper/b.txt", "x")
+    got = archive_entries(nested)
+    check("an archive lists one level, not every member",
+          got is not None and set(got) == {"top.txt", "dir/"},
+          "%s" % (got,))
+
+    empty = os.path.join(tmp, "empty.zip")
+    with zipfile.ZipFile(empty, "w"):
+        pass
+    torn = os.path.join(tmp, "torn.zip")
+    with open(torn, "wb") as fh:
+        fh.write(b"PK\x03\x04 truncated")
+    # `[]` and `None` are different answers: an empty archive is a fact, an
+    # unreadable one is a defect, and a build where every archive is corrupt
+    # must not look like a build where every archive is empty.
+    check("an empty archive and an unlistable one differ",
+          archive_entries(empty) == [] and archive_entries(torn) is None,
+          "empty=%r torn=%r" % (archive_entries(empty),
+                                archive_entries(torn)))
+
+    declared = spec.get("archives")
+    if declared is None:
+        return
+    with Store(db) as s:
+        edges = collections.defaultdict(set)
+        for r in s.edges_as_of(AS_OF, rel="ARCHIVE_CONTAINS"):
+            edges[r["src_key"]].add(r["dst_key"].split("!", 1)[1])
+    check("ARCHIVE_CONTAINS is exactly the declared listing",
+          bool(declared) and dict(edges) == declared,
+          "%d archive(s) with edges, %d declared; %s"
+          % (len(edges), len(declared),
+             {os.path.basename(k): sorted(v) for k, v in edges.items()}))
+
+    # The two silences, told apart. One archive cannot be opened and must be
+    # counted; one is an archive with no member list to read, and must be
+    # neither counted nor an error.
+    unlistable = {p for p, _ in report.unlistable_archives}
+    check("an unlistable archive is counted, a gzip is not an error",
+          unlistable == spec["unlistable"]
+          and not (spec["not_listed"] & unlistable)
+          and not (spec["not_listed"] & set(edges)),
+          "unlistable=%s" % sorted(os.path.basename(p) for p in unlistable))
+
+    with Store(db) as s:
+        stray = s.db.execute(
+            "SELECT COUNT(*) c FROM nodes WHERE kind='archive_entry' "
+            "AND path IS NOT NULL").fetchone()["c"]
+    check("an archive entry carries no filesystem path", stray == 0,
+          "%d entry node(s) claim a path no stat() can confirm" % stray)
+
+
 def t_sqlite_safety(tmp):
     db_path = os.path.join(tmp, "sample.sqlite")
     import sqlite3
@@ -417,6 +488,7 @@ def main():
         print("corpus: %s  (%d files)\n" % (spec["name"], inventory_rows))
         db, report, paths = t_build(tmp, by_label, spec)
         t_cross_validation(db, by_label, report, inventory_rows, spec)
+        t_archives(tmp, db, report, spec)
         t_rollup(tmp)
         t_secrets_gate(tmp)
         t_sqlite_safety(tmp)

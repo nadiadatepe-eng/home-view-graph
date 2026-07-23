@@ -399,10 +399,42 @@ class Classifier:
     def classify(self, path: str, is_symlink: bool | None = None) -> str:
         return self.explain(path, is_symlink=is_symlink).label
 
+    def known_extensions(self) -> frozenset[str]:
+        """This classifier's extensions -- see `known_extensions()` below."""
+        return _extensions_from(self.cat)
+
 
 @lru_cache(maxsize=1)
 def _default() -> Classifier:
     return Classifier()
+
+
+def _extensions_from(cat: dict[str, Any]) -> frozenset[str]:
+    exts = set(cat["image"]["extensions"]) | set(cat["markdown"]["extensions"])
+    exts |= set(cat["document"]["doctypes"]) | set(cat["code"]["extensions"])
+    return frozenset("." + str(e).lower() for e in exts)
+
+
+@lru_cache(maxsize=4)
+def known_extensions(rules_dir: str = RULES_DIR) -> frozenset[str]:
+    """Every extension categories.toml names, lowercased, with the dot.
+
+    Read from the rules rather than written out again. Three hand-written
+    copies of an extension list have already been found in this package --
+    `m2_build.IMAGE_EXT`, a shorter one in `m3_markdown`, and the pair
+    `image_extensions()` replaced -- and the shortest copy was the one that
+    filed `.heic` embeds as ordinary links.
+
+    `misc` contributes nothing: it is the complement and names no extensions,
+    so "known" here means "some category claims this suffix", not "the system
+    can read it".
+
+    Takes a rules directory and not a Classifier, because the answer does not
+    depend on the user's config -- roles and roots do, extensions do not -- and
+    requiring a config here would make `m1_build` refuse to run in a process
+    that has none, for a question no config can answer.
+    """
+    return _extensions_from(_load(rules_dir, "categories.toml"))
 
 
 def classify(path: str, is_symlink: bool | None = None) -> str:

@@ -75,6 +75,59 @@ def blank_result(doctype, status="ok"):
             "metadata": {}, "outbound_refs": [], "problems": []}
 
 
+# A path-shaped token in prose: an optional anchor (`~/`, `./`, `../`, `/`),
+# any number of directory components, and a name ending in a suffix. Which
+# suffixes count is NOT decided here -- `file_mentions` takes the set from
+# `corpus.known_extensions()`, so this module owns no extension list of its
+# own. See DECISIONS.md section 26.
+#
+# The leading lookbehind is what keeps URLs out, and it does it structurally
+# rather than by pattern-matching `http`: every position inside
+# `https://host/a/paper.pdf` is preceded by `/` or `.`, so no match can start
+# there at all. A mailto: address is excluded the same way, by `@`.
+#
+# Spaces are not path characters here. `Gallery Notes.docx` is therefore not
+# found, and that is the deliberate half of the trade: admitting spaces makes
+# every sentence ending in a filename a candidate, and the false edges land in
+# a graph where a wrong relation is invisible once it is a row.
+FILEREF = re.compile(
+    r"(?<![\w@/.-])((?:~/|\.{1,2}/|/)?(?:[\w.+-]+/)*[\w.+-]+\.[A-Za-z0-9]{1,8})"
+    r"(?![\w/])")
+
+
+# A name of one character before the dot is an initial, not a file. Measured,
+# not guessed: the first run over the real corpus produced `N.R`, `M.C`, `H.R`,
+# `J.H`, `D.H`, `A.C` and `L.H` -- author initials out of PDF reference lists,
+# where extraction drops the space after the first period. `.r` and `.c` are
+# genuine source extensions, so the extension filter cannot tell them apart and
+# the length of the stem is the only thing that can. Nothing resolved, so no
+# false edge was drawn; on a corpus holding a file actually called `N.R` one
+# would have been, and it would have looked like a citation.
+MIN_STEM = 2
+
+
+def file_mentions(text, extensions, limit=40):
+    """Path-shaped tokens in `text` whose suffix is in `extensions`.
+
+    Pure: it takes text and a set, touches no filesystem and resolves nothing.
+    Whether a mention points at a file that exists is `m1_build`'s question,
+    and keeping the two apart is what lets the negative case -- a document
+    naming a file that was never written -- be tested without a corpus.
+    """
+    out, seen = [], set()
+    for m in FILEREF.finditer(text or ""):
+        token = m.group(1)
+        stem, ext = os.path.splitext(os.path.basename(token))
+        ext = ext.lower()
+        if len(stem) < MIN_STEM or ext not in extensions or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _clean_refs(text, limit=200):
     refs = []
     for m in DOI.finditer(text or ""):

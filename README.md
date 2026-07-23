@@ -117,12 +117,41 @@ layout would still be imposed.
 | `update.py` | applies that diff to a built model |
 | `models/m1_*` | documents: pdf, odt, docx, tex |
 | `models/m2_*` | images: filenames and `stat()` only |
-| `models/m3_*` | markdown: the only model with real edges |
+| `models/m3_*` | markdown: the richest edge set |
 | `models/m4_misc.py` | everything else, plus cold-state rollup |
 | `mesh.py` | M5: federates the models, never merges them |
 | `visualize.py` | force layout in Python, canvas in the browser, one file |
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
 | `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `build` |
+
+## What the edges say
+
+| model | relations |
+| --- | --- |
+| M1 documents | `CONTAINS` · `AUTHORED_BY` · `CITES` · `SAME_AUTHOR` · `REFERENCES_FILE` |
+| M2 images | `IN_COLLECTION` · `NAMED_DATE` · `SAME_RESOLUTION` · `SERIES_MEMBER` · `LIKELY_COPY` |
+| M3 markdown | `CONTAINS` · `WIKILINKS_TO` · `LINKS_TO` · `EMBEDS` · `TAGGED` · `MENTIONS_PATH` |
+| M4 misc | `BELONGS_TO_APP` · `SAME_FORMAT` · `ARCHIVE_CONTAINS` |
+| M5 mesh | `FIGURE_FOR` · `MENTIONS_FILE` · `TEMPORAL_COHORT` · `CITES_CODE` |
+
+Every edge carries the method it was derived by -- `exact` 1.0, `path_prefix`
+0.7, `basename` 0.6, `mention` 0.5, `cohort` 0.4 -- and any answer containing
+one below 1.0 comes back labelled. See `DECISIONS.md` section 24.
+
+The last three in that table were listed in the plan and were **not built**
+until 2026-07-23, which is worth saying out loud: a documented relation nobody
+draws is indistinguishable, to a reader, from one that ships. `CITES_CODE`
+needs an inventory passed in (`--code-root`) because `code` is a corpus
+category with no model behind it; `ARCHIVE_CONTAINS` reads a zip's central
+directory and nothing else, and is the only place M4 reads past the 512-byte
+header.
+
+`DECISIONS.md` section 26 has the reasoning, the two gates the mutation harness
+caught as untestable on their first draft, and the three defects an adversarial
+audit found afterwards -- including one that had already shipped the same shape
+twice: **a documented assumption (`M1 reads one file at a time`) that stopped
+being true the moment a new relation landed, with nothing but a comment holding
+it.**
 
 ## Install
 
@@ -151,6 +180,12 @@ homegraph md build /tmp/m3.db --root ~/notes
 homegraph md backlinks /tmp/m3.db ~/notes/some-page.md
 homegraph mesh search --model m3=/tmp/m3.db trails
 
+# The federation, with the code inventory CITES_CODE needs. Without
+# --code-root that relation is not computed, and the report says `absent`
+# rather than 0 -- "nobody asked" is not "nothing found".
+homegraph mesh build --model m3=/tmp/m3.db --model m1=/tmp/m1.db \
+                     --mesh-db /tmp/mesh.db --code-root ~
+
 # One self-contained HTML file -- open it in any browser, offline, forever
 homegraph visualize --model m3=/tmp/m3.db --out graph.html
 
@@ -162,7 +197,7 @@ homegraph mcp --model m3=/tmp/m3.db
 
 ```sh
 homegraph update --model m3=/tmp/m3.db --model m2=/tmp/m2.db \
-                 --mesh-db /tmp/mesh.db
+                 --mesh-db /tmp/mesh.db --code-root ~
 ```
 
 `incremental.py` computes the diff -- `added`, `changed`, `touched`,
@@ -241,8 +276,9 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twelve checkpoints plus a privacy check. 282 mutations, 0 survived, 0 detected
-only by a crash**, measured 2026-07-23. The split of *how* they died is the
+**Twelve checkpoints plus a privacy check. 302 mutations, 0 survived, 0 detected
+only by a crash**, measured 2026-07-23 on the final tree, after the three
+missing edge types and the audit that followed them. The split of *how* they died is the
 fragile number and is timestamped for a reason: it has moved twice within an
 hour of measurement. **0 survived is the load-bearing claim**; a mutation
 moving between *the named gate said no* and *the suite died* changes how much
@@ -254,16 +290,16 @@ than trusting the numbers here.
 | CP-0 corpus | 18 | 18 |
 | CP-1 substrate | 22 | 22 |
 | CP-2 markdown | 22 | 22 |
-| CP-3 documents | 21 | 21 |
+| CP-3 documents | 26 | 26 |
 | CP-4 images | 17 | 17 |
-| CP-5 misc | 15 | 15 |
-| CP-6 mesh | 27 | 26 |
+| CP-5 misc | 20 | 20 |
+| CP-6 mesh | 34 | 33 |
 | CP-7 config | 33 | 33 |
-| CP-8 update | 30 | 30 |
+| CP-8 update | 32 | 32 |
 | CP-9 provenance | 31 | 31 |
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
-| **total** | **282** | **281** |
+| **total** | **302** | **301** |
 
 The one CP-6 mutation not in the right-hand column was killed by a *different*
 gate than the one that named it — recorded rather than rounded away, because a
@@ -430,8 +466,8 @@ Found by an adversarial audit of the checkpoints themselves, and not all fixed:
 
 **Still open:**
 
-- **Mutation coverage is a minority of checks.** 95 mutations against roughly
-  240 checks, and the audit's generalisable finding was that the empty gates
+- **Mutation coverage is a minority of checks.** 302 mutations name 246 of 418
+  checks (59%), and the audit's generalisable finding was that the empty gates
   all sat among the checks no mutation targeted.
 - **CP-4's time and memory limits do not bear the weight once put on them.**
   They are labelled regression guards. The audit hook and strace are the proof.

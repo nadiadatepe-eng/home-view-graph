@@ -17,6 +17,63 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    ("a refused prune has already written by the time it refuses",
+     "homegraph/mesh.py",
+     "        if prune:\n"
+     "            refusal = self._unsafe_prune(mesh, code_paths, missing)\n"
+     "            if refusal:\n"
+     "                mesh.close(commit=False)\n"
+     "                raise ModelUnavailable(refusal)",
+     "        pass  # mutated: the refusal moves back after the mirror loop",
+     "a refused prune leaves the store exactly as it was"),
+
+    ("a filename glued inside a longer one counts as naming it",
+     "homegraph/mesh.py",
+     "        return (form in body\n"
+     "                and cls._boundary(form, is_path).search(body) is not None)",
+     "        return form in body  # mutated: runner.py matches live_runner.py",
+     "CITES_CODE is exactly the declared set, with its methods"),
+
+    # -- CITES_CODE -------------------------------------------------------
+    ("an ambiguous basename is resolved to the first match",
+     "homegraph/mesh.py",
+     "        unique = {name: paths[0] for name, paths in by_basename.items()\n"
+     "                  if len(paths) == 1}",
+     "        unique = {name: paths[0] for name, paths in by_basename.items()}"
+     "  # mutated: a coin flip wearing 0.6",
+     "an ambiguous basename names no file, so draws no basename edge"),
+
+    ("a missing inventory reports zero instead of absent",
+     "homegraph/mesh.py",
+     '                "code_inventory": ("absent" if code_index is None\n'
+     "                                   else len(code_index))}",
+     '                "code_inventory": len(code_index or {})}'
+     "  # mutated: not asked reads as asked and empty",
+     "without an inventory CITES_CODE is absent, not zero"),
+
+    ("a full-path mention is downgraded to a basename guess",
+     "homegraph/mesh.py",
+     '                    mesh.upsert_edge(src, code_index[path], "CITES_CODE",\n'
+     '                                     as_of, method="mention")',
+     '                    mesh.upsert_edge(src, code_index[path], "CITES_CODE",\n'
+     '                                     as_of, method="basename")'
+     "  # mutated: the method stops distinguishing the evidence",
+     "CITES_CODE is exactly the declared set, with its methods"),
+
+    ("prose naming a source file by its project path is missed",
+     "homegraph/mesh.py",
+     "            rel = os.path.relpath(path, root)\n"
+     '            if not rel.startswith(".."):\n'
+     "                written[path].append(rel)",
+     "            pass  # mutated: only absolute paths count as a mention",
+     "CITES_CODE is exactly the declared set, with its methods"),
+
+    ("the code stubs are pruned away without an inventory",
+     "homegraph/mesh.py",
+     "        if code_paths is None and self._has_code_stubs(mesh):",
+     "        if False:  # mutated: prune deletes what it was not given",
+     "pruning without an inventory is refused, not silent"),
+
     # -- the MCP surface --------------------------------------------------
     #
     # An agent calling these tools never sees the model list, so every claim

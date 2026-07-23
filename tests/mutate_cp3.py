@@ -22,6 +22,53 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    ("an author's initials are read as a source file",
+     "homegraph/models/m1_extractors.py",
+     "        if len(stem) < MIN_STEM or ext not in extensions or token in seen:",
+     "        if ext not in extensions or token in seen:"
+     "  # mutated: N.R is a file again",
+     "a path in prose is a mention, a URL and an initial are not"),
+
+    # -- REFERENCES_FILE: the M1 half of "a document names a file" ---------
+    #
+    # These gates are new, and new gates are exactly where the empty ones have
+    # been found. Four needles: the extraction, the URL exclusion, the
+    # resolution, and the refusal to invent.
+    ("path mentions are collected and then never linked",
+     "homegraph/models/m1_build.py",
+     '                store.upsert_edge(path, candidate, "REFERENCES_FILE", as_of,\n'
+     '                                  method="mention")',
+     '                pass  # mutated: the mention resolves and no edge is drawn',
+     "REFERENCES_FILE is exactly the declared set"),
+
+    ("a URL tail counts as a file mention",
+     "homegraph/models/m1_extractors.py",
+     'r"(?<![\\w@/.-])((?:~/|\\.{1,2}/|/)?(?:[\\w.+-]+/)*[\\w.+-]+\\.[A-Za-z0-9]{1,8})"',
+     'r"((?:~/|\\.{1,2}/|/)?(?:[\\w.+-]+/)*[\\w.+-]+\\.[A-Za-z0-9]{1,8})"'
+     '  # mutated: no left boundary',
+     "a path in prose is a mention, a URL and an initial are not"),
+
+    ("any suffix counts, not only the ones the rules name",
+     "homegraph/models/m1_extractors.py",
+     "        if len(stem) < MIN_STEM or ext not in extensions or token in seen:",
+     "        if len(stem) < MIN_STEM or token in seen:"
+     "  # mutated: every dotted word is a file",
+     "only the suffixes the rules name count as files"),
+
+    ("an unresolvable mention is resolved to something anyway",
+     "homegraph/models/m1_build.py",
+     "        else:\n            report.unresolved_refs += 1",
+     "        else:\n            pass  # mutated: nothing counts the misses",
+     "a document naming a file that does not exist gets no edge"),
+
+    ("only the document's own directory is tried",
+     "homegraph/models/m1_build.py",
+     "    return [os.path.normpath(os.path.join(os.path.dirname(src), token)),\n"
+     "            os.path.normpath(os.path.join(root, token))]",
+     "    return [os.path.normpath(os.path.join(os.path.dirname(src), token))]"
+     "  # mutated: root-relative prose no longer resolves",
+     "REFERENCES_FILE is exactly the declared set"),
+
     # -- degradation: the claims CP-3 exists to make ---------------------
     #
     # Coverage before this batch was 3 of 21 checks. Everything about how a

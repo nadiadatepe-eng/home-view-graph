@@ -374,8 +374,20 @@ def cmd_update(args):
         return 2
 
     if args.mesh_db:
-        with _barrier(args.mesh_db):
-            result = up.refresh_mesh(models, args.mesh_db, as_of)
+        # The code inventory is re-walked here, not remembered: `update` runs
+        # because the tree moved, and a remembered list of source files is a
+        # claim about a tree that has since changed. Without --code-root the
+        # federation still refreshes, and `build_edges` refuses to prune code
+        # stubs it was not given the inventory for.
+        code_paths = _code_inventory(getattr(args, "code_root", None), cfg)
+        from .mesh import ModelUnavailable
+        try:
+            with _barrier(args.mesh_db):
+                result = up.refresh_mesh(models, args.mesh_db, as_of,
+                                         code_paths=code_paths)
+        except ModelUnavailable as exc:
+            print("mesh   REFUSED  %s" % exc, file=sys.stderr)
+            return 2
         print("mesh   %s" % result)
     return 0
 
@@ -663,15 +675,46 @@ def cmd_mesh_path(args):
     return 0
 
 
+def _code_inventory(root, config):
+    """The paths CITES_CODE may point at, or None if none was asked for.
+
+    The same walk the models are built from, asked for the one category no
+    model owns. Not a second rule about what code is: `corpus_paths` is what
+    `build` calls, so the inventory and the corpus cannot drift apart.
+    """
+    if not root:
+        return None
+    from . import update as up
+    root = os.path.abspath(os.path.expanduser(root))
+    paths, excluded = up.corpus_paths(root, "code", config=config)
+    print("code   %s" % excluded.line())
+    return paths
+
+
 def cmd_mesh_build(args):
     from datetime import date
     if not args.mesh_db:
         print("REFUSED  mesh build writes a store; name it with --mesh-db",
               file=sys.stderr)
         return 2
+    from .mesh import ModelUnavailable
+    code_root = getattr(args, "code_root", None)
+    cfg = userconfig.load(getattr(args, "config", None)) if code_root else None
+    code_paths = _code_inventory(code_root, cfg)
     with _barrier(args.mesh_db):
         with _mesh(args) as mesh:
-            report = mesh.build_edges(args.as_of or date.today().isoformat())
+            try:
+                report = mesh.build_edges(
+                    args.as_of or date.today().isoformat(),
+                    code_paths=code_paths)
+            except ModelUnavailable as exc:
+                # Exit 2, like every other refusal in this CLI. It came out as
+                # an uncaught traceback and exit 1 for a day, which reads as a
+                # crash rather than as a decision -- and this is the refusal a
+                # user meets most often, since the inventory has to be named
+                # again on every run.
+                print("REFUSED  %s" % exc, file=sys.stderr)
+                return 2
             for key, value in report.items():
                 print("%-12s %s" % (key, value))
     return 0
@@ -767,6 +810,12 @@ def main(argv=None):
             q.add_argument("--all", action="store_true")
         if name == "build":
             q.add_argument("--as-of", dest="as_of", default=None)
+            q.add_argument("--code-root", dest="code_root", default=None,
+                           metavar="DIR",
+                           help="walk DIR for the code inventory CITES_CODE "
+                                "points at; without it that relation is not "
+                                "computed, and the report says so")
+            q.add_argument("--config", default=None)
         if name == "neighbors":
             q.add_argument("node")
             q.add_argument("--depth", type=int, default=1)
@@ -803,6 +852,10 @@ def main(argv=None):
     p.add_argument("--as-of", dest="as_of", default=None)
     p.add_argument("--mesh-db", dest="mesh_db", default=None,
                    help="also refresh the federation, pruning stale stubs")
+    p.add_argument("--code-root", dest="code_root", default=None,
+                   metavar="DIR",
+                   help="re-walk DIR for the code inventory; required to "
+                        "prune a federation that already has code stubs")
     p.add_argument("--allow-config-change", dest="allow_config_change",
                    action="store_true",
                    help="update anyway after the layout changed; the store "

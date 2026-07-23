@@ -26,6 +26,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- M1 became corpus-dependent when REFERENCES_FILE shipped ----------
+    ("M1 rebuilds only the files that changed on disk",
+     "homegraph/update.py",
+     '    "m1": ModelSpec("m1", "document", "document", True, _m1_affected),',
+     '    "m1": ModelSpec("m1", "document", "document", True),'
+     "  # mutated: the neighbour is never rebuilt",
+     "updated M1 edges equal a full rebuild's"),
+
+    ("the widened set covers paths but not the bare name",
+     "homegraph/update.py",
+     "        forms.add(os.path.basename(path))",
+     "        pass  # mutated: a sibling reference no longer widens",
+     "updated M1 edges equal a full rebuild's"),
+
     # -- expiry survives the last_seen advance --------------------------
     #
     # The first fix for the last_seen divergence advanced every edge. That

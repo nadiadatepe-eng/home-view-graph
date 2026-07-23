@@ -15,6 +15,13 @@ Two rules that exist for safety rather than tidiness:
   * **SQLite files give up their schema, never their rows.** A browser profile
     or a session database will happily hand over credentials if you SELECT from
     it. Table names are informative; contents are not worth the risk.
+  * **An archive gives up its table of contents, never its contents.**
+    `archive_entries()` is the one place in this module that reads past the
+    512-byte header, and it is worth stating plainly rather than leaving in
+    the small print: listing a zip reads its central directory, which lives at
+    the END of the file. No member is opened, nothing is decompressed, and
+    nothing is written outside the store -- so a zip bomb is a list of names
+    here, not an unpacked filesystem.
   * **Files over 100 MB become metadata nodes.** Nothing is read past the
     header -- and "the header" is the literal bound: `sniff()` reads at most
     512 bytes, of any file, at any size. The first pass skips `sniff` entirely
@@ -42,6 +49,7 @@ import os
 import re
 import sqlite3
 import time
+import zipfile
 from datetime import date, timedelta
 
 from ..config import home_root
@@ -50,6 +58,15 @@ from ..temporal import record_observation, refresh_datelist
 HEADER_BYTES = 512
 LARGE_FILE = 100 * 1024 * 1024
 ROLLUP_AFTER_DAYS = 90
+# One level, and a bounded one. A source tarball has tens of thousands of
+# members and one top-level directory; enumerating all of them would bury the
+# fact worth keeping, which is what the archive is.
+MAX_ARCHIVE_ENTRIES = 200
+# Above this, the table of contents is not read at all. The cost of listing is
+# a seek to the end of the file rather than a full read, so the limit is
+# generous -- but a multi-gigabyte archive on a spinning disk is still a stall,
+# and a build that stalls gets killed and reports nothing.
+ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
 
 # Magic numbers, checked in order. Deliberately small: this is a triage step,
 # not a format library. Anything unrecognised is `unknown`, which is an honest
@@ -147,6 +164,50 @@ def sqlite_schema(path):
         return []
 
 
+def archive_entries(path, limit=MAX_ARCHIVE_ENTRIES):
+    """Top-level names inside a zip, or None if it cannot be listed.
+
+    `None` and `[]` are different answers and both are kept: an empty zip is a
+    fact, an unlistable one is a defect, and collapsing them would let a run
+    where every archive is corrupt report the same shape as a run where every
+    archive is empty.
+
+    Only zip. Gzip and xz carry no member list at all -- a `.tar.gz` would have
+    to be decompressed to be enumerated, which is the read this module refuses
+    to do -- so they are archives with no contents to state, and they get no
+    edges rather than guessed ones. That limit is narrow and deliberate; the
+    alternative is streaming a compressed tar through memory to learn some
+    filenames.
+
+    Encrypted members still list: a zip encrypts contents, not its directory.
+    Nothing here decrypts anything, because nothing here opens a member.
+    """
+    names = []
+    seen = set()
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for name in zf.namelist():
+                # The first component, with a trailing slash when it is a
+                # directory -- "one level" has to distinguish `docs/` holding
+                # forty files from a file that happens to be called `docs`.
+                head, sep, _ = name.lstrip("/").partition("/")
+                if not head:
+                    continue
+                entry = head + ("/" if sep else "")
+                if entry in seen:
+                    continue
+                seen.add(entry)
+                names.append(entry)
+                if len(names) >= limit:
+                    break
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+        # RuntimeError and ValueError are here for the same reason the rest of
+        # this module catches broadly: a malformed archive in a download
+        # directory must not take down a build over 1 686 other files.
+        return None
+    return names
+
+
 class MiscBuildReport:
     def __init__(self):
         self.files = 0
@@ -158,6 +219,9 @@ class MiscBuildReport:
         self.apps = collections.Counter()
         self.large_files = []
         self.sqlite_files = 0
+        self.archives = 0
+        self.archive_entries = 0
+        self.unlistable_archives = []
         self.edges = collections.Counter()
 
     def summary(self):
@@ -171,6 +235,9 @@ class MiscBuildReport:
             "apps": len(self.apps),
             "large_files": len(self.large_files),
             "sqlite_files": self.sqlite_files,
+            "archives": self.archives,
+            "archive_entries": self.archive_entries,
+            "unlistable_archives": len(self.unlistable_archives),
             "edges": dict(self.edges),
         }
 
@@ -262,6 +329,8 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
             store.upsert_edge(path, "format:%s" % detected, "SAME_FORMAT",
                               as_of, method="exact")
             report.edges["SAME_FORMAT"] += 1
+        if detected == "zip":
+            _archive_contains(store, path, as_of, report)
 
     for (app, month) in sorted(rollup):
         store.upsert_edge("rollup:%s:%s" % (app, month), "app:%s" % app,
@@ -269,3 +338,46 @@ def build(store, paths, as_of, report=None, rollup_after=ROLLUP_AFTER_DAYS):
         report.edges["BELONGS_TO_APP"] += 1
 
     return report
+
+
+def _archive_contains(store, path, as_of, report):
+    """ARCHIVE_CONTAINS: an archive and the top-level names it declares.
+
+    `method="exact"` (1.0), and that is the whole reason this relation is
+    allowed to exist at all: the archive's own directory states the names, so
+    nothing is inferred. Every other candidate relation here -- what is INSIDE
+    those members, which project a tarball came from -- would be a guess, and
+    the confidence scale exists so that guesses are marked rather than
+    avoided. This one is not a guess.
+
+    An entry is a node, not a string on the archive. It has no `path`: nothing
+    at `bundle.zip/notes.md` exists on the filesystem, and giving it one would
+    put a path into the graph that no `stat()` can confirm and that the mesh
+    would happily mirror as a file.
+
+    A rolled-up archive gets nothing, silently. Cold files have no individual
+    node, so there is no endpoint to attach to -- the same reason SAME_FORMAT
+    skips them, and visible in the report as archives < zip files.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    if size > ARCHIVE_MAX_BYTES:
+        report.unlistable_archives.append((path, "over %d bytes"
+                                           % ARCHIVE_MAX_BYTES))
+        return
+    entries = archive_entries(path)
+    if entries is None:
+        report.unlistable_archives.append((path, "not listable"))
+        return
+    report.archives += 1
+    for entry in entries:
+        key = "archive:%s!%s" % (path, entry)
+        store.upsert_node(key, kind="archive_entry", subtype="entry",
+                          path=None, title=entry,
+                          body="%s in %s" % (entry, os.path.basename(path)),
+                          as_of=as_of)
+        store.upsert_edge(path, key, "ARCHIVE_CONTAINS", as_of, method="exact")
+        report.edges["ARCHIVE_CONTAINS"] += 1
+        report.archive_entries += 1

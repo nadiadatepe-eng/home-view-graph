@@ -17,14 +17,17 @@ import collections
 import os
 from typing import Any, DefaultDict
 
+from ..config import home_root
+from ..corpus import known_extensions
 from ..incremental import hash_file
 from ..temporal import record_observation, refresh_datelist
-from .m1_extractors import extract
+from .m1_extractors import extract, file_mentions
 
 # Type for extract return value
 ExtractResult: type[dict[str, Any]] = dict[str, Any]
 
 MAX_REFS_PER_DOC = 40
+MAX_FILE_REFS_PER_DOC = 40
 
 
 class DocBuildReport:
@@ -40,6 +43,12 @@ class DocBuildReport:
         self.authors: set[str] = set()
         self.empty_text: list[tuple[str, str]] = []
         self.problems: list[tuple[str, list[str]]] = []
+        # Named a file, and no file of that name is in this store. Counted
+        # rather than dropped: a run where every mention is unresolved is a
+        # resolver that stopped working, and it looks identical to a corpus
+        # whose documents happen not to cite each other unless the number is
+        # somewhere a reader can see it.
+        self.unresolved_refs = 0
 
     def summary(self) -> dict[str, int | dict[str, int]]:
         return {
@@ -49,6 +58,7 @@ class DocBuildReport:
             "status": dict(self.status),
             "authors": len(self.authors),
             "empty_text": len(self.empty_text),
+            "unresolved_refs": self.unresolved_refs,
             "edges": dict(self.edges),
         }
 
@@ -155,8 +165,63 @@ def build(store, paths, as_of, report: DocBuildReport | None = None) -> DocBuild
                 store.upsert_edge(path, key, "CITES", as_of, method="exact")
                 report.edges["CITES"] += 1
 
+        _references_file(store, path, data["text"], as_of, report)
+
     _same_author(store, as_of, report)
     return report
+
+
+def _resolve_mention(src, token, root):
+    """Where a path written in prose could point, in order of confidence.
+
+    Three anchors, because prose uses all three and picking one would make the
+    other two silently unresolvable: `~/Documents/review.odt` is written from
+    the home directory, `figures/plot.pdf` from the document's own directory,
+    and `Documents/review.odt` from the corpus root. The order is fixed and
+    the first hit wins, so a token that could mean two files always means the
+    same one of them.
+
+    Returns candidates, not a decision. Whether any of them is a node is the
+    caller's question -- this function never touches the filesystem, which is
+    also why it cannot be fooled by a file that exists on disk but was
+    excluded from the corpus.
+    """
+    if token.startswith("~"):
+        return [os.path.expanduser(token)]
+    if os.path.isabs(token):
+        return [os.path.normpath(token)]
+    return [os.path.normpath(os.path.join(os.path.dirname(src), token)),
+            os.path.normpath(os.path.join(root, token))]
+
+
+def _references_file(store, path, text, as_of, report):
+    """REFERENCES_FILE: a document names another file, and that file is here.
+
+    The M1 counterpart to M3's MENTIONS_PATH, and deliberately the same shape:
+    an edge only when the mention resolves to a node that already exists in
+    this store. `upsert_edge` would refuse an endpoint that does not exist, so
+    the alternative is not a weaker edge but a crash -- and the interesting
+    case is the one where nothing is written at all. A document naming
+    `appendix-b.pdf` that was never written must produce no edge and no node;
+    inventing a nearest match is worse than the gap it fills.
+
+    `method="mention"` (0.5), the same weight M3 gives the same evidence. The
+    document says the name; nothing checked that the file it names is the file
+    that was meant.
+    """
+    root = home_root()
+    for token in file_mentions(text, known_extensions(),
+                               limit=MAX_FILE_REFS_PER_DOC):
+        for candidate in _resolve_mention(path, token, root):
+            if candidate != path and store.node_id(candidate):
+                store.upsert_edge(path, candidate, "REFERENCES_FILE", as_of,
+                                  method="mention")
+                report.edges["REFERENCES_FILE"] += 1
+                break
+        else:
+            report.unresolved_refs += 1
+
+
 
 
 def _same_author(store, as_of, report):

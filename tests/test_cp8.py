@@ -296,6 +296,7 @@ def run(tmp, syn):
 
     # -- refusals ---------------------------------------------------------
     t_refusals(tmp, root, cfg, paths_b)
+    t_m1_references_equivalence(tmp, cfg)
     t_mesh_forgets(tmp, root, cfg)
 
     failed = [n for n, ok, _ in results if not ok]
@@ -589,6 +590,79 @@ def t_refusals(tmp, root, cfg, paths):
         env=dict(os.environ, HOMEGRAPH_CONFIG=cfg.path))
     check("the CLI exits 2 on a refused update", proc.returncode == 2,
           "exit %d" % proc.returncode)
+
+
+def t_m1_references_equivalence(tmp, cfg):
+    """M1 is corpus-dependent too, and `update` has to widen for it.
+
+    REFERENCES_FILE only draws an edge when the file named in prose is already
+    a node, so a document's own graph depends on which OTHER documents exist.
+    That is the same property `_m3_affected` exists for, and M1 shipped without
+    it: the neighbour was never rebuilt, so an update produced a store missing
+    an edge a full rebuild draws, reported success, and never recovered on any
+    later run.
+
+    A corpus of its own rather than a check bolted onto the M3 run above: the
+    fixture's `evolve()` moves markdown, and this needs a DOCUMENT to appear.
+    Small on purpose -- the claim is the equivalence, not the size.
+    """
+    from homegraph.models.m1_build import build as m1_build
+
+    root = os.path.join(tmp, "m1corpus", "Documents")
+    os.makedirs(root, exist_ok=True)
+    naming = os.path.join(root, "naming.tex")
+    with open(naming, "w") as fh:
+        fh.write("\\title{Naming}\n"
+                 "The derivations are in appendix.tex, once it exists.\n")
+    other = os.path.join(root, "unrelated.tex")
+    with open(other, "w") as fh:
+        fh.write("\\title{Unrelated}\nNothing is named here.\n")
+
+    paths_a = sorted([naming, other])
+    updated = os.path.join(tmp, "m1-updated.db")
+    with Store(updated, model="m1") as s:
+        m1_build(s, paths_a, AS_OF_A)
+        s.rebuild_fts()
+        up.write_fingerprint(s, up.fingerprint(cfg))
+
+    # The target arrives. Nothing about `naming.tex` changed on disk.
+    appendix = os.path.join(root, "appendix.tex")
+    with open(appendix, "w") as fh:
+        fh.write("\\title{Appendix}\nThe derivations.\n")
+    paths_b = sorted(paths_a + [appendix])
+
+    full = os.path.join(tmp, "m1-full.db")
+    with Store(full, model="m1") as s:
+        m1_build(s, paths_b, AS_OF_B)
+        s.rebuild_fts()
+
+    failure = None
+    with Store(updated, model="m1") as s:
+        try:
+            report = up.update(s, "m1", paths_b, AS_OF_B, cfg)
+        except Exception as exc:                                # noqa: BLE001
+            failure = "raised:%s" % type(exc).__name__
+            report = None
+    check("the M1 update completed without raising", failure is None,
+          failure or "no exception")
+
+    ref_full = {e for e in edges_of(full) if e[1] == "REFERENCES_FILE"}
+    ref_upd = {e for e in edges_of(updated) if e[1] == "REFERENCES_FILE"}
+    # The reference build has to have the edge, or the equivalence below is an
+    # agreement between two stores that both have nothing.
+    check("a full M1 rebuild draws the reference edge", len(ref_full) == 1,
+          "%d REFERENCES_FILE edge(s) after a full build" % len(ref_full))
+    check("updated M1 edges equal a full rebuild's",
+          edges_of(updated) == edges_of(full) and ref_upd == ref_full,
+          "%d edge(s) after update, %d after rebuild; missing %s"
+          % (len(edges_of(updated)), len(edges_of(full)),
+             sorted(os.path.basename(e[0]) for e in ref_full - ref_upd)
+             or "none"))
+    if report is not None:
+        check("the neighbour was rebuilt, not just the new file",
+              report.changes.get("added") == 1 and report.neighbours >= 1,
+              "added=%s neighbours=%s"
+              % (report.changes.get("added"), report.neighbours))
 
 
 def t_mesh_forgets(tmp, root, cfg):

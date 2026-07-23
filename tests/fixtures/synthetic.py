@@ -108,6 +108,23 @@ def _zip_odt(root, rel, pages=3, creator="", heading="Heading"):
     return path
 
 
+def _zip_bundle(root, rel, members):
+    """A plain zip holding `members`. Deterministic: fixed dates, no clock.
+
+    Members carry content because an archive of empty files still lists, and
+    the point of the entry list is that it is read from the central directory
+    without any member being opened.
+    """
+    path = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with zipfile.ZipFile(path, "w") as z:
+        for name in members:
+            info = zipfile.ZipInfo(name, date_time=(2026, 7, 1, 12, 0, 0))
+            z.writestr(info, "contents of %s\n" % name)
+    os.utime(path, (FIXED_MTIME, FIXED_MTIME))
+    return path
+
+
 def _pdf(root, rel, title=None, author=None, pages=1, text=None,
          encrypted=False, utf16_title=False, doi=None, fonts=True):
     """A small but genuinely parseable PDF.
@@ -329,6 +346,59 @@ DOCUMENT_FASIT = [
      "Quarterly Report", "an ordinary docx, as the control"),
 ]
 
+# CP-3. Every REFERENCES_FILE edge M1 must draw, and nothing else. All three
+# targets are DOCUMENTS: an edge inside one model can only reach that model's
+# own nodes, and a document naming a note is the mesh's MENTIONS_FILE, not
+# this. The three anchors prose uses are all exercised -- root-relative,
+# sibling-relative, and one that resolves to neither.
+REFERENCES_FILE_FASIT = frozenset({
+    ("Documents/paper.tex", "Documents/review.odt"),      # root-relative
+    ("Documents/report.docx", "Documents/review.odt"),    # root-relative
+    ("Documents/report.docx", "Documents/paper.tex"),     # sibling-relative
+})
+# Named in paper.tex, never written. A graph that resolves this to the nearest
+# existing .pdf is worse than one with a gap.
+REFERENCES_FILE_PHANTOM = "Documents/appendix-b.pdf"
+# A URL whose tail looks exactly like a path. It appears in paper.tex, and no
+# part of it may become a mention -- checked against the extractor directly,
+# because the resolver would refuse this one anyway and a gate that passes for
+# the wrong reason is the shape this project keeps finding.
+REFERENCES_FILE_URL = "https://example.org/Documents/review.odt"
+
+# CP-5. What ARCHIVE_CONTAINS must say, one level deep. Read off the zip that
+# is written below, by hand: three top-level names out of four members, with
+# `src/` standing for the two files inside it.
+ARCHIVE_FASIT = {
+    "proj/bundle.zip": ("README", "notes.md", "src/"),
+}
+# A PK header and nothing behind it. It must be COUNTED as unlistable, not
+# skipped: an archive that cannot be opened and an archive with no members
+# both produce zero edges, and only one of them is a defect.
+ARCHIVE_UNLISTABLE = ("proj/corrupt.zip",)
+# Gzip: an archive by magic number, with no member list to read without
+# decompressing it. Zero entries, and not an error either.
+ARCHIVE_NOT_LISTED = ("proj/logs.gz",)
+
+# CP-6. Every CITES_CODE edge, with the method each must carry. `code` is a
+# corpus category with no store, so these point at inventory stubs.
+CITES_CODE_FASIT = frozenset({
+    ("notes/dev/code-map.md", "proj/api/v1/[rpc].ts", "mention"),
+    ("notes/dev/code-map.md", "proj/tests/suite.test.mjs", "basename"),
+    ("notes/dev/code-map.md", "proj/api/live_runner.js", "basename"),
+})
+# Named nowhere. Its name occurs in the note only INSIDE `live_runner.js`, and
+# containment is not naming: measured on the real corpus, 89 of 1 253 basename
+# edges rested on exactly this shape (`runner.py` inside `live_runner.py`).
+CITES_CODE_GLUED = "proj/api/runner.js"
+# Written in the same note, and deliberately NOT also named by its full path:
+# a file named both ways draws its edge from the path, and the uniqueness
+# condition below would then be untestable -- dropping it changes nothing,
+# which is what the mutation harness reported the first time this was written.
+# Two files are called handler.js, so the bare name names neither.
+CITES_CODE_AMBIGUOUS = "handler.js"
+# Also written there, and never created.
+CITES_CODE_PHANTOM = "nowhere.js"
+
 # CP-3. Which documents can yield body text at all, and which cannot -- with
 # the reason each empty one must report. `all()` over an empty list is True, so
 # "every empty document says why" needs a non-empty declared set to mean
@@ -362,7 +432,7 @@ LARGE_FILES = (".appstate/large/blob-a.bin",
 # eight declared `misc` cases, the forty cold application-state files, and the
 # three large blobs. A corpus that silently grows -- an exclusion layer switched
 # off -- otherwise reads as a bigger, greener build.
-MISC_TOTAL = 8 + 40 + 3
+MISC_TOTAL = 8 + 3 + 40 + 3   # declared misc, the three archives, cold, large
 
 # CP-6. Every (note, image) pair FIGURE_FOR must produce, and nothing else.
 # `03122025_9.png` is named in experiments.md and does not exist; a graph that
@@ -531,8 +601,12 @@ def build(root, clean=True):
 
     # -- documents ---------------------------------------------------------
     _zip_docx(root, "Documents/report.docx", title="Quarterly Report",
-              creator="A. Author")
-    case("document", "docx", False, "Documents/report.docx", "ordinary docx")
+              creator="A. Author",
+              body="Body text. Supersedes Documents/review.odt, and the "
+                   "method is unchanged from paper.tex.")
+    case("document", "docx", False, "Documents/report.docx",
+         "ordinary docx; names one document by root-relative path and one by "
+         "bare sibling name -- both must become REFERENCES_FILE")
     _zip_odt(root, "Documents/review.odt", pages=3, creator="")
     case("document", "odt", True, "Documents/review.odt",
          "ODF page count is an attribute, not element text; no author set")
@@ -557,10 +631,17 @@ def build(root, clean=True):
     _write(root, "Documents/paper.tex",
            "\\title{Graded Access\\\\ and the Gap}\n"
            "\\author{N. Writer\\\\ \\small Independent}\n"
-           "\\begin{document}\\section{Intro}\\cite{key1,key2}\\end{document}\n")
+           "\\begin{document}\\section{Intro}\\cite{key1,key2}\n"
+           "The measurements are tabulated in Documents/review.odt.\n"
+           "Derivations were promised in Documents/appendix-b.pdf and never "
+           "written.\n"
+           "A preprint sits at " + REFERENCES_FILE_URL + " -- a URL, not a "
+           "path.\n"
+           "\\end{document}\n")
     case("document", "tex", True, "Documents/paper.tex",
          "LaTeX author carries a line break and an affiliation that is not "
-         "part of the name")
+         "part of the name; also names one document that exists, one that "
+         "never did, and a URL whose tail looks like a path")
     _write(root, "Documents/broken.docx", b"PK\x03\x04not really a zip",
            binary=True)
     case("document", "docx", True, "Documents/broken.docx",
@@ -621,12 +702,57 @@ def build(root, clean=True):
     # -- code --------------------------------------------------------------
     _write(root, "proj/api/handler.js", "export const x = 1;\n")
     case("code", "-", False, "proj/api/handler.js", "own source")
+    _write(root, "proj/web/handler.js", "export const y = 2;\n")
+    _write(root, "proj/api/live_runner.js", "export const run = 3;\n")
+    _write(root, "proj/api/runner.js", "export const r = 4;\n")
+    case("code", "-", True, "proj/web/handler.js",
+         "a SECOND handler.js: the bare name now names neither, which is what "
+         "CITES_CODE's uniqueness condition has to notice")
+    case("code", "-", True, "proj/api/live_runner.js",
+         "the note names THIS file; its name contains runner.js, which is a "
+         "different file entirely")
+    case("code", "-", True, "proj/api/runner.js",
+         "named nowhere in the corpus -- its name occurs only inside "
+         "live_runner.js, and a substring is not a mention")
     _write(root, "proj/api/v1/[rpc].ts", "export default 1;\n")
     case("code", "-", True, "proj/api/v1/[rpc].ts",
          "square brackets break naive glob matching")
     _write(root, "proj/tests/suite.test.mjs", "test('x', () => {});\n")
     case("code", "-", True, "proj/tests/suite.test.mjs",
          "tests are code, not excluded")
+
+    # -- prose that names source files -------------------------------------
+    #
+    # M5's CITES_CODE needs a note that names code three ways: by full path,
+    # by a unique bare name, and by a name two files share. No markdown link
+    # syntax anywhere in it -- these are mentions in prose, and a link would
+    # make M3 resolve them as MENTIONS_PATH before the mesh ever saw them.
+    _write(root, "notes/dev/code-map.md",
+           "# Request path\n\n"
+           "It starts in proj/api/v1/[rpc].ts and is covered by\n"
+           "suite.test.mjs. Saying handler.js on its own is no longer enough\n"
+           "since the web tree grew one too. nowhere.js was never written.\n"
+           "The loop itself lives in live_runner.js.\n")
+    case("markdown", "note", True, "notes/dev/code-map.md",
+         "names code by full path, by unique basename, by an ambiguous "
+         "basename and by a name that does not exist")
+
+    # -- archives ----------------------------------------------------------
+    _zip_bundle(root, "proj/bundle.zip",
+                ("README", "notes.md", "src/main.py", "src/util.py"))
+    case("misc", "unknown", True, "proj/bundle.zip",
+         "a real zip: four members, three top-level names -- ARCHIVE_CONTAINS "
+         "is one level, so src/ is one entry and not two")
+    _write(root, "proj/corrupt.zip", b"PK\x03\x04 and then nothing at all",
+           binary=True)
+    case("misc", "unknown", True, "proj/corrupt.zip",
+         "the zip magic number with no central directory behind it: counted "
+         "as unlistable, never a traceback")
+    _write(root, "proj/logs.gz", b"\x1f\x8b\x08\x00" + b"\x00" * 16,
+           binary=True)
+    case("misc", "unknown", True, "proj/logs.gz",
+         "gzip: an archive with no member list to read without decompressing "
+         "it, so no entries and no error either")
 
     # -- misc --------------------------------------------------------------
     _write(root, "HORMA", "ASCII prose with no extension at all.\n")
