@@ -1225,6 +1225,33 @@ checked against an independent recount rather than trusted. CP-12 also asserts
 the consequence directly: **user text is carried verbatim, so a title naming
 the old root still names it after import.**
 
+### Measured on the real corpus, 2026-07-23
+
+All four models, 8 320 nodes and 11 109 edges:
+
+| level | artifact | export | what it carries |
+| --- | --- | --- | --- |
+| `structure` | 226 kB | 0.9 s | paths, titles, every edge |
+| `full` | 1 481 kB | 3.2 s | the above plus 5.9 M characters of file text |
+| `shape` | 237 kB | 1.1 s | hashed names; topology only |
+
+Imported under `/media/ekstern/arkiv-2027` in 0.7 s: all 8 320 nodes, all
+11 109 edges, **zero carrying the old root**, 7 551 paths under the new one,
+and the rebuilt index answers queries.
+
+Two numbers worth keeping because neither was predicted:
+
+  * **`shape` is BIGGER than `structure`** -- 237 kB against 226 kB. Hashes
+    are high-entropy and do not compress; real paths share prefixes and
+    compress very well. The level that carries less is the larger file.
+  * **`structure` contains the string `/home` 638 times, and the structural
+    gate is still green.** Every one of them sits inside a portable key:
+    a directory is literally named `-home-<user>`, so the root's name is a
+    COMPONENT of a path under the root. This is the limitation section 27
+    describes, confirmed on real data rather than argued from a fixture --
+    and `shape` is the only level where it disappears (0 occurrences of
+    `/home`, `.md`, `.py` or the user's name).
+
 ### What CP-12's mutation harness found, which is the part worth keeping
 
 Six mutations survived the first run, and none of them were about the feature:
