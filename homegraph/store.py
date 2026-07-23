@@ -313,6 +313,52 @@ class Store:
              as_of, row["id"]))
         return int(row["id"])
 
+    def restore_node_history(self, node_key: str, *, first_seen: str,
+                             last_seen: str,
+                             activity_datelist: str | None = None,
+                             datelist_int: int | None = None,
+                             datelist_anchor: str | None = None) -> None:
+        """Put back dates `upsert_node` cannot set. Import is the only caller.
+
+        `upsert_node` stamps `as_of` on purpose: a builder knows when it ran
+        and nothing else. An import knows something a builder never does --
+        when these nodes were FIRST seen, on the machine that saw them -- and
+        throwing that away would make a round trip lose exactly the history
+        the versioned schema exists to keep.
+
+        Narrow on purpose, and named so it cannot be mistaken for a general
+        way to rewrite dates. `datelist_anchor` travels with `datelist_int`
+        because a mask means "the anchor minus i days", and a mask restored
+        against a different anchor is a confident wrong answer -- the defect
+        `_temporal_cohort` was fixed for.
+        """
+        self.db.execute(
+            """UPDATE nodes SET first_seen=?, last_seen=?,
+                                activity_datelist=COALESCE(?, activity_datelist),
+                                datelist_int=COALESCE(?, datelist_int),
+                                datelist_anchor=COALESCE(?, datelist_anchor)
+               WHERE node_key=?""",
+            (first_seen, last_seen, activity_datelist, datelist_int,
+             datelist_anchor, node_key))
+
+    def restore_edge_history(self, src_key: str, dst_key: str, rel: str, *,
+                             first_seen: str, last_seen: str) -> None:
+        """The same, for an edge. `edges_as_of` is the whole point of the pair.
+
+        An edge whose `first_seen` was reset to import day answers "no" to
+        every question about the past, while looking like a perfectly ordinary
+        edge. Time travel is one predicate in this system; this keeps the two
+        numbers it reads honest across a machine boundary.
+        """
+        src, dst = self.node_id(src_key), self.node_id(dst_key)
+        if src is None or dst is None:
+            raise KeyError("edge endpoints must exist: %r -> %r"
+                           % (src_key, dst_key))
+        self.db.execute(
+            "UPDATE edges SET first_seen=?, last_seen=? "
+            "WHERE src=? AND dst=? AND rel=?",
+            (first_seen, last_seen, src, dst, rel))
+
     def node_id(self, node_key: str) -> int | None:
         row = self.db.execute("SELECT id FROM nodes WHERE node_key = ?",
                               (node_key,)).fetchone()
