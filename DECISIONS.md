@@ -437,6 +437,47 @@ so the gate is named for the syscall rather than for the disk.
 
 ---
 
+## 20 · Unmutated area is where the empty gates are, so it is measured
+
+The adversarial audit's most useful finding was not any single check that
+could not fail. It was where they all were: among the checks no mutation had
+ever been aimed at. A check that cannot fail cannot have a mutation written
+against it, so the two defects co-locate by construction.
+
+`tests/mutation_coverage.py` reports that area. A check counts as covered when
+some mutation names it in `expected` — the same match the harnesses use to
+attribute a kill. Deliberately strict: a check that happens to go red under an
+unrelated mutation is not evidence that anyone chose to test it.
+
+It was 37% (104 of 281) when first measured. Writing mutations for the
+load-bearing half took it to 57% (163 of 286), and every batch found something
+the checkpoint had been reporting as green:
+
+- **CP-3** — `doctype is filterable in the store` counted `DISTINCT subtype`,
+  which carries `doctype/status`, so four distinct *strings* was a bar one
+  doctype cleared wearing four status suffixes.
+- **CP-2** — `RE_INLINE_CODE` is DOTALL and matches a backtick run not followed
+  by another backtick, so it was already blanking every ``` fence and deleting
+  `RE_FENCE` changed nothing. A `~~~` fence is the only one only `RE_FENCE` can
+  blank. Separately, nothing tested that blanking preserves length, which is
+  the entire reason it pads rather than deletes.
+- **CP-1** — the window gate tested a date 40 days out, where an off-by-one
+  does not live; day 32 now has its own check. The raw-score trap used −999,
+  which puts the same node first under either scheme, so a fusion that read
+  scores passed it.
+- **CP-4** — `malformed dates flagged, not raised` counted rows in the answer
+  key whose declared kind was `malformed` and compared that to a number in the
+  spec: two constants agreeing about a third. It now parses them.
+- **CP-6** — `every tool declares a schema` read the `TOOLS` constant, not the
+  `tools/list` response, so a server that stripped schemas on the way out was
+  green. And `a malformed line does not kill the session` was unwrapped, so the
+  mutation that kills the session was scored as a crash rather than a failure.
+
+Coverage is a map, not a score. 100% would mean every check has one mutation
+aimed at it — not that every way the code can be wrong has been tried.
+
+---
+
 ## 14 · Deferred
 
 - **Codex review** -- batched to CP-FINAL by the author's decision on 2026-07-22,

@@ -648,10 +648,19 @@ def t_mcp(tmp, paths, spec):
     check("all four mesh tools are advertised",
           names == {"mesh_search", "mesh_neighbors", "mesh_path",
                     "mesh_explain"}, str(sorted(names)))
+    # Read off the wire, not off the constant. Checking TOOLS proves the
+    # module-level list is well formed and says nothing about what a client
+    # receives: a `tools/list` that strips `inputSchema` on the way out left
+    # this green, and an agent with no schema cannot call anything correctly.
+    advertised = listed["result"].get("tools", [])
     check("every tool declares a schema",
-          TOOLS and all(t.get("inputSchema", {}).get("properties")
-                        for t in TOOLS),
-          "%d tool(s)" % len(TOOLS))
+          advertised and len(advertised) == len(TOOLS)
+          and all(t.get("inputSchema", {}).get("properties")
+                  for t in advertised),
+          "%d of %d advertised tool(s) carry a schema"
+          % (sum(1 for t in advertised
+                 if t.get("inputSchema", {}).get("properties")),
+             len(advertised)))
 
     call = handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                    "params": {"name": "mesh_search",
@@ -693,10 +702,23 @@ def t_mcp(tmp, paths, spec):
                          "method": "notifications/initialized"})
     check("notifications get no reply", notice is None, "returned None")
 
+    # Wrapped, because the failure mode under test is a session that dies. An
+    # unwrapped call turns "the loop stopped" into an exception that takes the
+    # whole checkpoint with it, and the mutation harness scores that as
+    # detected-only-by-a-crash: the weakest signal there is, and one that
+    # cannot distinguish this gate from any other.
     stdout = io.StringIO()
-    srv.serve(io.StringIO('{"jsonrpc":"2.0","id":9,"method":"ping"}\n'
-                          'not json at all\n'), stdout)
-    lines = [json.loads(x) for x in stdout.getvalue().splitlines()]
+    try:
+        srv.serve(io.StringIO('{"jsonrpc":"2.0","id":9,"method":"ping"}\n'
+                              'not json at all\n'), stdout)
+    except Exception as exc:                                    # noqa: BLE001
+        print("   serve() raised: %r" % exc)
+    lines = []
+    for x in stdout.getvalue().splitlines():
+        try:
+            lines.append(json.loads(x))
+        except json.JSONDecodeError:
+            lines.append({"id": None, "error": {"code": None}})
     check("a malformed line does not kill the session",
           len(lines) == 2 and lines[0]["id"] == 9
           and lines[1]["error"]["code"] == -32700,

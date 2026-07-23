@@ -125,6 +125,21 @@ def t_search_says_no(tmp):
               any("embeddings are OFF" in w for w in sentence.warnings),
               "%d warning(s)" % len(sentence.warnings))
 
+        # The other warning, which had no gate at all. Deleting the stale-index
+        # branch outright left the whole suite green: a search over an index
+        # covering a fraction of the store returned its partial answer without
+        # a word. `fts_is_stale()` was checked; the fact that anyone is TOLD
+        # was not.
+        s.upsert_node("c", kind="file", title="added after the rebuild",
+                      body="corvid arrived late")
+        s.commit()
+        stale = hybrid_search(s, "corvid")
+        check("a search over a stale index says so",
+              any("results are incomplete" in w for w in stale.warnings),
+              "%d warning(s): %s" % (len(stale.warnings),
+                                     [w[:32] for w in stale.warnings]))
+        s.rebuild_fts()
+
         check("embeddings are off by default", s.embeddings is None, "")
         try:
             Store(os.path.join(tmp, "bad.db"), embeddings={"provider": "x"})
@@ -160,7 +175,12 @@ def t_rrf():
 
     # Raw scores from different retrievers are not commensurable. RRF must not
     # read them at all -- the field is present here purely as a trap.
-    lex3 = [{"node_id": 1, "score": -999.0}, {"node_id": 2, "score": 0.0001}]
+    #
+    # The score used to be -999.0, which is a trap that springs the wrong way:
+    # summing raw scores ALSO puts node 2 first, so a fusion that read them
+    # produced the expected order and the gate stayed green. It has to be a
+    # score large enough that reading it would change the answer.
+    lex3 = [{"node_id": 1, "score": 999.0}, {"node_id": 2, "score": 0.0001}]
     vec3 = [{"node_id": 2, "score": 0.99}]
     order3 = [h["node_id"] for h in rrf_fuse({"fts": lex3, "vector": vec3})]
     check("RRF ignores incoming raw scores", order3 == [2, 1],
@@ -268,6 +288,22 @@ def t_datelist():
     outside = [anchor - timedelta(days=40)]
     check("dates outside the 32-day window are dropped",
           temporal.encode_datelist(outside, anchor) == 0, "mask 0")
+
+    # 40 days out is not where an off-by-one lives. Widening the comparison to
+    # `delta <= WINDOW_DAYS` left the check above green -- 40 is still out --
+    # while day 32 started setting bit 32 and the mask stopped being 32 bits
+    # wide. The boundary is the only place worth testing on a bounded window.
+    edge_in = temporal.encode_datelist(
+        [anchor - timedelta(days=temporal.WINDOW_DAYS - 1)], anchor)
+    edge_out = temporal.encode_datelist(
+        [anchor - timedelta(days=temporal.WINDOW_DAYS)], anchor)
+    check("the window boundary is exact: day 31 in, day 32 out",
+          edge_in == 1 << (temporal.WINDOW_DAYS - 1) and edge_out == 0,
+          "day %d -> %d, day %d -> %d"
+          % (temporal.WINDOW_DAYS - 1, edge_in, temporal.WINDOW_DAYS, edge_out))
+    check("the mask never exceeds its declared width",
+          edge_in.bit_length() <= temporal.WINDOW_DAYS,
+          "%d bits" % edge_in.bit_length())
 
     a = temporal.encode_datelist([anchor, anchor - timedelta(days=1)], anchor)
     b = temporal.encode_datelist([anchor - timedelta(days=1),

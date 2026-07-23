@@ -185,10 +185,22 @@ def t_filename_fasit(spec):
           "%d/%d correct%s" % (len(gold) - len(wrong), len(gold),
                                "" if not wrong else "  %s" % wrong[:2]))
 
+    # Read from the parser, not from the key. The previous version counted
+    # rows in the answer file whose declared kind was `malformed` and compared
+    # that to a number in the spec -- two constants agreeing about a third.
+    # A parser that raised on every malformed name passed it unchanged, which
+    # is the exact behaviour the check is named after.
     malformed = [rel for rel, want in gold if want["kind"] == "malformed"]
+    parsed = {rel: parse(rel) for rel in malformed}
+    raised = [rel for rel, got in parsed.items()
+              if str(got.get("kind", "")).startswith("raised:")]
+    unflagged = [rel for rel, got in parsed.items()
+                 if got.get("kind") != "malformed"]
     check("malformed dates flagged, not raised",
-          len(malformed) == spec["malformed"] and spec["malformed"] > 0,
-          "%d invalid name(s), all parsed without exception" % len(malformed))
+          len(malformed) == spec["malformed"] and spec["malformed"] > 0
+          and not raised and not unflagged,
+          "%d invalid name(s); %d raised, %d not flagged"
+          % (len(malformed), len(raised), len(unflagged)))
 
     # The ambiguous one, called out because it is the only row where the
     # obvious reading is wrong and nothing would look broken.

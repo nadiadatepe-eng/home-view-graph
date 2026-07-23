@@ -25,6 +25,59 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    # -- what M2 builds out of names alone --------------------------------
+    ("collections are counted but never become nodes",
+     "homegraph/models/m2_build.py",
+     '        store.upsert_node("collection:%s" % coll, kind="collection",\n'
+     '                          subtype="collection", title=coll, body=coll,\n'
+     "                          as_of=as_of)",
+     "        pass  # mutated: collections exist only in the report",
+     "collections become nodes"),
+
+    ("every image lands in one collection",
+     "homegraph/models/m2_build.py",
+     "        coll = collection_of(path, roots)\n"
+     "        report.collections[coll] += 1",
+     '        coll = "all"  # mutated: one bucket for everything\n'
+     "        report.collections[coll] += 1",
+     "collection member counts match the key"),
+
+    # A series that admits any date stops being a series: the whole claim is
+    # that the same stem on a DIFFERENT date is a different group.
+    ("every image is folded into a single series",
+     "homegraph/models/m2_build.py",
+     '            key = "series:%s/%s" % (coll, info.series_stem)\n'
+     "            report.series[key] += 1",
+     '            key = "series:any"  # mutated: one series for everything\n'
+     "            report.series[key] += 1",
+     "the declared series groups as one"),
+
+    ("likely copies are merged into one node instead of linked",
+     "homegraph/models/m2_build.py",
+     "    _link_copies(store, infos, as_of, report)",
+     "    pass  # mutated: no LIKELY_COPY edge is ever written",
+     "LIKELY_COPY edges exist"),
+
+    # The invariant M2 is named for. `content_hash=None` is not an oversight:
+    # a hash means the file was read, and M2 must never read one.
+    ("M2 starts hashing the images it indexes",
+     "homegraph/models/m2_build.py",
+     "            size=st[\"size\"], mtime=st[\"mtime\"], content_hash=None, as_of=as_of)",
+     "            size=st[\"size\"], mtime=st[\"mtime\"],  # mutated: reads the file\n"
+     "            content_hash=__import__('hashlib').sha256(\n"
+     "                open(path, 'rb').read()).hexdigest(), as_of=as_of)",
+     "audit hook saw no image opened"),
+
+    ("a malformed date raises instead of being flagged",
+     "homegraph/models/m2_images.py",
+     "        m = self.re_malformed.search(work)\n"
+     "        if m:\n"
+     "            info.malformed_date = True",
+     "        m = self.re_malformed.search(work)\n"
+     "        if m:  # mutated: an unparseable name is now fatal\n"
+     "            raise ValueError('malformed date in %s' % work)",
+     "malformed dates flagged, not raised"),
+
     ("build actually reads an image",
      "homegraph/models/m2_build.py",
      "        info = parser.parse(path)\n        st = stat_only(path)",

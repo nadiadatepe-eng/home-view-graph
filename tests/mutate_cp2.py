@@ -23,6 +23,90 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    # -- code spans: the finding this model was rewritten around ----------
+    #
+    # DECISIONS.md section 7 exists because every "broken" link in the real
+    # wiki/ turned out to be inside backticks, documenting the syntax. The two
+    # gates that hold that line had no mutation against them until now.
+    ("inline code stops being blanked",
+     "homegraph/models/m3_markdown.py",
+     "    return RE_INLINE_CODE.sub(blank, RE_FENCE.sub(blank, text))",
+     "    return RE_FENCE.sub(blank, text)  # mutated: `[[beta]]` is a link",
+     "inline code span is not a link"),
+
+    # Dropping the fence pass entirely. This survived until the fixture gained
+    # a `~~~` fence: RE_INLINE_CODE is DOTALL and matches a backtick run not
+    # followed by another backtick, so it was already blanking every ``` fence
+    # on its own and RE_FENCE was covered by an overlap rather than tested.
+    ("fenced blocks stop being blanked",
+     "homegraph/models/m3_markdown.py",
+     "    return RE_INLINE_CODE.sub(blank, RE_FENCE.sub(blank, text))",
+     "    return RE_INLINE_CODE.sub(blank, text)  # mutated: fences are links",
+     "a tilde fence is not a link either"),
+
+    # Blanking with the empty string instead of spaces. The link list is
+    # identical and every offset after a code span is wrong -- the failure the
+    # same-length rule exists to prevent, invisible to any link count.
+    ("code is deleted rather than blanked, so offsets shift",
+     "homegraph/models/m3_markdown.py",
+     '        return re.sub(r"\\S", " ", m.group(0))',
+     '        return ""  # mutated: same links, every later offset wrong',
+     "blanking preserves every offset"),
+
+    # The alias is stripped by the wikilink regex itself -- group 1 excludes
+    # `|` -- not by any later pass, so a mutation has to widen the capture.
+    ("the wikilink capture swallows the pipe alias",
+     "homegraph/models/m3_markdown.py",
+     'RE_WIKILINK = re.compile(r"!?\\[\\[([^\\]|#]+?)(?:#[^\\]|]*)?(?:\\|[^\\]]*)?\\]\\]")',
+     'RE_WIKILINK = re.compile(r"!?\\[\\[([^\\]#]+?)(?:#[^\\]|]*)?\\]\\]")'
+     "  # mutated: alias kept",
+     "real links survive"),
+
+    # -- what the build produces ------------------------------------------
+    ("markdown files are read but not all stored",
+     "homegraph/models/m3_build.py",
+     "def build(store, paths, as_of, rules=None, report=None, index_paths=None):",
+     "def build(store, paths, as_of, rules=None, report=None, index_paths=None):\n"
+     "    paths = list(paths)[:-3]  # mutated: quietly drop the last three",
+     "every classified markdown file is a node in the graph"),
+
+    ("markdown loses an extension and the corpus shrinks",
+     "homegraph/rules/categories.toml",
+     'extensions = ["md", "markdown", "mdx"]',
+     'extensions = ["markdown", "mdx"]  # mutated: .md is no longer markdown',
+     "the markdown corpus is the declared size"),
+
+    ("broken links are folded in with the resolved ones",
+     "homegraph/models/m3_build.py",
+     '        "SELECT title FROM nodes WHERE kind=\'wikilink\' AND subtype=\'broken\' "',
+     '        "SELECT title FROM nodes WHERE kind=\'wikilink\' AND subtype=\'\' "'
+     "  # mutated",
+     "broken links are nodes, not dropped"),
+
+    # A stored backlink table is a second copy of the edge table that can
+    # disagree with it. The module docstring says so; nothing tested it.
+    ("backlinks get their own table, which can drift",
+     "homegraph/models/m3_build.py",
+     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\"):",
+     "def backlinks(store, node_key, rel=\"WIKILINKS_TO\"):\n"
+     "    store.db.execute(  # mutated: a second, drifting copy\n"
+     "        'CREATE TABLE IF NOT EXISTS backlink_cache (src TEXT, dst TEXT)')",
+     "backlinks are derived, not stored"),
+
+    ("hidden subtypes are hidden without saying so",
+     "homegraph/search.py",
+     '        warnings.append(\n'
+     '            "hiding subtype(s) %s; pass include_all=True to search everything."',
+     '        warnings.append(  # mutated: silent filtering\n'
+     '            "%s"',
+     "the hiding is announced"),
+
+    ("--all stops revealing what the filter hid",
+     "homegraph/search.py",
+     "    hidden = () if include_all else tuple(hidden_subtypes)",
+     "    hidden = tuple(hidden_subtypes)  # mutated: --all does nothing",
+     "--all reveals it"),
+
     ("code spans are not blanked",
      "homegraph/models/m3_markdown.py",
      "    return RE_INLINE_CODE.sub(blank, RE_FENCE.sub(blank, text))",

@@ -286,11 +286,21 @@ def t_graph(db, report):
         check("author nodes exist", authors > 0, "%d author(s)" % authors)
         check("CITES edges exist", report.edges.get("CITES", 0) > 0,
               "%d CITES" % report.edges.get("CITES", 0))
-        distinct = s.db.execute(
-            "SELECT COUNT(DISTINCT subtype) c FROM nodes "
-            "WHERE kind='document'").fetchone()["c"]
-        check("doctype is filterable in the store", distinct >= 4,
-              "%d distinct doctypes stored" % distinct)
+        # Not COUNT(DISTINCT subtype). The column carries `doctype/status` for
+        # anything that did not extract cleanly, so four distinct STRINGS is a
+        # bar that `document`, `document/corrupt`, `document/needs_ocr` and
+        # `document/encrypted` clear on their own -- one doctype wearing four
+        # status suffixes. A mutation that flattened every doctype to the word
+        # `document` left this gate green. What makes the column filterable is
+        # the doctype half, so that is what is compared, and against the set
+        # the build reports rather than against a number.
+        stored = {(r["subtype"] or "").split("/")[0] for r in s.db.execute(
+            "SELECT subtype FROM nodes WHERE kind='document'")}
+        expected = set(report.by_doctype)
+        check("doctype is filterable in the store",
+              len(stored) >= 4 and stored == expected,
+              "stored %s  expected %s"
+              % (sorted(stored), sorted(expected)))
         page = s.db.execute(
             "SELECT COUNT(*) c FROM nodes WHERE kind='section' "
             "AND body LIKE '%offset%'").fetchone()["c"]

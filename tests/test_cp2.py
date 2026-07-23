@@ -178,17 +178,38 @@ def t_code_spans():
             return {"wikilinks": ["raised:%s" % type(exc).__name__],
                     "tags": [], "frontmatter_problems": []}
 
+    # The tilde fence is not decoration. RE_INLINE_CODE is DOTALL and matches
+    # a run of backticks not followed by another backtick, which is exactly
+    # what a ``` fence opens with -- so inline blanking alone already swallows
+    # every backtick fence, and deleting RE_FENCE changed nothing any check
+    # could see. `~~~` is the one fence only RE_FENCE can blank, and it is
+    # what makes the two passes independently load-bearing.
     text = ("---\ntags: [a, b]\n---\n\n"
             "# Title\n\n"
             "A real link to [[alpha]] and a documented one: `[[beta]]`.\n\n"
             "```\nfenced [[gamma]] block\n```\n\n"
+            "~~~\ntilde-fenced [[epsilon]] block\n~~~\n\n"
             "See [[delta|an alias]] too.\n")
     d = extract(text)
     check("inline code span is not a link", "beta" not in d["wikilinks"],
           "wikilinks=%s" % d["wikilinks"])
     check("fenced block is not a link", "gamma" not in d["wikilinks"], "")
+    check("a tilde fence is not a link either",
+          "epsilon" not in d["wikilinks"], "wikilinks=%s" % d["wikilinks"])
     check("real links survive", d["wikilinks"] == ["alpha", "delta"],
           str(d["wikilinks"]))
+
+    # Same length, not removal. Every link offset downstream of a code span
+    # depends on it, and the link list is identical either way -- so no gate
+    # above can see the difference. DECISIONS.md section 7 states the rule;
+    # this is what holds it.
+    from homegraph.models.m3_markdown import blank_code
+    src = "a `code` b\n\n```\nfenced\n```\n\n~~~\ntilde\n~~~\n[[alpha]]\n"
+    blanked = blank_code(src)
+    check("blanking preserves every offset",
+          len(blanked) == len(src)
+          and blanked.index("[[alpha]]") == src.index("[[alpha]]"),
+          "%d chars in, %d out" % (len(src), len(blanked)))
     check("piped alias resolves to the target", "delta" in d["wikilinks"], "")
     check("frontmatter list parses", d["tags"] == ["a", "b"], str(d["tags"]))
 

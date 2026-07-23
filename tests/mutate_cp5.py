@@ -18,6 +18,75 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    # -- the barrier M4 exists behind -------------------------------------
+    #
+    # M4 reaches the widest part of the disk, so the claim that it stores
+    # filenames and schema and never contents is the one with real
+    # consequences. It had no mutation against it.
+    ("M4 starts storing file contents as the body",
+     "homegraph/models/m4_misc.py",
+     "        body = os.path.basename(path)",
+     "        body = os.path.basename(path)\n"
+     "        try:  # mutated: contents indexed\n"
+     "            body += ' ' + open(path, 'rb').read(4096).decode(\n"
+     "                'utf-8', 'replace')\n"
+     "        except OSError:\n"
+     "            pass",
+     "no secret body reaches the FTS index even when indexed"),
+
+    ("sqlite rows are read along with the schema",
+     "homegraph/models/m4_misc.py",
+     '                body += " | tables: " + ", ".join(tables[:40])',
+     '                body += " | tables: " + ", ".join(tables[:40])\n'
+     "                import sqlite3 as _s3  # mutated: rows indexed too\n"
+     "                _c = _s3.connect(path)\n"
+     "                for _t in tables[:5]:\n"
+     "                    body += ' ' + repr(_c.execute(\n"
+     "                        'SELECT * FROM \"%s\" LIMIT 5' % _t).fetchall())\n"
+     "                _c.close()",
+     "sqlite row contents never reach the index"),
+
+    ("the sqlite schema is read and then dropped",
+     "homegraph/models/m4_misc.py",
+     "            tables = sqlite_schema(path)",
+     "            tables = []  # mutated: schema never reaches the index",
+     "the schema did reach the index"),
+
+    # -- typing --------------------------------------------------------
+    ("content sniffing gives way to the extension",
+     "homegraph/models/m4_misc.py",
+     "def sniff(path, size=None):",
+     "def sniff(path, size=None):\n"
+     "    import os as _os  # mutated: extension is the answer again\n"
+     "    return _os.path.splitext(path)[1].lstrip('.').lower() or 'data'",
+     "magic numbers beat missing extensions"),
+
+    # -- rollup accounting ------------------------------------------------
+    ("rolled-up bytes are counted but not summed",
+     "homegraph/models/m4_misc.py",
+     '            slot["bytes"] += st.st_size',
+     '            slot["bytes"] += 0  # mutated: byte totals go to zero',
+     "rollup byte totals reconcile"),
+
+    ("warm files are rolled up along with the cold ones",
+     "homegraph/models/m4_misc.py",
+     "            report.rolled_up_files += 1\n            continue",
+     "            report.rolled_up_files += 1\n"
+     "            continue\n"
+     "        if True:  # mutated: nothing keeps an individual node\n"
+     "            rollup[(app, '0000-00')]['count'] += 1\n"
+     "            continue",
+     "warm files keep individual nodes"),
+
+    ("every row gets a label, and some get two",
+     "homegraph/corpus.py",
+     "    def classify(self, path: str, is_symlink: bool | None = None) -> str:\n"
+     "        return self.explain(path, is_symlink=is_symlink).label",
+     "    def classify(self, path: str, is_symlink: bool | None = None) -> str:\n"
+     "        d = self.explain(path, is_symlink=is_symlink)\n"
+     "        return d.label if d.label != 'misc' else 'misc '  # mutated",
+     "content-based typing, not extension"),
+
     ("extension beats magic number",
      "homegraph/models/m4_misc.py",
      "    for magic, subtype, detected in MAGIC:\n"

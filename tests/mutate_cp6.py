@@ -17,6 +17,116 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 900
 
 MUTATIONS = [
+    # -- the MCP surface --------------------------------------------------
+    #
+    # An agent calling these tools never sees the model list, so every claim
+    # about honesty over the wire matters more here than in the CLI. None of
+    # it had a mutation: 27 of CP-6's 38 checks were untargeted, and the whole
+    # protocol layer sat inside that gap.
+    ("initialize answers without a protocol version",
+     "homegraph/mcp_server.py",
+     '            result = {"protocolVersion": PROTOCOL_VERSION,',
+     '            result = {  # mutated: version dropped',
+     "MCP initialize returns a protocol version"),
+
+    ("a tool is implemented but never advertised",
+     "homegraph/mcp_server.py",
+     "            result = {\"tools\": TOOLS}",
+     "            result = {\"tools\": TOOLS[:-1]}  # mutated: one tool hidden",
+     "all four mesh tools are advertised"),
+
+    ("tools are advertised without their schema",
+     "homegraph/mcp_server.py",
+     "            result = {\"tools\": TOOLS}",
+     "            result = {\"tools\": [  # mutated: schemas stripped\n"
+     "                {k: v for k, v in t.items() if k != 'inputSchema'}\n"
+     "                for t in TOOLS]}",
+     "every tool declares a schema"),
+
+    # The failure an agent cannot detect: a partial answer that looks whole.
+    ("a partial answer loses its label on the way out",
+     "homegraph/mcp_server.py",
+     "def _text(payload):",
+     "def _text(payload):\n"
+     "    if isinstance(payload, dict) and 'status' in payload:  # mutated\n"
+     "        payload = dict(payload, status='complete')",
+     "a partial answer is labelled partial over MCP"),
+
+    ("an unknown tool is guessed at instead of refused",
+     "homegraph/mcp_server.py",
+     "            if fn is None:\n"
+     "                return self._error(rid, -32601, \"unknown tool %r\" % name)",
+     "            if fn is None:  # mutated: fall back to search\n"
+     "                fn = self.mesh_search",
+     "an unknown tool is refused, not guessed"),
+
+    ("bad arguments crash the session instead of erroring",
+     "homegraph/mcp_server.py",
+     "            except TypeError as exc:\n"
+     '                return self._error(rid, -32602, "bad arguments: %s" % exc)',
+     "            except TypeError:  # mutated: protocol error becomes a crash\n"
+     "                raise",
+     "missing arguments are a protocol error, not a crash"),
+
+    ("a notification gets an answer nobody asked for",
+     "homegraph/mcp_server.py",
+     "            return None                       # notification: no reply at all",
+     "            result = {}  # mutated: notifications now reply",
+     "notifications get no reply"),
+
+    ("one malformed line ends the session",
+     "homegraph/mcp_server.py",
+     "            except json.JSONDecodeError:\n"
+     '                response = self._error(None, -32700, "parse error")',
+     "            except json.JSONDecodeError:  # mutated: give up\n"
+     "                raise",
+     "a malformed line does not kill the session"),
+
+    ("mesh_search over stdio returns nothing",
+     "homegraph/mcp_server.py",
+     '            fn = {"mesh_search": self.mesh_search,',
+     '            fn = {"mesh_search": (lambda **kw: {  # mutated: no hits\n'
+     '                "hits": [], "status": "complete", "warnings": [],\n'
+     '                "models_missing": []}),',
+     "mesh_search answers over stdio"),
+
+    # -- the visualisation ------------------------------------------------
+    ("the layout stops being reproducible",
+     "homegraph/visualize.py",
+     "    rng = random.Random(seed)  # noqa: S311",
+     "    rng = random.Random()  # mutated: a new picture every run",
+     "layout is deterministic"),
+
+    # DECISIONS: D3 was dropped so the page works offline and the package has
+    # no runtime dependency. Nothing stopped a future edit from adding one.
+    ("the page learns to fetch a library from a CDN",
+     "homegraph/visualize.py",
+     '        fh.write(_PAGE.replace("__TITLE__", html.escape(title))',
+     '        fh.write(\'<script src="https://cdn.example.com/d3.v7.js">'
+     "</script>')  # mutated\n"
+     '        fh.write(_PAGE.replace("__TITLE__", html.escape(title))',
+     "the page fetches nothing"),
+
+    ("a missing model is left out of the page instead of declared",
+     "homegraph/visualize.py",
+     '            missing.append(model)',
+     '            pass  # mutated: the gap is not recorded',
+     "a missing model is declared in the page"),
+
+    # -- the federation ---------------------------------------------------
+    # The difference between "this model is not here" and "this model found
+    # nothing" is the whole reason `partial` exists. Collapsing them is the
+    # single most consequential silent-wrong-answer available to this layer.
+    ("a model that cannot be opened is reported as one that found nothing",
+     "homegraph/mesh.py",
+     '        if not path or not os.path.exists(path):\n'
+     '            self._failed[model] = "no store at %s" % path\n'
+     "            raise ModelUnavailable(self._failed[model])",
+     "        if not path or not os.path.exists(path):\n"
+     "            import tempfile as _tf  # mutated: an empty store instead\n"
+     "            return Store(os.path.join(_tf.mkdtemp(), 'empty.db'))",
+     "an unavailable model raises rather than returning empty"),
+
     # -- what the removed dead guards used to stand in front of -----------
     #
     # `_layout` had `max(len(models), 1)` and `max(n, 1)` around two divisions.
