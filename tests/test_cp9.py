@@ -316,6 +316,7 @@ def main():
         _build(db, mesh_db, syn)
         t_ambiguous_wikilink_is_marked(db, syn)
         t_backlinks_surface_the_note(db, syn)
+        t_the_picture_carries_provenance(tmp, db)
         # The shared corpus reaches three of the five methods. The other two
         # need a corpus with a resolvable path mention and two observation
         # days; planted here rather than added to the shared fixture, whose
@@ -365,6 +366,68 @@ def _build(db, mesh_db, syn):
         s.rebuild_fts()
     with Mesh({"m2": m2, "m3": db}, mesh_db=mesh_db) as mesh:
         mesh.build_edges(as_of)
+
+
+def t_the_picture_carries_provenance(tmp, db):
+    """The visualisation is a read path, and it was the last one without the
+    rule.
+
+    `collect()` selected `e.rel` and nothing else, so a relation guessed from
+    a filename collision was drawn identically to one the text states -- in
+    the form people trust a graph most. Every other read path had the marker
+    by then, which is what made this one invisible: the inconsistency was
+    introduced by the work that fixed the others.
+
+    What is gated here is the data reaching the page and the counts being
+    right. **The dashes themselves are not gated** -- that needs a browser,
+    and this package has none. Listed as a claim rather than counted as a
+    proven one.
+    """
+    import json
+    import re as _re
+
+    from homegraph.visualize import render
+
+    out = os.path.join(tmp, "graph.html")
+    report = render({"m3": db}, out, iterations=5)
+    page = open(out, encoding="utf-8").read()
+    payload = json.loads(_re.search(r"const D\s*=\s*(\{.*?\});", page,
+                                    _re.S).group(1))
+
+    with Store(db) as s:
+        want = s.db.execute(
+            "SELECT COUNT(*) n FROM edges WHERE confidence < 1.0").fetchone()["n"]
+    check("the page counts the derived edges the store holds",
+          payload["derived"] == report["derived"] == want > 0,
+          "page=%s report=%s store=%d"
+          % (payload["derived"], report["derived"], want))
+    check("the page carries the same warning the text answers carry",
+          "path_prefix" in payload["note"] and "inferred" in payload["note"],
+          payload["note"][:60] or "(empty)")
+    check("every edge in the page carries its method and confidence",
+          payload["edges"] and all(len(e) == 5 for e in payload["edges"]),
+          "%d edge(s), first=%s" % (len(payload["edges"]),
+                                    payload["edges"][0] if payload["edges"]
+                                    else None))
+
+    # Negative control. A store whose edges are all stated must produce no
+    # marker and no warning -- otherwise "the picture says derived" is being
+    # tested against a page that always says it.
+    plain = os.path.join(tmp, "plain.db")
+    with Store(plain, model="m3") as s:
+        s.upsert_node("/a.md", kind="file", path="/a.md")
+        s.upsert_node("/b.md", kind="file", path="/b.md")
+        s.upsert_edge("/a.md", "/b.md", "WIKILINKS_TO", method="exact")
+        s.commit()
+    out2 = os.path.join(tmp, "plain.html")
+    rep2 = render({"m3": plain}, out2, iterations=5)
+    page2 = open(out2, encoding="utf-8").read()
+    payload2 = json.loads(_re.search(r"const D\s*=\s*(\{.*?\});", page2,
+                                     _re.S).group(1))
+    check("a graph of stated edges claims nothing derived",
+          rep2["derived"] == 0 and payload2["derived"] == 0
+          and not payload2["note"],
+          "derived=%d note=%r" % (rep2["derived"], payload2["note"][:30]))
 
 
 def _reach_corpus(tmp, syn):

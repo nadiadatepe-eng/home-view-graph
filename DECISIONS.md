@@ -852,6 +852,26 @@ first: `e.method` and `e.confidence` are ordinary properties, and a result
 containing derived edges carries the same `provenance_note` warning every
 other read path does.
 
+**The picture was the last read path without the rule, and the gap was
+introduced by the work that closed the others.** `visualize.collect()`
+selected `e.rel` and nothing else, so a relation guessed from a filename
+collision was drawn exactly like one the text states -- in the form people
+trust a graph most. It now carries `method` and `confidence` through to the
+page: derived edges are drawn dashed and dimmed, the header counts them, and
+the same `provenance_note` text appears in the warning bar.
+
+**The dashes themselves are not gated.** Verifying them needs a browser and
+this package has none. What CP-9 checks is the data reaching the page and the
+counts being right, in both directions -- a graph of stated edges must claim
+nothing derived. The rendering is listed as a claim rather than counted as a
+proven one.
+
+**A store built before migration v2 reports zero derived edges, and that is
+correct rather than a bug.** The migration defaults existing rows to
+`exact`/1.0 because the code that wrote them recorded nothing else; which of
+them were guesses is not recoverable after the fact. Provenance appears when
+a model is rebuilt, not when it is migrated.
+
 ---
 
 ## 14 · Deferred

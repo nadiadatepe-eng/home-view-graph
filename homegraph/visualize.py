@@ -24,7 +24,7 @@ import math
 import os
 import random
 
-from .store import Store
+from .store import Store, provenance_note
 
 MODEL_COLOURS = {
     "m1": "#8a5a2b", "m2": "#6a9c78", "m3": "#4a6fa5",
@@ -173,21 +173,22 @@ def collect(model_paths, limit_per_model=2000, min_degree=0):
                     "kind": r["kind"] or "", "subtype": r["subtype"] or "",
                 })
             for r in s.db.execute(
-                    "SELECT s.node_key a, d.node_key b, e.rel r FROM edges e "
+                    "SELECT s.node_key a, d.node_key b, e.rel r, "
+                    "e.method m, e.confidence c FROM edges e "
                     "JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst"):
                 if r["a"] in keys and r["b"] in keys:
                     edges.append((index["%s::%s" % (model, r["a"])],
                                   index["%s::%s" % (model, r["b"])],
-                                  r["r"]))
+                                  r["r"], r["m"], r["c"]))
     if min_degree:
         degree = [0] * len(nodes)
-        for a, b, _ in edges:
+        for a, b, *_ in edges:
             degree[a] += 1
             degree[b] += 1
         keep = {i for i, d in enumerate(degree) if d >= min_degree}
         remap = {old: new for new, old in enumerate(sorted(keep))}
         nodes = [nodes[i] for i in sorted(keep)]
-        edges = [(remap[a], remap[b], r) for a, b, r in edges
+        edges = [(remap[a], remap[b], r, m, c) for a, b, r, m, c in edges
                  if a in remap and b in remap]
     return nodes, edges, missing
 
@@ -195,20 +196,30 @@ def collect(model_paths, limit_per_model=2000, min_degree=0):
 def render(model_paths, out_path, limit_per_model=2000, min_degree=0,
            iterations=180, title="homegraph"):
     nodes, edges, missing = collect(model_paths, limit_per_model, min_degree)
-    positions = _layout(nodes, [(a, b) for a, b, _ in edges],
+    positions = _layout(nodes, [(a, b) for a, b, *_ in edges],
                         iterations=iterations)
+    # The same warning `md backlinks`, `mesh neighbors`, the MCP server and
+    # `query` produce, from the same function. The picture was the one read
+    # path that handed back edges without it: a relation guessed from a
+    # filename collision was drawn identically to one the text states, and a
+    # drawing is the form in which people trust a graph most.
+    note = provenance_note([{"method": m, "confidence": c}
+                            for _, _, _, m, c in edges])
     payload = {
         "nodes": [[n["key"], n["model"], n["title"], n["kind"], n["subtype"],
                    positions[i][0], positions[i][1]]
                   for i, n in enumerate(nodes)],
-        "edges": [[a, b, r] for a, b, r in edges],
+        "edges": [[a, b, r, m, c] for a, b, r, m, c in edges],
         "colours": MODEL_COLOURS,
         "missing": missing,
+        "derived": sum(1 for *_, c in edges if c is not None and c < 1.0),
+        "note": note or "",
     }
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(_PAGE.replace("__TITLE__", html.escape(title))
                  .replace("__DATA__", json.dumps(payload, separators=(",", ":"))))
     return {"nodes": len(nodes), "edges": len(edges), "missing": missing,
+            "derived": payload["derived"], "note": note or "",
             "path": out_path,
             "bytes": os.path.getsize(out_path)}
 
@@ -264,9 +275,15 @@ const counts = {};
 for (const n of D.nodes) counts[n[1]] = (counts[n[1]] || 0) + 1;
 document.getElementById('stats').textContent =
   D.nodes.length.toLocaleString('no') + ' noder · ' +
-  D.edges.length.toLocaleString('no') + ' kanter';
-if (D.missing.length) document.getElementById('warn').textContent =
-  'DELVIS: ' + D.missing.join(', ') + ' mangler.';
+  D.edges.length.toLocaleString('no') + ' kanter' +
+  (D.derived ? ' · ' + D.derived.toLocaleString('no') +
+   ' utledet (stiplet)' : '');
+const warnings = [];
+if (D.missing.length) warnings.push('DELVIS: ' + D.missing.join(', ') +
+  ' mangler.');
+if (D.note) warnings.push('DELVIS: ' + D.note);
+if (warnings.length) document.getElementById('warn').textContent =
+  warnings.join('  ');
 
 const legend = document.getElementById('legend');
 for (const m of Object.keys(counts).sort()) {
@@ -308,15 +325,28 @@ function draw() {
   ctx.clearRect(0,0,innerWidth,innerHeight);
   const vis = i => !hidden.has(D.nodes[i][1]);
 
-  ctx.lineWidth = 0.6;
-  ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--rule');
-  ctx.globalAlpha = 0.75; ctx.beginPath();
-  for (const [a,b] of D.edges) {
+  // Two passes, because a guessed relation must not be drawn as a stated
+  // one. Solid = the data says so; dashed and dimmer = inferred, and the
+  // inference can be wrong. Same rule the text answers carry.
+  const rule = getComputedStyle(document.body).getPropertyValue('--rule');
+  ctx.lineWidth = 0.6; ctx.strokeStyle = rule;
+  ctx.setLineDash([]); ctx.globalAlpha = 0.75; ctx.beginPath();
+  for (const [a,b,,,c] of D.edges) {
     if (!vis(a) || !vis(b)) continue;
+    if (c !== null && c < 1) continue;
     ctx.moveTo(sx(D.nodes[a]), sy(D.nodes[a]));
     ctx.lineTo(sx(D.nodes[b]), sy(D.nodes[b]));
   }
-  ctx.stroke(); ctx.globalAlpha = 1;
+  ctx.stroke();
+
+  ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.45; ctx.beginPath();
+  for (const [a,b,,,c] of D.edges) {
+    if (!vis(a) || !vis(b)) continue;
+    if (c === null || c >= 1) continue;
+    ctx.moveTo(sx(D.nodes[a]), sy(D.nodes[a]));
+    ctx.lineTo(sx(D.nodes[b]), sy(D.nodes[b]));
+  }
+  ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
 
   for (let i = 0; i < D.nodes.length; i++) {
     if (!vis(i)) continue;

@@ -166,6 +166,38 @@ MUTATIONS = [
      "    return [r[\"node_key\"] for r in rows], None  # mutated",
      "backlinks to the contested note returns the note"),
 
+    # -- the picture is a read path too ---------------------------------
+    #
+    # The state the visualisation was in until now: it selected `e.rel` and
+    # drew a guessed relation exactly like a stated one. No behavioural gate
+    # anywhere saw it, because the graph is still correct -- it is only
+    # silent about how sure it is.
+    ("the picture stops reading provenance out of the store",
+     "homegraph/visualize.py",
+     '                    "SELECT s.node_key a, d.node_key b, e.rel r, "\n'
+     '                    "e.method m, e.confidence c FROM edges e "',
+     '                    "SELECT s.node_key a, d.node_key b, e.rel r, "\n'
+     '                    "\'exact\' m, 1.0 c FROM edges e "  # mutated',
+     "the page counts the derived edges the store holds"),
+
+    ("the picture drops the warning it computed",
+     "homegraph/visualize.py",
+     '        "note": note or "",',
+     '        "note": "",  # mutated',
+     "the page carries the same warning the text answers carry"),
+
+    ("every edge in the picture is called derived",
+     "homegraph/visualize.py",
+     '        "derived": sum(1 for *_, c in edges if c is not None and c < 1.0),',
+     '        "derived": len(edges),  # mutated',
+     "a graph of stated edges claims nothing derived"),
+
+    ("the picture forgets which method each edge used",
+     "homegraph/visualize.py",
+     '        "edges": [[a, b, r, m, c] for a, b, r, m, c in edges],',
+     '        "edges": [[a, b, r] for a, b, r, m, c in edges],  # mutated',
+     "every edge in the page carries its method and confidence"),
+
     # -- the migration --------------------------------------------------
     #
     # No mutation for "the migration ran". Skipping migration 2 leaves
