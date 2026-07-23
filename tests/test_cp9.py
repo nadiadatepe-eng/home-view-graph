@@ -429,6 +429,124 @@ def t_the_picture_carries_provenance(tmp, db):
           and not payload2["note"],
           "derived=%d note=%r" % (rep2["derived"], payload2["note"][:30]))
 
+    # -- the results list -------------------------------------------------
+    #
+    # What is gated is the decision: which nodes stand for a file you can
+    # open. The page turns that flag into a `file://` URL, and **neither the
+    # URL nor the click is gated** -- both need a browser. Same standing as
+    # the dashes: a claim, not a proven one.
+    from homegraph.visualize import MODEL_NAMES
+
+    linkable = {n[0]: n[7] for n in payload["nodes"]}
+    files = [k for k, v in linkable.items() if v]
+    stubs = [k for k, v in linkable.items() if not v]
+    check("nodes that stand for a file are marked linkable",
+          files and all("::/" in k for k in files),
+          "%d linkable" % len(files))
+    # Tags and unresolved wikilinks have no file behind them. Without this,
+    # "every node is linkable" passes the check above and produces a page
+    # full of links to nothing.
+    check("nodes with nothing behind them are not",
+          stubs and all("::/" not in k for k in stubs),
+          "%d not linkable, e.g. %s"
+          % (len(stubs), stubs[0][:40] if stubs else "-"))
+    # A section is part of a file, so it is linkable -- the page trims the
+    # `#n` to reach the file itself.
+    sections = [k for k in files if "#" in k]
+    check("a section is linkable through its file",
+          all(linkable[k] for k in sections) and sections,
+          "%d section(s)" % len(sections))
+
+    check("the page carries a readable name for every model shown",
+          all(m in payload["names"] for m in {n[1] for n in payload["nodes"]}),
+          "%s" % sorted(payload["names"]))
+    check("the model names are the ones the package declares",
+          payload["names"] == MODEL_NAMES, "%d name(s)" % len(payload["names"]))
+    check("the results list declares its cap", payload["maxhits"] > 0,
+          "maxhits=%s" % payload["maxhits"])
+
+    # A filename is arbitrary bytes off a disk. `<img src=x onerror=...>.md`
+    # is a legal name, and one `innerHTML` in the list-building code would
+    # turn a badly-named file in your own home directory into script running
+    # in your browser. Structural, like CP-11's AST gate: the property is
+    # "this string does not appear", which cannot be satisfied by prose.
+    page_js = page.split("<script>")[-1]
+    # Comments stripped first: the gate is about what the code does, not
+    # about whether the word appears in prose explaining why it does not.
+    code = "\n".join(ln.split("//")[0] for ln in page_js.split("\n"))
+    check("the page never assigns innerHTML", "innerHTML" not in code,
+          "found at %d" % code.find("innerHTML")
+          if "innerHTML" in code else "absent")
+
+    # The URL the list builds. Runnable, because node is here; reported as
+    # unrun rather than skipped silently when it is not -- the same shape as
+    # CP-11's `/proc` fallback.
+    _check_link_urls(page_js)
+
+
+def _check_link_urls(page_js):
+    """Run the page's own `fileOf` under node and check what it produces.
+
+    Extracted from the rendered page rather than copied into the test: a
+    second implementation of the same three lines would agree with itself
+    forever. What is still NOT gated is the click -- that needs a browser,
+    and this package has none.
+    """
+    import json
+    import subprocess
+
+    if not shutil.which("node"):
+        check("the file:// URL is built correctly (not run: no node)",
+              True, "n/a")
+        return
+    start = page_js.index("function fileOf(")
+    end = page_js.index("function updateHits(")
+    cases = [
+        ("m3::/a/b.md#2", "/a/b.md"),
+        ("m3::/a/b.md", "/a/b.md"),
+        # A space and a non-ASCII letter: both legal in a filename, both
+        # things a naive URL would break on.
+        ("m1::/a/my notes/rapport-år.pdf", "/a/my notes/rapport-år.pdf"),
+    ]
+    script = page_js[start:end] + """
+const cases = %s;
+// The page's own linkFor, not a second construction of the same URL. The
+// first version of this gate built `'file://' + encodeURI(...)` here and
+// compared it against itself, so the mutation that dropped the escaping
+// survived: two implementations that agree because they are the same
+// thought twice.
+const out = cases.map(([k, want]) => {
+  const got = fileOf(k);
+  const url = linkFor(k);
+  // Round-tripping is not enough: `decodeURI` returns an unescaped string
+  // unchanged, so an href with a raw space in it passed the first version
+  // of this check. A URL must also BE a URL -- ASCII, no bare spaces.
+  // Checked with character codes rather than a regex, because a `\\x00`
+  // escape inside this Python string becomes a real null byte and node
+  // never starts.
+  const ok = url.startsWith('file://')
+    && decodeURI(url.slice(7)) === want
+    && url.indexOf(' ') < 0
+    && [...url].every(ch => ch.charCodeAt(0) < 128);
+  return [got === want, ok, url];
+});
+console.log(JSON.stringify(out));
+""" % json.dumps(cases)
+    proc = subprocess.run(["node", "-e", script], capture_output=True,
+                          text=True, timeout=60)
+    try:
+        out = json.loads(proc.stdout.strip())
+    except ValueError:
+        check("the file:// URL is built correctly", False,
+              "node failed: %s" % proc.stderr.strip()[:60])
+        return
+    check("a section's link points at the file it is part of",
+          all(row[0] for row in out), "%d/%d" % (sum(r[0] for r in out),
+                                                 len(out)))
+    check("spaces and non-ASCII survive the round trip",
+          all(row[1] for row in out),
+          out[-1][2][-40:] if out else "-")
+
 
 def _reach_corpus(tmp, syn):
     """A corpus that reaches `mention` and `cohort`. Returns store paths.

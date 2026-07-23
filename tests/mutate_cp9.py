@@ -198,6 +198,51 @@ MUTATIONS = [
      '        "edges": [[a, b, r] for a, b, r, m, c in edges],  # mutated',
      "every edge in the page carries its method and confidence"),
 
+    # -- the results list -----------------------------------------------
+    ("every node is offered as a file to open",
+     "homegraph/visualize.py",
+     '                    "link": bool(r["node_key"].startswith("/")),',
+     '                    "link": True,  # mutated: link everything',
+     "nodes with nothing behind them are not"),
+
+    ("nothing is offered as a file to open",
+     "homegraph/visualize.py",
+     '                    "link": bool(r["node_key"].startswith("/")),',
+     '                    "link": False,  # mutated: link nothing',
+     "nodes that stand for a file are marked linkable"),
+
+    ("the page falls back to the model codes",
+     "homegraph/visualize.py",
+     '        "names": MODEL_NAMES,',
+     '        "names": {},  # mutated',
+     "the page carries a readable name for every model shown"),
+
+    ("the results list has no cap to declare",
+     "homegraph/visualize.py",
+     "MAX_HITS = 200",
+     "MAX_HITS = 0  # mutated",
+     "the results list declares its cap"),
+
+    ("the tooltip goes back to building an HTML string",
+     "homegraph/visualize.py",
+     "    tip.textContent = '';\n"
+     "    const b = document.createElement('b');",
+     "    tip.innerHTML = '';  // mutated\n"
+     "    const b = document.createElement('b');",
+     "the page never assigns innerHTML"),
+
+    ("a section links to the section instead of the file",
+     "homegraph/visualize.py",
+     "  const h = p.indexOf('#');\n  return h < 0 ? p : p.slice(0, h);",
+     "  return p;  // mutated: keep the #n",
+     "a section's link points at the file it is part of"),
+
+    ("the link is built without escaping the path",
+     "homegraph/visualize.py",
+     "  return 'file://' + encodeURI(fileOf(key));",
+     "  return 'file://' + fileOf(key);  // mutated: unescaped",
+     "spaces and non-ASCII survive the round trip"),
+
     # -- the migration --------------------------------------------------
     #
     # No mutation for "the migration ran". Skipping migration 2 leaves

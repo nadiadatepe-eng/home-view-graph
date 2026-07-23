@@ -866,6 +866,32 @@ counts being right, in both directions -- a graph of stated edges must claim
 nothing derived. The rendering is listed as a claim rather than counted as a
 proven one.
 
+**The page answers "which files", not only "where".** A results list on the
+right names every node matching the search, one row per file rather than per
+section, each a `file://` link. Model labels are the names -- dokumenter,
+bilder, markdown, alt annet -- with the identifier on hover, because `m3` is
+what you type in `--model`, in the query language and in the MCP tool, and a
+picture that hides it entirely speaks a vocabulary the commands do not.
+
+**Nothing on that page is built from an HTML string.** A filename is
+arbitrary bytes off a disk: `<img src=x onerror=...>.md` is a legal name, and
+one `innerHTML` would turn a badly-named file in your own home directory into
+script running in your browser. The gate is structural -- the string does not
+appear in the page's code -- and it found a real one on its first run: the
+tooltip escaped `<` in two of the four fields it interpolated and nothing
+else. Escaping by hand is a list you have to keep complete forever; not
+building HTML is a property.
+
+**The URL construction is gated by running the page's own code**, extracted
+and executed under node. The first version of that gate built
+`'file://' + encodeURI(...)` in the test and compared it against the page's
+identical line -- two implementations agreeing because they are the same
+thought written twice, and the mutation that dropped the escaping walked
+through it. Its assertion was also too weak: `decodeURI` returns an
+unescaped string unchanged, so a href with a raw space round-tripped
+cleanly. It now requires the URL to be ASCII and space-free as well. **The
+click itself is still not gated** -- that needs a browser.
+
 **A store built before migration v2 reports zero derived edges, and that is
 correct rather than a bug.** The migration defaults existing rows to
 `exact`/1.0 because the code that wrote them recorded nothing else; which of

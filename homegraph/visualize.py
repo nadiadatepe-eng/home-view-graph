@@ -30,7 +30,24 @@ MODEL_COLOURS = {
     "m1": "#8a5a2b", "m2": "#6a9c78", "m3": "#4a6fa5",
     "m4": "#9a7aa0", "m5": "#b5544c", "code": "#6b6862",
 }
+# What each model is, for a reader. The identifier stays `m3` everywhere it
+# is typed -- `--model m3=...`, the query language, the MCP tool -- and the
+# legend shows the name alone with the code on hover, so the picture does not
+# invent a second vocabulary for the same thing.
+#
+# Presentation only, and it lives beside the colours because that is already
+# the one place the page's per-model appearance is decided. It is not a second
+# definition of what a model holds: nothing reads these to make a decision.
+MODEL_NAMES = {
+    "m1": "dokumenter", "m2": "bilder", "m3": "markdown",
+    "m4": "alt annet", "m5": "mesh", "code": "kode",
+}
 DEFAULT_COLOUR = "#8b8680"
+
+# How many hits the results list names before it says it stopped. Same rule as
+# the exclusion report: a list that is cut without saying so reads as the
+# whole answer.
+MAX_HITS = 200
 
 
 def _layout(nodes, edges, iterations=180, seed=20260722, width=1600.0):
@@ -171,6 +188,11 @@ def collect(model_paths, limit_per_model=2000, min_degree=0):
                     "key": key, "model": model,
                     "title": (r["title"] or r["node_key"])[:80],
                     "kind": r["kind"] or "", "subtype": r["subtype"] or "",
+                    # Whether this node stands for a file on disk. Tags and
+                    # broken-link stubs do not; sections do, through their
+                    # parent file. Decided here, in Python, so it is under
+                    # test -- the page only turns the flag into a URL.
+                    "link": bool(r["node_key"].startswith("/")),
                 })
             for r in s.db.execute(
                     "SELECT s.node_key a, d.node_key b, e.rel r, "
@@ -207,10 +229,12 @@ def render(model_paths, out_path, limit_per_model=2000, min_degree=0,
                             for _, _, _, m, c in edges])
     payload = {
         "nodes": [[n["key"], n["model"], n["title"], n["kind"], n["subtype"],
-                   positions[i][0], positions[i][1]]
+                   positions[i][0], positions[i][1], 1 if n["link"] else 0]
                   for i, n in enumerate(nodes)],
         "edges": [[a, b, r, m, c] for a, b, r, m, c in edges],
         "colours": MODEL_COLOURS,
+        "names": MODEL_NAMES,
+        "maxhits": MAX_HITS,
         "missing": missing,
         "derived": sum(1 for *_, c in edges if c is not None and c < 1.0),
         "note": note or "",
@@ -254,6 +278,21 @@ _PAGE = """<!DOCTYPE html>
    box-shadow:0 2px 10px rgba(0,0,0,.18);word-break:break-all}
  #hint{position:fixed;bottom:12px;left:12px;color:var(--muted);font-size:12px}
  #warn{color:#b5544c;font-size:12px;margin-top:8px}
+ #hits{position:fixed;top:12px;right:12px;background:var(--card);
+   border:1px solid var(--rule);border-radius:8px;padding:12px 14px;
+   width:360px;max-height:calc(100vh - 24px);display:none;
+   flex-direction:column;box-shadow:0 2px 14px rgba(0,0,0,.10)}
+ #hits h2{font-size:13px;margin:0 0 8px;font-weight:600}
+ #hits .cut{color:var(--muted);font-size:12px;margin:0 0 8px}
+ #hitlist{overflow-y:auto;margin:0;padding:0;list-style:none}
+ #hitlist li{padding:3px 0;border-top:1px solid var(--rule);font-size:12px}
+ #hitlist li:first-child{border-top:none}
+ #hitlist a{color:var(--fg);text-decoration:none;display:block;
+   word-break:break-all;line-height:1.35}
+ #hitlist a:hover{text-decoration:underline}
+ #hitlist .dir{color:var(--muted)}
+ #hitlist .m{color:var(--muted);font-size:11px}
+ #hitlist .none{color:var(--muted);cursor:default}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="panel">
@@ -262,6 +301,11 @@ _PAGE = """<!DOCTYPE html>
   <input id="q" placeholder="søk i titler…" autocomplete="off">
   <div id="legend"></div>
   <div id="warn"></div>
+</div>
+<div id="hits">
+  <h2 id="hitcount"></h2>
+  <p class="cut" id="hitcut"></p>
+  <ul id="hitlist"></ul>
 </div>
 <div id="tip"></div>
 <div id="hint">dra for å panorere · rull for å zoome · hold over en node</div>
@@ -289,16 +333,125 @@ const legend = document.getElementById('legend');
 for (const m of Object.keys(counts).sort()) {
   const col = D.colours[m] || '#8b8680';
   const l = document.createElement('label');
-  l.innerHTML = '<input type="checkbox" checked><span class="dot" ' +
-    'style="background:' + col + '"></span>' + m +
-    '<span class="n">' + counts[m].toLocaleString('no') + '</span>';
-  l.querySelector('input').onchange = e => {
-    e.target.checked ? hidden.delete(m) : hidden.add(m); draw();
+  // Built with DOM calls, not innerHTML: model keys come from the command
+  // line, and a name is not a place to start trusting input.
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = true;
+  const dot = document.createElement('span');
+  dot.className = 'dot'; dot.style.background = col;
+  const nm = document.createElement('span');
+  nm.textContent = (D.names && D.names[m]) || m;
+  const cnt = document.createElement('span');
+  cnt.className = 'n'; cnt.textContent = counts[m].toLocaleString('no');
+  // The identifier stays reachable on hover. `--model m3=...`, the query
+  // language and the MCP tool all use it, so hiding it entirely would leave
+  // the picture speaking a vocabulary the commands do not.
+  l.title = m;
+  l.append(cb, dot, nm, cnt);
+  cb.onchange = e => {
+    // The list follows the legend. Hiding a model and leaving its files in
+    // the results would make the two halves of the page disagree about what
+    // is being looked at.
+    e.target.checked ? hidden.delete(m) : hidden.add(m);
+    draw(); updateHits();
   };
   legend.appendChild(l);
 }
+// The results list. The picture answers "where is it"; this answers "which
+// files are they", which is the question you actually take somewhere else.
+//
+// Built with DOM calls throughout. A filename is arbitrary bytes off a disk
+// -- `<img src=x onerror=...>.md` is a legal name -- and innerHTML here
+// would make one badly-named file in your home directory into script running
+// in your browser. textContent and setAttribute cannot do that.
+const hitsBox = document.getElementById('hits');
+const hitList = document.getElementById('hitlist');
+const hitCount = document.getElementById('hitcount');
+const hitCut = document.getElementById('hitcut');
+
+function fileOf(key) {
+  // `m3::/dir/a.md#2` -> `/dir/a.md`. Sections point
+  // at the file they are part of; there is nothing else to open.
+  const i = key.indexOf('::');
+  const p = i < 0 ? key : key.slice(i + 2);
+  const h = p.indexOf('#');
+  return h < 0 ? p : p.slice(0, h);
+}
+
+function linkFor(key) {
+  // The whole URL, in one place, so CP-9 can extract this function and run
+  // it. The first version of that gate built the URL itself and then
+  // compared it to its own construction -- two implementations agreeing
+  // with each other, which is the trap this file's own docstrings warn
+  // about. The mutation that dropped encodeURI walked straight through it.
+  return 'file://' + encodeURI(fileOf(key));
+}
+
+function updateHits() {
+  hitList.textContent = '';
+  if (!query) { hitsBox.style.display = 'none'; return; }
+
+  const seen = new Set(), rows = [];
+  for (let i = 0; i < D.nodes.length; i++) {
+    const n = D.nodes[i];
+    if (hidden.has(n[1])) continue;
+    if (!n[2].toLowerCase().includes(query)) continue;
+    const key = n[7] ? fileOf(n[0]) : null;
+    // One row per file, not per section: a note with forty sections is one
+    // thing to open.
+    const id = key || n[0];
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push([id, key, n[1], n[0]]);
+  }
+  rows.sort((a, b) => a[0].localeCompare(b[0], 'no'));
+
+  hitsBox.style.display = 'flex';
+  hitCount.textContent = rows.length.toLocaleString('no') + ' treff';
+  // No silent cap. The list stops at maxhits and says that it did -- a cut
+  // list that does not admit it reads as the whole answer.
+  hitCut.textContent = rows.length > D.maxhits
+    ? 'viser de ' + D.maxhits + ' første' : '';
+  if (!rows.length) {
+    const li = document.createElement('li');
+    li.className = 'none'; li.textContent = 'ingen treff';
+    hitList.appendChild(li);
+    return;
+  }
+  for (const [id, key, model, nodeKey] of rows.slice(0, D.maxhits)) {
+    const li = document.createElement('li');
+    const cut = id.lastIndexOf('/');
+    if (key) {
+      const a = document.createElement('a');
+      a.setAttribute('href', linkFor(nodeKey));
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener');
+      if (cut > 0) {
+        const d = document.createElement('span');
+        d.className = 'dir'; d.textContent = id.slice(0, cut + 1);
+        a.appendChild(d);
+      }
+      a.appendChild(document.createTextNode(id.slice(cut + 1)));
+      li.appendChild(a);
+    } else {
+      // Tags and unresolved wikilinks are real nodes with nothing to open.
+      // Listed anyway, without a link, rather than dropped: a search that
+      // silently omits part of what it matched is the failure this whole
+      // package keeps finding in itself.
+      const span = document.createElement('span');
+      span.className = 'none'; span.textContent = id;
+      li.appendChild(span);
+    }
+    const m = document.createElement('span');
+    m.className = 'm';
+    m.textContent = '  ' + ((D.names && D.names[model]) || model);
+    li.appendChild(m);
+    hitList.appendChild(li);
+  }
+}
+
 document.getElementById('q').oninput = e => {
-  query = e.target.value.toLowerCase(); draw();
+  query = e.target.value.toLowerCase(); draw(); updateHits();
 };
 
 function fit() {
@@ -381,9 +534,21 @@ cv.onmousemove = e => {
     tip.style.display = 'block';
     tip.style.left = Math.min(e.clientX + 14, innerWidth - 440) + 'px';
     tip.style.top = (e.clientY + 14) + 'px';
-    tip.innerHTML = '<b>' + n[2].replace(/</g,'&lt;') + '</b><br>' +
-      n[1] + ' · ' + n[3] + (n[4] ? ' · ' + n[4] : '') + '<br>' +
-      '<span style="color:var(--muted)">' + n[0].replace(/</g,'&lt;') + '</span>';
+    // DOM calls, not an HTML string. The old version escaped `<` in two of
+    // the four fields it interpolated and nothing else -- and every one of
+    // them comes from a filename on disk, which is arbitrary bytes. Escaping
+    // by hand is a list you have to keep complete forever; not building HTML
+    // at all is a property.
+    tip.textContent = '';
+    const b = document.createElement('b');
+    b.textContent = n[2];
+    const meta = document.createElement('div');
+    meta.textContent = ((D.names && D.names[n[1]]) || n[1]) + ' · ' + n[3] +
+      (n[4] ? ' · ' + n[4] : '');
+    const key = document.createElement('div');
+    key.style.color = 'var(--muted)';
+    key.textContent = n[0];
+    tip.append(b, meta, key);
   } else tip.style.display = 'none';
 };
 cv.onwheel = e => {
