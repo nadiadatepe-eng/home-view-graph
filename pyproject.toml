@@ -1,7 +1,7 @@
 [project]
-name = "homegraph"
+name = "home-view-graph"
 version = "0.1.0"
-description = "A knowledge graph over your home directory, built to prove itself wrong"
+description = "Home-view-graph: a knowledge graph over a directory you choose, built to prove itself wrong"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"

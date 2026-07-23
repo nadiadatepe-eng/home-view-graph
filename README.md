@@ -1,8 +1,13 @@
-# homegraph
+# Home-view-graph
 
 A five-model knowledge graph over a directory you choose. Every number below
 was measured, not estimated -- but read the date on each one, because a home
 directory moves.
+
+The Python package, the CLI and the config directory keep the shorter name
+`homegraph`: they are typed, scripted and symlinked, and renaming what people
+type to match what the project is called buys nothing and breaks their muscle
+memory. **Home-view-graph** is the project; `homegraph` is the command.
 
 ## What is here
 
@@ -445,15 +450,57 @@ Seven things the survey got wrong, all documented with evidence in
 
 ## Credits
 
-Ideas borrowed, code not.
+**Ideas borrowed, code not.** Not a slogan: every item below was reimplemented
+here from the idea, and where a borrowed design was found to be wrong it was
+inverted rather than copied -- which is itself a debt, and is recorded as one.
 
-- **`code-review-graph`** -- schema shape, migration chain, RRF fusion, the
-  postprocessing pipeline. Also two of its bugs, taken as design constraints:
-  a silently unbuilt vector index (#711) and a test suite that wrote into the
-  home directory (#712).
-- **`graphify merge-graphs`** -- the shape the federation layer needed.
-- **`DataExpert-io/data-engineer-handbook`** -- cumulative table design and the
-  `datelist_int` bitmask.
+### `code-review-graph`
+
+The largest debt, and still a live dependency of the design rather than a
+historical one.
+
+- The **schema shape**: SQLite plus FTS5, a migration chain, versioned edges,
+  the incremental mtime-then-hash diff, and MCP over stdio.
+- **RRF fusion over ranks**, and the reason for it -- BM25 scores from separate
+  indexes are not comparable.
+- The **postprocessing pipeline** shape.
+- **It is still the code model.** `CITES_CODE` deliberately does not read
+  source: `code` is a corpus category here with no store behind it, because
+  reading code is code-review-graph's job and duplicating it would be a second
+  opinion about the same files. See `DECISIONS.md` section 26.
+- Two of its **bugs, taken as design constraints**: a silently unbuilt vector
+  index (issue #711) and a test suite that wrote into the home directory
+  (#712). PR #710 was sent back upstream.
+
+### `Graphify`
+
+- **`merge-graphs`** -- the shape the federation layer needed: query the parts,
+  fuse in memory, never merge the stores.
+- Its **output taught the corpus a rule it did not have.** 1 365 of 1 465
+  broken wikilinks turned out to be `[[_COMMUNITY_…]]` cluster labels from
+  generated graph reports, which is where the `generated` subtype came from.
+  A borrowed lesson rather than a borrowed design, and worth naming as one.
+
+### `DeusData/codebase-memory-mcp`
+
+Measured against `code-review-graph` on 2026-07-23 with five known-answer
+cases. It lost on three of them, **silently** -- and five of its ideas were
+still worth taking:
+
+- The **admission barrier** behind its write path, which became `lock.py` (the
+  daemon it hangs off was not borrowed; this package runs no services).
+- **`truncated` in a report** -- a capped list must say it was capped.
+- **Provenance and confidence on edges**, taken *inverted*: cbm carries a
+  `confidence` and hands the answer back as clean JSON with no warning. Here
+  anything below 1.0 makes the answer say `partial`. **A confidence field
+  nothing forces you to read is decoration.**
+- A **closed query language** over the graph.
+- A **portable artifact** (`--persistence`), which is TODO-E.
+
+### `DataExpert-io/data-engineer-handbook`
+
+- **Cumulative table design** and the `datelist_int` bitmask behind the
+  temporal layer and the 90-day retention window.
 
 ## Known weaknesses in the evidence chain
 
