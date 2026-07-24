@@ -1409,9 +1409,9 @@ token file -- was labelled `misc` and indexed, because the secrets layer listed
 `credentials.json` without the leading dot; it is a secret name now, redacted
 everywhere, not only under the `.claude/` it happens to live in today. And a
 privacy-guard regression the night commits introduced: `test_cp13.py` fixtures
-rooted at the literal `/home/`, which `test_no_real_paths.py` forbids in any
-published file -- caught only because that guard is a separate file the cp13
-mutation loop never runs. Rerooted at `/u/`.
+rooted at a forbidden home-directory literal, which `test_no_real_paths.py` bars
+from any published file -- caught only because that guard is a separate file the
+cp13 mutation loop never runs. Rerooted at a neutral marker.
 
 ---
 
