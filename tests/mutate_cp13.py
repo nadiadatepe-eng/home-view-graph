@@ -123,6 +123,16 @@ MUTATIONS = [
      "a pruned directory is not watched"),
 
     # -- the CLI wiring ---------------------------------------------------
+    # The corpus check lives in watch.py (mutated above), but cmd_watch is what
+    # injects the REAL classifier into it. Disable that injection -- keep falls
+    # back to the store guard alone -- and every helper-level check stays green;
+    # only a gate that drives the real classifier through the CLI can go red.
+    ("the classifier is not wired in, so excluded churn triggers through the CLI",
+     "homegraph/cli.py",
+     "            path, ignore, lambda p: clf.explain(p).label == EXCLUDED)",
+     "            path, ignore, lambda p: False)  # mutated: classifier unwired",
+     "a corpus-excluded churny file, through the CLI, fires no update"),
+
     ("the trigger prints nothing, so a change is silent",
      "homegraph/cli.py",
      "        print(\"[%s] change -> update\" % stamp, flush=True)",

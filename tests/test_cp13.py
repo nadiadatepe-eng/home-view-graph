@@ -427,6 +427,123 @@ def t_through_the_cli():
         syn.use_config(syn.CONFIG)
 
 
+def t_cli_excludes_churn():
+    """The claim `t_corpus_relevance` cannot make: the REAL classifier, wired
+    through `homegraph watch`, keeps a corpus-excluded churny file from firing a
+    rebuild.
+
+    `t_corpus_relevance` injects `endswith("usage-state.json")` and so proves
+    the composition but never the production wiring (`clf.explain(p).label ==
+    EXCLUDED` in cmd_watch). That wiring is exactly what commit 88c67c2 added and
+    what a store-guard-only regression would silently undo. So this spawns the
+    CLI over a real synthetic root and drives two files into the SAME watched
+    `.claude/` directory:
+
+      - `.claude/usage-state.json` -- L2 app_state, excluded -> must NOT trigger
+      - `.claude/note.md`          -- markdown, kept     -> MUST trigger
+
+    The second is the positive control. Without it "no trigger" would be
+    vacuous: if `.claude/` were pruned wholesale (it is not -- its probe is
+    `misc`, not excluded) the excluded file would be silent for the wrong
+    reason. The note firing proves the directory is armed, so the usage-state
+    silence is the `keep` gate doing its job, not an unwatched tree.
+    """
+    if _inotify_absent():
+        check("a corpus-excluded churny file, through the CLI, fires no update",
+              True, "SKIPPED -- inotify unavailable")
+        return
+
+    from tests.fixtures import synthetic as syn
+    from tests.test_cp12 import build_corpus
+
+    tmp = tempfile.mkdtemp(prefix="cp13-churn-",
+                           dir=os.path.expanduser("~/.homegraph"))
+    proc = None
+    try:
+        root = os.path.join(tmp, "korpus")
+        db = build_corpus(root, syn)
+        cfg = syn._config_for(root)
+        # `.claude/` must exist at watch start so inotify arms on it; the
+        # churny file is created afterwards, as it is in a live session.
+        claude = os.path.join(root, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        env = dict(os.environ, PYTHONPATH=ROOTDIR)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "homegraph.cli", "watch",
+             "--model", "m4=%s" % db, "--root", root,
+             "--config", cfg, "--debounce", "0.3"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cwd=ROOTDIR, env=env)
+
+        lines: list[str] = []
+        lock = threading.Lock()
+
+        def pump():
+            assert proc.stdout is not None
+            for ln in proc.stdout:
+                with lock:
+                    lines.append(ln.rstrip("\n"))
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        def updates():
+            with lock:
+                return sum("-> update" in ln for ln in lines)
+
+        def wait_updates(target, timeout):
+            end = time.time() + timeout
+            while time.time() < end:
+                if updates() >= target:
+                    return True
+                if proc.poll() is not None:
+                    return False
+                time.sleep(0.05)
+            return False
+
+        started = False
+        end = time.time() + 10
+        while time.time() < end:
+            with lock:
+                if any("watching" in ln for ln in lines):
+                    started = True
+                    break
+            time.sleep(0.05)
+        time.sleep(0.3)                      # let inotify arm before the change
+
+        # The excluded churny file: several rewrites, as a live session does.
+        usage = os.path.join(claude, "usage-state.json")
+        for _ in range(3):
+            open(usage, "w").write("churn\n")
+            time.sleep(0.1)
+        # Well past the 0.3 debounce: if it were going to trigger, it has.
+        time.sleep(1.5)
+        churn_silent = updates() == 0
+
+        # Positive control in the SAME watched dir: a kept file MUST trigger,
+        # proving `.claude/` is armed and the silence above was the gate.
+        open(os.path.join(claude, "note.md"), "w").write("real content\n")
+        note_fired = wait_updates(1, 10)
+
+        proc.send_signal(subprocess.signal.SIGINT)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+        check("a corpus-excluded churny file, through the CLI, fires no update",
+              started and churn_silent and note_fired,
+              "started=%s churn_silent=%s(updates=%d) note_fired=%s"
+              % (started, churn_silent, updates(), note_fired))
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        from tests.fixtures import synthetic as syn
+        syn.use_config(syn.CONFIG)
+
+
 def _inotify_absent():
     try:
         w.Inotify().close()
@@ -448,6 +565,7 @@ def main():
     t_real_inotify()
     t_prune()
     t_through_the_cli()
+    t_cli_excludes_churn()
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
