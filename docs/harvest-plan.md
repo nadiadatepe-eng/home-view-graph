@@ -23,7 +23,7 @@ Et checkpoint er ikke ferdig før alle seks holder:
 |----|-----|-------|--------|-------------|
 | **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ✅ instrument (baseline på ekte korpus → H3-tid) | 4 funn, alle lukket |
 | **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ✅ ferdig (skrive + lese-side) | 5 funn: 3 lukket, 2 backlog |
-| **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ✅ mekanisme + cosine-rerank bevist (syntetisk); ekte-korpus-baseline utsatt | 6 funn: F1/F4 lukket, F5/F6 herdet, F2/F3 rammet inn |
+| **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ✅ mekanisme bevist + ekte matrise (potion-multilingual) kjørt mot stopp-regel: embeddings forblir opt-in (default-søk regredierer), semantisk verdi bekreftet kvalitativt | 6 funn: F1/F4 lukket, F5/F6 herdet, F2/F3 rammet inn |
 | H4 | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ☐ backlog | — |
 | H5 | git co-change-kant + churn | Cirilcetra | ☐ backlog | — |
 | H6 | fanIn/fanOut-sentralitet som 3. RRF-liste | Cirilcetra | ☐ backlog | — |
@@ -126,8 +126,23 @@ Fasit-først `test_h3.py` (32/32: tokenizer + embed-for-hånd + namespace-round-
 **F6 (kommentert)** — shortlist-node uten vektor i namespace hoppes over; hvis ALLE hoppes (delvis dekning) → `[]` med `out_mode=hybrid`. Ærlig, og uoppnåelig ved full embed. Kommentert i `search.py`.
 **F3 (ærlig ramme)** — hva som FAKTISK er bevist: mekanismen er koblet ende-til-ende, cosine-rerank slår OR-BM25 på et syntetisk fixture, og alle ærlighetsgarantiene (None/[], namespace, ingen skann, ingen nett, tom-eval) holder. **Ikke** bevist: at ekte distillerte vektorer på det EKTE korpuset slår baselinen — det er `evaluate` over 1 par på 3 håndlagde filer med en håndlagd matrise.
 
-### Gjenstår (H3-tid → nå H3+): den ekte matrisen og stopp-regelen
-Byggetids-distillering (model2vec, lærer f.eks. Jina-Code-v2, Apache-2.0) → ekte matrise → **kjør recall@k mot H1-scoreboardet på det ekte korpuset**. Stopp-regel: behold vektor/hybrid kun hvis den slår OR-BM25-baselinen der. Lærer velges bevisst (egen avgjørelse) når vi tar den. Til da: mekanismen står, syntetisk bevist.
+### Ekte matrise + stopp-regel — KJØRT (2026-07-24)
+Byggetids-verktøyet `tools/distill_matrix.py` (model2vec via `uv`, IKKE en runtime-avhengighet) distillerte `minishlab/potion-multilingual-128M` (pre-distillert, MIT, flerspråklig — korpuset er NB+EN) til en **ord-nivå matrise over korpus-vokabularet**: 17 459 ord × 256 dim (lokalt artefakt, ~45 MB, committes ikke). Ekte m3-store bygget over hjemmekatalogen (`$HOME`, 602 filer, 6035 seksjoner, 6928 noder), embed på ~11 s.
+
+**Stopp-regel mot H1-scoreboardet** (`tools/eval_real.py`, 2269 lekkasje-vaktede heading→fil-par, fil-nivå):
+
+| metode | r@1 | r@5 | r@10 | mrr |
+|--------|-----|-----|------|-----|
+| AND-FTS | **0.709** | 0.887 | 0.928 | **0.787** |
+| OR-BM25 | 0.428 | 0.672 | 0.744 | 0.534 |
+| vektor | 0.115 | 0.267 | 0.353 | 0.186 |
+| hybrid | 0.639 | 0.865 | 0.922 | 0.736 |
+
+**Verdikt:** på et LEKSIKALSK eval (headingen står ordrett i fila) dominerer AND-FTS, og hybrid *regredierer* den (RRF-støy). Stopp-regelen sier derfor: **ikke gjør vektor/hybrid til default-søk.** Det er akkurat slik pakken shipper — embeddings AV som standard, `search --embeddings` opt-in.
+
+**Men verdien finnes, på spørringene den er FOR** (kvalitativ probe, ikke statistikk fordi parafrase-par ikke kan auto-merkes uten sirkularitet): parafrasen «how an agent remembers things between sessions» ga AND-FTS bare *Changelog*, mens vektor-topptreffet var **`living-memory-architecture`** — en blink AND-FTS bommet fullstendig på. NB-spørringer og trading-parafraser som AND-FTS returnerte *ingenting* på, ga vektor topikalt plausible treff. **Begrensning (bevisst):** OR-FTS-shortlisten kan ikke hente ved NULL leksikalsk overlapp (en ren-NB-spørring ga tomt) — prisen for aldri å skanne hele korpuset. Full-ANN ville løst det, men brøt `ingen-hel-korpus-skann`-invarianten.
+
+**Konklusjon:** mekanismen er validert ende-til-ende på ekte data og ekte vektorer, og korrekt gated AV som standard. Den ekte matrisen bekrefter designvalget (opt-in), ikke at hybrid bør være default. Den ærlige gjenstående luken er et *merket* parafrase/kryss-språk-evalsett — samme lærdom som synteten ga. Lærer/dim kan byttes trivielt via `--model` i distill-verktøyet.
 
 ---
 

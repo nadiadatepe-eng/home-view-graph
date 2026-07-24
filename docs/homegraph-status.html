@@ -152,7 +152,8 @@
   <li class="done"><span class="k">cli.py</span> <code>embed</code>-kommandoen fylt (var stubb); nekter exit 2 om datafila mangler.</li>
   <li class="done"><span class="k">search.py</span> <code>vector_search()</code>: FTS-shortlist → cosine kun over unionen → RRF. <code>None</code> vs <code>[]</code> bevart, aldri hel-korpus-skann.</li>
   <li class="done">Gate med <strong>fake embedder</strong> (syntetisk matrise, known-answer) — tester røret, aldri en ekte/nedlastet modell.</li>
-  <li><span class="k">providers/ollama.py</span> <span class="tag later">SENERE</span> Embeddings over <code>/api/embeddings</code> som opt-in provider — pluss den ekte distillerte matrisen og stopp-regelen mot H1-scoreboardet på det ekte korpuset.</li>
+  <li class="done"><span class="k">tools/distill_matrix.py + eval_real.py</span> Ekte matrise distillert (<code>potion-multilingual-128M</code> → 17k ord × 256) og kjørt mot stopp-regelen på det ekte korpuset (602 filer). <strong>Verdikt:</strong> på leksikalsk eval dominerer AND-FTS og hybrid regredierer den — så embeddings forblir <em>opt-in</em>, ikke default. Semantisk verdi bekreftet kvalitativt (parafraser AND-FTS bommer på).</li>
+  <li><span class="k">providers/ollama.py</span> <span class="tag later">SENERE</span> Embeddings over <code>/api/embeddings</code> som opt-in provider, + et <em>merket</em> parafrase-evalsett for et kvantitativt semantisk tall.</li>
 </ul>
 
 <h3>Fase 2 · Obsidian-eksport <span class="tag next">PLANLAGT</span></h3>
