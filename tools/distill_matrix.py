@@ -55,25 +55,31 @@ from homegraph.providers.static_embed import split_identifiers  # noqa: E402
 from homegraph.store import Store                                # noqa: E402
 
 
-def corpus_vocab(store: Store, min_count: int, max_vocab: int) -> list[str]:
-    """Words in the corpus, by identifier-split of every node's title+body.
+def corpus_vocab(stores: list[Store], min_count: int,
+                 max_vocab: int) -> list[str]:
+    """Words across the corpus, by identifier-split of every node's title+body.
 
-    Frequency-filtered and capped: a word seen once is usually a typo or a hash
-    fragment, and it costs a full row; the cap bounds the data file. Both are
-    reported by the caller so a silent truncation cannot read as full coverage.
+    Takes several stores so one matrix can cover every model -- documents,
+    images, code stubs, misc -- not just markdown; a graph that draws all of
+    them wants a vocabulary that spans all of them. Frequency-filtered and
+    capped: a word seen once is usually a typo or a hash fragment, and it costs
+    a full row; the cap bounds the data file. Both are reported by the caller so
+    a silent truncation cannot read as full coverage.
     """
     counts: Counter[str] = Counter()
-    for r in store.db.execute("SELECT title, body FROM nodes"):
-        text = " ".join(p for p in (r["title"], r["body"]) if p)
-        counts.update(split_identifiers(text))
+    for store in stores:
+        for r in store.db.execute("SELECT title, body FROM nodes"):
+            text = " ".join(p for p in (r["title"], r["body"]) if p)
+            counts.update(split_identifiers(text))
     kept = [w for w, n in counts.most_common() if n >= min_count]
     return kept[:max_vocab]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--store", required=True,
-                    help="an m3 store; its node text is the vocabulary source")
+    ap.add_argument("--store", required=True, action="append",
+                    help="a store whose node text is a vocabulary source; "
+                         "repeatable, so one matrix can span every model")
     ap.add_argument("--out", required=True, help="the matrix JSON to write")
     ap.add_argument("--model", default="minishlab/potion-multilingual-128M",
                     help="a model2vec static model (default: multilingual, "
@@ -91,11 +97,15 @@ def main() -> int:
 
     from model2vec import StaticModel
 
-    with Store(args.store) as store:
-        vocab = corpus_vocab(store, args.min_count, args.max_vocab)
+    stores = [Store(p) for p in args.store]
+    try:
+        vocab = corpus_vocab(stores, args.min_count, args.max_vocab)
+    finally:
+        for s in stores:
+            s.close()
     if not vocab:
-        print("ERROR: the store yielded 0 vocabulary words -- is it an m3 store "
-              "with node text?", file=sys.stderr)
+        print("ERROR: the store(s) yielded 0 vocabulary words -- are they "
+              "stores with node text?", file=sys.stderr)
         return 2
     print("vocabulary: %d words (min_count=%d, cap=%d)"
           % (len(vocab), args.min_count, args.max_vocab), file=sys.stderr)
