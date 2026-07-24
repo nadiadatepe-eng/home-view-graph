@@ -267,8 +267,28 @@ def cmd_status(args):
 def cmd_search(args):
     from .search import hybrid_search
     from .store import Store
-    with Store(args.db) as s:
-        res = hybrid_search(s, " ".join(args.query), limit=args.limit)
+
+    # `--embeddings <matrix>` turns on semantic reranking. Named explicitly
+    # rather than read from the config, because `search` reads a database path
+    # and nothing else -- the invariant this command's help promises. The matrix
+    # self-describes its provider/model/dim, so the store is opened with that
+    # namespace and the store's own vectors must have been written under it
+    # (`homegraph embed`); a different matrix finds zero and says so.
+    embedder = None
+    embeddings = None
+    if getattr(args, "embeddings", None):
+        from .providers import static_embed
+        try:
+            embedder = static_embed.load(args.embeddings)
+        except (static_embed.EmbedderDataMissing,
+                static_embed.StaticEmbedError) as exc:
+            print("%s" % exc, file=sys.stderr)
+            return 2
+        embeddings = {"provider": embedder.provider, "model": embedder.model}
+
+    with Store(args.db, embeddings=embeddings) as s:
+        res = hybrid_search(s, " ".join(args.query), limit=args.limit,
+                            embedder=embedder)
         for w in res.warnings:
             print("WARNING: %s\n" % w)
         # Printed even when empty, and the mode is printed either way: a search
@@ -649,17 +669,91 @@ def cmd_import(args):
     return 0
 
 
-def cmd_unbuilt(args):
-    """build/update/embed/visualize belong to the models, not the substrate.
+def _embed_store(db, embedder):
+    """Write a vector for every node in `db` that has text. Returns the count.
 
-    Printing an honest refusal beats a no-op that exits 0 and looks like it
-    worked -- that is the class of failure this project keeps designing against.
+    Through `_writing`, like every other writer, so CP-11's barrier check sees
+    it: a command that opened `Store` directly would be a writer outside the
+    lock. `model="unknown"` here means "do not relabel" -- the store already
+    knows which model it is, and `migrate()` reads that back rather than
+    stamping over it.
+
+    `title` and `body` are joined because a section node carries its heading in
+    both and a file node carries distinct text in each; embedding the join is
+    what makes a heading query and a body query land near the same document. A
+    node with no text at all is skipped rather than embedded as a zero vector --
+    it could never rank, and storing it would only inflate the namespace count
+    that decides whether the vector path runs.
     """
-    print("`%s` is not implemented yet: it needs a model adapter from "
-          "TODO-2..TODO-6. The substrate (store, search, incremental, "
-          "temporal) is in place; nothing produces nodes for it yet."
-          % args.cmd)
-    return 2
+    provider, model, dim = embedder.namespace
+    embedded = 0
+    with _writing(db, model="unknown") as store:
+        rows = store.db.execute("SELECT id, title, body FROM nodes").fetchall()
+        for r in rows:
+            text = " ".join(p for p in (r["title"], r["body"]) if p).strip()
+            if not text:
+                continue
+            store.upsert_embedding(r["id"], provider, model, dim,
+                                   embedder.embed(text))
+            embedded += 1
+    return embedded
+
+
+def cmd_embed(args):
+    """Write vectors for a model's nodes, so `search --embeddings` can rerank.
+
+    Config-driven, the same as `build` and `update`: the `[embeddings]` block
+    names the provider and the matrix data file. And like them it refuses with
+    exit 2 rather than doing nothing quietly -- there are three ways to have no
+    vectors and each says which:
+
+      * no `[embeddings]` block          -- semantic search is off; add one
+      * the block names a missing matrix -- distil it, or fix the path
+      * a store path that does not exist -- build the model first
+
+    A no-op that exits 0 here would leave `search --embeddings` degrading to
+    lexical-only over an empty namespace, which is the silent failure the whole
+    None-vs-empty contract exists to prevent.
+    """
+    from .providers import static_embed
+
+    cfg = userconfig.load(getattr(args, "config", None))
+    if cfg.embeddings is None:
+        print("no [embeddings] block in %s -- semantic search is off. Uncomment "
+              "the template there and point it at a matrix data file, then "
+              "re-run." % cfg.path, file=sys.stderr)
+        return 2
+    try:
+        embedder = static_embed.from_config(cfg.embeddings)
+    except static_embed.EmbedderDataMissing as exc:
+        print("%s\n\nThe matrix is a build-time artefact: distil one offline "
+              "and point [embeddings].path at it." % exc, file=sys.stderr)
+        return 2
+    except static_embed.StaticEmbedError as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
+
+    provider, model, dim = embedder.namespace
+    failed = False
+    for spec in args.model:
+        name, _, db = spec.partition("=")
+        if not db:
+            print("%-6s REFUSED  no path; use --model %s=/path/to.db"
+                  % (name, name), file=sys.stderr)
+            failed = True
+            continue
+        if not os.path.exists(db):
+            # os.path.exists BEFORE _writing, because Store() would CREATE the
+            # file -- embedding a store that was never built would leave an
+            # empty database that looks built. Refuse instead.
+            print("%-6s REFUSED  no store at %s -- build the model first"
+                  % (name, db), file=sys.stderr)
+            failed = True
+            continue
+        n = _embed_store(db, embedder)
+        print("  %-6s embedded %d node(s) under namespace %s:%s:%d"
+              % (name, n, provider, model, dim))
+    return 2 if failed else 0
 
 
 # Which builder owns each model. One table, beside the one `update` already
@@ -1031,6 +1125,10 @@ def main(argv=None):
     p.add_argument("db")
     p.add_argument("query", nargs="+")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--embeddings", default=None, metavar="MATRIX",
+                   help="a matrix data file; turns on semantic reranking. The "
+                        "store must have been embedded with the same matrix "
+                        "(homegraph embed).")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("md", help="M3 markdown model")
@@ -1188,8 +1286,13 @@ def main(argv=None):
                    help="replace a store that already holds nodes")
     p.set_defaults(func=cmd_import)
 
-    p = sub.add_parser("embed", help="not implemented")
-    p.set_defaults(func=cmd_unbuilt)
+    p = sub.add_parser("embed",
+                       help="write vectors for a model's nodes (needs an "
+                            "[embeddings] config block)")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH",
+                   help="which store(s) to embed; repeatable")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_embed)
 
     args = ap.parse_args(argv)
     try:

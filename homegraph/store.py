@@ -30,7 +30,8 @@ which.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from array import array
+from collections.abc import Iterable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -527,6 +528,77 @@ class Store:
         return [r["rowid"] for r in self.db.execute(
             "SELECT rowid FROM nodes_fts WHERE rowid NOT IN "
             "(SELECT id FROM nodes)")]
+
+    # -- embeddings -------------------------------------------------------
+    #
+    # A vector is stored under a NAMESPACE -- (provider, model, dim) -- and
+    # every read filters on it. That is the whole of the model-switch story: the
+    # embeddings table is keyed by node_id, so re-embedding a node overwrites its
+    # row, but a switch that has NOT yet re-embedded leaves rows carrying the old
+    # namespace. A KNN query for the new namespace matches none of them, so it
+    # reports "nothing embedded here" and the caller re-embeds -- rather than
+    # ranking one model's query against another model's vectors, which are not
+    # comparable and would produce a confident wrong order. This is the
+    # convergent borrow (Cirilcetra, superfile, codegraph-ai all landed on
+    # `provider:model:dim` as the cache key), and the invalidation is the half
+    # that makes the key worth having.
+    #
+    # The blob is float32 via `array`, not pickle or JSON: a fixed-width binary
+    # encoding round-trips exactly, costs 4 bytes a dimension, and carries no
+    # code. `dim` is stored beside it so a decode can refuse a truncated blob
+    # instead of returning a short vector that silently cosines wrong.
+
+    def upsert_embedding(self, node_id: int, provider: str, model: str,
+                         dim: int, vec: "Sequence[float]") -> None:
+        """Write one node's vector under the (provider, model, dim) namespace.
+
+        `len(vec)` must equal `dim`. A vector of the wrong length is a caller
+        bug that would otherwise surface as a garbage cosine much later, with no
+        trace of where the wrong length came from -- so it is refused here.
+        """
+        if len(vec) != dim:
+            raise ValueError(
+                "vector has %d components but dim is %d" % (len(vec), dim))
+        blob = array("f", vec).tobytes()
+        self.db.execute(
+            "INSERT OR REPLACE INTO embeddings(node_id, provider, model, dim, "
+            "vec) VALUES (?,?,?,?,?)", (node_id, provider, model, dim, blob))
+
+    def embedding_count(self, provider: str, model: str, dim: int) -> int:
+        """How many vectors exist IN THIS NAMESPACE, not in the table overall.
+
+        The count the vector path branches on. `SELECT COUNT(*) FROM embeddings`
+        would count another model's leftovers and let a search run against
+        vectors it cannot compare to, which is the exact silent degradation the
+        namespace exists to stop.
+        """
+        return int(self.db.execute(
+            "SELECT COUNT(*) c FROM embeddings "
+            "WHERE provider=? AND model=? AND dim=?",
+            (provider, model, dim)).fetchone()["c"])
+
+    def read_embeddings(self, node_ids: "Sequence[int]", provider: str,
+                        model: str, dim: int) -> dict[int, list[float]]:
+        """Decode the vectors for `node_ids` that carry one in this namespace.
+
+        Missing ids and ids embedded under a different namespace are simply
+        absent from the result -- the caller (vector_search) iterates its
+        shortlist and skips whatever has no vector here, so a node the previous
+        model embedded does not sneak into a new model's ranking.
+        """
+        if not node_ids:
+            return {}
+        placeholders = ",".join("?" * len(node_ids))
+        rows = self.db.execute(
+            "SELECT node_id, vec FROM embeddings "
+            "WHERE provider=? AND model=? AND dim=? AND node_id IN (%s)"
+            % placeholders, [provider, model, dim, *node_ids])
+        out: dict[int, list[float]] = {}
+        for r in rows:
+            a = array("f")
+            a.frombytes(r["vec"])
+            out[int(r["node_id"])] = list(a)
+        return out
 
     # -- misc -------------------------------------------------------------
 

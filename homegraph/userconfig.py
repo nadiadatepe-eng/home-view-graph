@@ -98,6 +98,14 @@ class UserConfig:
     # tool that produced them is a fact about one machine, so it lives here and
     # not in models/m3_markdown.py.
     generated_dirs: tuple[str, ...] = ()
+    # The `[embeddings]` block, or None when semantic search is off -- and off
+    # is the default, the same as `Store(embeddings=None)`. A dict rather than a
+    # dataclass because it is passed straight to `Store` and to
+    # `providers.static_embed.from_config`, both of which read it by key; giving
+    # it a class here would mean two places converting between the shapes. When
+    # present it always carries `provider` and `model` (load refuses otherwise),
+    # plus optional `dim`, `path`, `endpoint`.
+    embeddings: dict[str, object] | None = None
 
     def role_dirs(self, name: str, base: str | None = None) -> tuple[str, ...]:
         """Absolute directories for a role, each with a trailing separator.
@@ -174,8 +182,33 @@ def load(explicit: str | None = None) -> UserConfig:
 
     owners = tuple(raw.get("vendored_repos", {}).get("own_owners", ()))
     generated = tuple(raw.get("markdown", {}).get("generated_dirs", ()))
+
+    # `[embeddings]` is off unless the whole block is present, and a present
+    # block must name both provider and model -- the same rule Store enforces,
+    # checked here so a half-written block fails at load rather than at the first
+    # search. `dim`/`path`/`endpoint` are optional and carried through verbatim;
+    # `from_config` validates them against the data file, which is the only
+    # place that can.
+    embeddings = None
+    emb_raw = raw.get("embeddings")
+    if emb_raw is not None:
+        if not isinstance(emb_raw, dict):
+            raise RuntimeError("%s: [embeddings] must be a table" % path)
+        provider = emb_raw.get("provider")
+        model = emb_raw.get("model")
+        if not provider or not model:
+            raise RuntimeError(
+                "%s: [embeddings] must name both provider and model, or the "
+                "whole block must be omitted (semantic search stays off)" % path)
+        embeddings = {
+            "provider": provider, "model": model,
+            "dim": emb_raw.get("dim"), "path": emb_raw.get("path"),
+            "endpoint": emb_raw.get("endpoint"),
+        }
+
     return UserConfig(path=path, root=root, roles=roles,
-                      own_owners=owners, generated_dirs=generated)
+                      own_owners=owners, generated_dirs=generated,
+                      embeddings=embeddings)
 
 
 def render(root: str, roles: dict[str, list[str]],
@@ -234,6 +267,20 @@ def render(root: str, roles: dict[str, list[str]],
         "# subtype so their unresolved links do not drown the handful a person",
         "# wrote on purpose.",
         "generated_dirs = %s" % _list(generated_dirs),
+        "",
+        "# [embeddings]",
+        "# Semantic search is OFF until this whole block is uncommented -- the",
+        "# same default as the store, and off is deliberate: an embedder that",
+        "# loaded itself would be a cost nobody asked for. `init` never turns it",
+        "# on, because it cannot: the vectors come from a matrix data file you",
+        "# distil once, offline, and point `path` at. With the block present,",
+        "# `homegraph embed --model m3=...` writes vectors and `homegraph search",
+        "# --embeddings <path>` reranks with them.",
+        "#",
+        '# provider = "static"   # the only one wired up; no network at runtime',
+        '# model    = "your-matrix-name"   # must match the data file\'s own',
+        "# dim      = 256                  # must match the data file's own",
+        '# path     = "/abs/path/to/matrix.json"   # the distilled matrix',
         "",
     ]
     return "\n".join(lines)

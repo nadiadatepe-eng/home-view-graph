@@ -27,10 +27,21 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .store import Store
+
+
+class Embedder(Protocol):
+    """The one thing vector_search needs from a provider: turn text into a
+    vector and name the namespace those vectors live in. `providers.static_embed`
+    satisfies it; a network provider would too, without this file changing."""
+
+    @property
+    def namespace(self) -> tuple[str, str, int]: ...
+
+    def embed(self, text: str) -> list[float]: ...
 
 # A hit is a loose row: FTS columns plus whatever the fuser adds. Typed as a
 # mapping rather than a dataclass because it flows straight out of sqlite3.Row
@@ -44,14 +55,15 @@ _WORD = re.compile(r"\w+", re.UNICODE)
 @dataclass
 class SearchResult:
     hits: list[Hit]     # {node_id, node_key, title, rank, score, sources}
-    # Today this is always "fts", and that is the honest value rather than a
-    # placeholder: `vector_search` returns None when embeddings are off and
-    # raises NotImplementedError when they are configured, so no run reaches
-    # the hybrid branch. The annotation used to list four values as if the
-    # field were computed, which invites a reader to look for a hybrid state
-    # that cannot occur. "vector" and "hybrid" become reachable the day a
-    # provider is wired up; "none" is written nowhere and may never be.
-    out_mode: str       # "fts" today; "vector" | "hybrid" once embeddings exist
+    # "fts" when the search was lexical only -- no embedder passed, or one
+    # passed but nothing embedded under the current namespace (the vector path
+    # returned None). "hybrid" when the vector path RAN and its ranking was
+    # fused with the lexical one, whether or not cosine surfaced anything: the
+    # honest report is that both retrievers ran, not that one of them scored. A
+    # bare "vector" mode is not produced here because the lexical search always
+    # runs first when there is a query; it is left in the annotation as the
+    # value a vector-only caller would set. "none" is written nowhere.
+    out_mode: str       # "fts" | "hybrid" (see above); "vector" reserved
     warnings: list[str] = field(default_factory=list)
 
     # The plan names this field `_out_mode`; expose both so neither spelling
@@ -64,15 +76,23 @@ class SearchResult:
         return len(self.hits)
 
 
-def fts_query(text: str | None) -> str:
-    """Turn free text into an FTS5 expression with terms ANDed.
+def fts_query(text: str | None, op: str = "AND") -> str:
+    """Turn free text into an FTS5 expression, terms joined by `op`.
 
     Punctuation is stripped rather than escaped: an unquoted `?` or `-` is FTS5
     *syntax*, so passing a user's sentence through raw either raises or, worse,
     silently changes what was asked.
+
+    `op` is "AND" everywhere the RESULT is shown to a user: a search that
+    returns documents missing half the query is a search that lies about what it
+    found. It is "OR" in exactly one place -- the vector path's candidate
+    shortlist -- where the point is the opposite: gather every document sharing
+    ANY term so the embedder can rerank a wider net than strict AND would admit,
+    which is where a paraphrase that shares one word with its target gets its
+    chance. The OR pool is never shown; it is only reordered by cosine.
     """
     terms = _WORD.findall(text or "")
-    return " AND ".join('"%s"' % t.replace('"', '""') for t in terms)
+    return (" %s " % op).join('"%s"' % t.replace('"', '""') for t in terms)
 
 
 # Subtypes hidden unless the caller asks for everything. `transcript` is here
@@ -103,20 +123,122 @@ def fts_search(store: "Store", query: str, limit: int = 20,
     return [dict(r) for r in store.db.execute(sql, args).fetchall()]
 
 
-def vector_search(store: "Store", query: str,
-                  limit: int = 20) -> list[Hit] | None:
-    """Returns None when the vector path is unavailable -- not [].
+# How many candidates the OR-shortlist pulls before cosine reranks them. A
+# multiple of the result limit, floored so a small query still gets a real pool:
+# the shortlist is meant to be WIDER than the answer, so cosine has losers to
+# rank below the winners, but bounded, so a semantic search never becomes a scan
+# of every vector in the store. That bound is the invariant -- the union that
+# feeds cosine must be a proper subset, never "the whole corpus because the
+# shortlist came back empty".
+SHORTLIST_FACTOR = 5
+SHORTLIST_FLOOR = 50
 
-    The distinction is the entire point. `[]` means "searched, found nothing";
-    `None` means "never ran", and only the second one deserves a warning.
+
+def _vector_shortlist(store: "Store", query: str, limit: int,
+                      hidden_subtypes: Sequence[str]) -> list[int]:
+    """node_ids of documents sharing ANY query term, best BM25 first.
+
+    OR, not AND, and this is the whole reason the vector path can beat the
+    lexical baseline: a paraphrase that shares a single word with its target is
+    invisible to the AND search that ranks the shown results, but lands in this
+    pool, where cosine can lift it. The pool is capped at `limit`, so cosine
+    runs over a bounded shortlist and never over the corpus.
+    """
+    expr = fts_query(query, op="OR")
+    if not expr:
+        return []
+    sql = ("SELECT n.id node_id FROM nodes_fts JOIN nodes n "
+           "ON n.id = nodes_fts.rowid WHERE nodes_fts MATCH ?")
+    args: list[object] = [expr]
+    if hidden_subtypes:
+        sql += " AND (n.subtype IS NULL OR n.subtype NOT IN (%s))" % (
+            ",".join("?" * len(hidden_subtypes)))
+        args.extend(hidden_subtypes)
+    sql += " ORDER BY bm25(nodes_fts) LIMIT ?"
+    args.append(limit)
+    return [r["node_id"] for r in store.db.execute(sql, args).fetchall()]
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    # Both operands are L2-normalised vectors from the embedder, so cosine is
+    # their dot; a zero vector (a query of only out-of-vocabulary words) dots to
+    # 0 and ranks nothing, which is the honest answer, not a crash.
+    return sum(x * y for x, y in zip(a, b))
+
+
+def vector_search(store: "Store", query: str, limit: int = 20,
+                  embedder: "Embedder | None" = None,
+                  hidden_subtypes: Sequence[str] = DEFAULT_HIDDEN_SUBTYPES
+                  ) -> list[Hit] | None:
+    """Rerank an FTS shortlist by cosine. Returns None when it did NOT run.
+
+    The None/[] distinction is the entire point and is preserved through every
+    early exit:
+
+      * embeddings off               -> None  (never ran; the caller warns)
+      * configured, no embedder given -> raise (a caller enabled the path and
+                                          withheld the means; refusing beats a
+                                          silent empty, same as before)
+      * nothing embedded in THIS namespace -> None  (a model switch left the old
+                                          vectors under another namespace; they
+                                          are ignored, and the honest report is
+                                          "did not run -- re-embed", not [])
+      * ran, but no document shared a term -> []    (searched, found nothing)
+
+    What it never does is score every vector in the store. Cosine sees only the
+    OR-shortlist, a bounded pool; a document that shares no query term is not in
+    it and cannot be returned, even if its vector is identical to the query's.
+    That is the cost of not scanning the corpus, and it is deliberate.
     """
     if store.embeddings is None:
         return None
-    if store.db.execute("SELECT COUNT(*) c FROM embeddings").fetchone()["c"] == 0:
+    if embedder is None:
+        raise NotImplementedError(
+            "embeddings are configured but no embedder was supplied; refusing "
+            "to return a silently empty vector result")
+    provider, model, dim = embedder.namespace
+    if store.embedding_count(provider, model, dim) == 0:
+        # Configured, and vectors may even exist -- but not in this namespace.
+        # Never ran here; the caller should re-embed under the current model.
         return None
-    raise NotImplementedError(
-        "embeddings are configured but no provider is wired up yet; "
-        "refusing to return a silently empty vector result")
+
+    pool = max(limit * SHORTLIST_FACTOR, SHORTLIST_FLOOR)
+    shortlist = _vector_shortlist(store, query, pool, hidden_subtypes)
+    if not shortlist:
+        return []                       # ran; nothing lexically overlapping
+    qvec = embedder.embed(query)
+    vecs = store.read_embeddings(shortlist, provider, model, dim)
+    # A shortlisted node with no vector in THIS namespace is skipped, not scored.
+    # If the count above was >0 but none of the shortlisted nodes are embedded
+    # here -- partial coverage across a namespace boundary -- `scored` ends
+    # empty and this returns []. That is honest ("ran, nothing rankable"), and
+    # in normal full-embed operation it does not arise: every FTS-indexed node
+    # has title/body and is therefore embedded. (sim-auditor finding 6.)
+    scored: list[tuple[float, int]] = []
+    for nid in shortlist:
+        v = vecs.get(nid)
+        if v is not None:
+            scored.append((_cosine(qvec, v), nid))
+    scored.sort(key=lambda t: -t[0])
+    ranked_ids = [nid for _, nid in scored[:limit]]
+    return _hits_for(store, ranked_ids)
+
+
+def _hits_for(store: "Store", node_ids: Sequence[int]) -> list[Hit]:
+    """Display rows for `node_ids`, in the order given (cosine order preserved).
+
+    Carries the same columns fts_search does -- including `title_confidence`, so
+    an inferred title stays flagged through the vector path exactly as CP-H2
+    made it through the lexical one -- so the RRF fuser and the CLI see one hit
+    shape regardless of which retriever produced it.
+    """
+    if not node_ids:
+        return []
+    placeholders = ",".join("?" * len(node_ids))
+    rows = {r["node_id"]: dict(r) for r in store.db.execute(
+        "SELECT id node_id, node_key, title, title_confidence, subtype "
+        "FROM nodes WHERE id IN (%s)" % placeholders, list(node_ids))}
+    return [rows[nid] for nid in node_ids if nid in rows]
 
 
 def rrf_fuse(rankings: Mapping[str, Sequence[Hit]], k: int = RRF_K,
@@ -145,9 +267,18 @@ def rrf_fuse(rankings: Mapping[str, Sequence[Hit]], k: int = RRF_K,
 
 def hybrid_search(store: "Store", query: str, limit: int = 20,
                   include_all: bool = False,
-                  hidden_subtypes: Sequence[str] = DEFAULT_HIDDEN_SUBTYPES
+                  hidden_subtypes: Sequence[str] = DEFAULT_HIDDEN_SUBTYPES,
+                  embedder: "Embedder | None" = None
                   ) -> SearchResult:
-    """include_all=True is the `--all` escape hatch: nothing is hidden."""
+    """include_all=True is the `--all` escape hatch: nothing is hidden.
+
+    `embedder` is how the vector path is turned on: without one, embeddings are
+    off and this is a lexical search (out_mode "fts"); with one, the query is
+    embedded, an FTS shortlist is reranked by cosine, and the two rankings are
+    fused by RRF (out_mode "hybrid"). It is passed in rather than built here so
+    that `search`, which by contract never reads the machine config, stays that
+    way -- the caller that has the data file names it.
+    """
     warnings = []
     hidden = () if include_all else tuple(hidden_subtypes)
     if hidden:
@@ -160,7 +291,8 @@ def hybrid_search(store: "Store", query: str, limit: int = 20,
             "Run rebuild_fts()." % (store.fts_count(), store.node_count()))
 
     lex = fts_search(store, query, limit=limit, hidden_subtypes=hidden)
-    vec = vector_search(store, query, limit=limit)
+    vec = vector_search(store, query, limit=limit, embedder=embedder,
+                        hidden_subtypes=hidden)
 
     if vec is None:
         if store.embeddings is None:
@@ -171,8 +303,9 @@ def hybrid_search(store: "Store", query: str, limit: int = 20,
                 "explicitly with a provider and model to change it.")
         else:
             warnings.append(
-                "embeddings are configured but the index is empty; the vector "
-                "path did not run.")
+                "embeddings are configured but nothing is embedded under the "
+                "current model's namespace; the vector path did not run. Run "
+                "`homegraph embed` (a model change invalidates old vectors).")
         # Both arms of the old conditional said "fts". Whether the lexical
         # side found anything is already carried by `hits`; inventing a
         # branch that cannot differ only made the mode look computed.

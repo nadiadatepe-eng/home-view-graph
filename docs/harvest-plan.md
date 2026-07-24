@@ -23,7 +23,7 @@ Et checkpoint er ikke ferdig før alle seks holder:
 |----|-----|-------|--------|-------------|
 | **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ✅ instrument (baseline på ekte korpus → H3-tid) | 4 funn, alle lukket |
 | **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ✅ ferdig (skrive + lese-side) | 5 funn: 3 lukket, 2 backlog |
-| **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ☐ planlagt | — |
+| **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ✅ mekanisme + cosine-rerank bevist (syntetisk); ekte-korpus-baseline utsatt | 6 funn: F1/F4 lukket, F5/F6 herdet, F2/F3 rammet inn |
 | H4 | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ☐ backlog | — |
 | H5 | git co-change-kant + churn | Cirilcetra | ☐ backlog | — |
 | H6 | fanIn/fanOut-sentralitet som 3. RRF-liste | Cirilcetra | ☐ backlog | — |
@@ -105,21 +105,29 @@ Revisoren bekreftet at skrive-garantien er låst (confidence slås opp fra metho
 
 ---
 
-## CP-H3 · Statiske embeddings + hybrid semantisk søk  ☐ planlagt
+## CP-H3 · Statiske embeddings + hybrid semantisk søk  ✅ FERDIG (mekanisme, syntetisk)
 
-**Idé (codegraph-ai, model2vec-mønsteret):** embedding = `tokeniser → slå opp token-rader i en vokab×dim-matrise → vektet mean-pool → L2-norm`. Ingen nevralt nett, ingen ONNX, ingen nett-nedlasting — «modellen» er en datafil distillert offline én gang. Semantisk søk uten å bryte `dependencies=[]`. Måles mot CP-H1.
+**Idé (codegraph-ai, model2vec-mønsteret):** embedding = `tokeniser → slå opp token-rader i en vokab×dim-matrise → vektet mean-pool → L2-norm`. Ingen nevralt nett, ingen ONNX, ingen nett-nedlasting — «modellen» er en datafil distillert offline én gang. Semantisk søk uten å bryte `dependencies=[]`.
 
-**Gated av H1.** Bygges kun etter at scoreboardet gir en baseline å slå.
+**Bygget (07-24):**
+- **H3a — namespace + lager** (`store.py`, seksjon `-- embeddings --`): `upsert_embedding()`, `embedding_count()`, `read_embeddings()`. Vektorer lagres float32 (`array`), og HVER lesning filtrerer på `namespace = (provider, model, dim)`. Modellbytte → 0 rader i nytt namespace → ærlig `None` («re-embed»), aldri gamle vektorer stille servert.
+- **H3b — statisk embedder** (`providers/static_embed.py`, ny pakke): identifikator-splitting (`getUserById → get user by id`, camel/acronym/snake/kebab/punktum), vektet mean-pool, L2-norm. `load()` leser en datafil, `from_config()` nekter ukjent provider og validerer config-modell/dim mot matrisefila. Ren stdlib, ingen nett.
+- **H3c — vektorsøk** (`search.py`): `vector_search` = **OR-FTS shortlist → cosine kun over unionen → rangert**, aldri hele korpuset. `hybrid_search` fusjonerer FTS+vektor via RRF (`out_mode` blir `hybrid`). `None` (kjørte ikke) vs `[]` (kjørte, tomt) bevart gjennom hver exit. Embedderen sendes INN (search leser aldri config).
+- **H3d — config + CLI** (`userconfig.py` + `cli.py`): `[embeddings]`-avsnitt (av som standard); `embed`-kommandoen (config-drevet, exit 2 om blokk mangler / datafil mangler / store mangler); `search --embeddings <matrise>` (eksplisitt flagg — search leser fortsatt bare en db-sti).
 
-### TODO (delt i under-steg, hver med egen gate hvis nødvendig)
-- [ ] **H3a — namespace + lager.** `embeddings`-tabellen (finnes, store.py:172) får `namespace = provider:model:dim`; ny `upsert_embedding()`; alle KNN filtrerer på namespace; modellbytte → re-embed. (Konvergent lån: Cirilcetra①②, superfile#5.)
-- [ ] **H3b — statisk embedder.** `providers/static_embed.py`: last matrise+vokab (datafil, ikke nett), tokeniser med **identifikator-splitting** (`getUserById → get user by id`, camelCase/snake/kebab/punktum; +6 % recall, codegraph-ai#4), vektet mean-pool, L2-norm. Ren stdlib. Distillering er et *byggetids*-skript (Python/model2vec), ikke en runtime-avhengighet.
-- [ ] **H3c — vektorsøk.** Fyll `search.vector_search` (search.py:106): **FTS5 shortlister → cosine kun over unionen → RRF**, aldri hele korpuset. Bevar `None` (kjørte ikke) vs `[]` (fant ingenting). `hybrid_search` fusjonerer alt.
-- [ ] **H3d — config + CLI.** `[embeddings]`-avsnitt (Fase 0 fra integrasjonsplanen); fyll `embed`-kommandoen (cli.py:1191); nekter med exit 2 om datafila mangler.
-- [ ] **Mål mot H1:** recall@k med statisk+FTS+RRF vs FTS-baseline. Stopp-regel: behold kun hvis den slår baseline.
+### Gate
+Fasit-først `test_h3.py` (32/32: tokenizer + embed-for-hånd + namespace-round-trip + **cosine slår OR-BM25** + ingen-skann + None/[] + namespace-invalidering + datafil-ikke-nett + embed-kommando) → `mutate_h3.py` (**8/8 drept av navngitt gate, 0 overlevende**) → full suite grønn (cp0–13, h1, h2, no_real_paths: 18/18) → mypy(pakke) ren → ruff (F,E9) ren → personvernvakt 12/12. `test_h3.py` lagt eksplisitt i `pyproject` `python_files`.
 
-### sim-auditor-runde
-Pek revisoren på: **look-ahead / lekkasje** (deler distilleringens trenings-tekst H1-evalens test-par?), **fake-embedder-gate** (gates bruker en stub med faste vektorer — aldri ekte matrise, siden embeddings er ikke-deterministiske på tvers av maskiner), **`None` vs `[]`** bevart, **namespace-invalidering** (bytter man modell, blir gamle vektorer faktisk ignorert — eller returneres de stille?), **ingen hel-korpus-skann** (shortlister FTS faktisk før cosine, eller er unionen tom→full?), **datafil ikke nett** (ingen kodesti henter noe over nettet).
+### sim-auditor-runde ✅ (07-24) — seks funn
+**F1 🔴 (HIGH, lukket) — «semantisk slår leksikalsk» testet ikke cosine.** Første fixture hadde target med FLERE delte FTS-termer enn decoy (`lists`≠`list`, ingen stemming), så ren OR-BM25 rangerte target først uansett; `_cosine → 0.0` lot suiten stå grønn. **Gjenbrukbar lærdom:** en gate som PÅSTÅR å teste en komponent må ha komponentens svikt til å velte resultatet. Lukket ved å bygge fixture der BM25-orden og cosine-orden er UENIGE (decoy deler flere termer, men er fortynnet off-topic), måle mot **OR-BM25** (den sterkeste leksikalske motstanderen, ikke AND-FTS), og legge til en `_cosine→konstant`-mutasjon som nå velter gaten. = [[empty-gate-patterns]] (en gate som ikke kan felle den komponenten den navngir).
+**F4 (lukket)** — mutasjons-hull, korollar av F1: ingen mutasjon slo av cosine. Nå finnes den, og drepes.
+**F2 (rammet inn)** — baselinen var strengt AND-FTS; OR-BM25 er nå den eksplisitte motstanderen, så «headroom» tilskrives cosine, ikke AND→OR-recall.
+**F5 (herdet)** — nett-vakten fanget bare import-linjer; nå også `__import__`/`importlib`/`urlopen`/`socket`. Fortsatt kun over provider-fila, ikke hele kallgrafen — en vakt mot endringen som legger til henting, ikke et bevis.
+**F6 (kommentert)** — shortlist-node uten vektor i namespace hoppes over; hvis ALLE hoppes (delvis dekning) → `[]` med `out_mode=hybrid`. Ærlig, og uoppnåelig ved full embed. Kommentert i `search.py`.
+**F3 (ærlig ramme)** — hva som FAKTISK er bevist: mekanismen er koblet ende-til-ende, cosine-rerank slår OR-BM25 på et syntetisk fixture, og alle ærlighetsgarantiene (None/[], namespace, ingen skann, ingen nett, tom-eval) holder. **Ikke** bevist: at ekte distillerte vektorer på det EKTE korpuset slår baselinen — det er `evaluate` over 1 par på 3 håndlagde filer med en håndlagd matrise.
+
+### Gjenstår (H3-tid → nå H3+): den ekte matrisen og stopp-regelen
+Byggetids-distillering (model2vec, lærer f.eks. Jina-Code-v2, Apache-2.0) → ekte matrise → **kjør recall@k mot H1-scoreboardet på det ekte korpuset**. Stopp-regel: behold vektor/hybrid kun hvis den slår OR-BM25-baselinen der. Lærer velges bevisst (egen avgjørelse) når vi tar den. Til da: mekanismen står, syntetisk bevist.
 
 ---
 
