@@ -18,11 +18,13 @@ browser spends its time in layout rather than drawing.
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
 import os
 import random
+import struct
 
 from .store import Store, provenance_note
 
@@ -265,8 +267,54 @@ def _collect_mesh(mesh_db, nodes, index, edges, limit_per_model, missing):
                               r["r"], r["m"], r["c"]))
 
 
+def _submatrix(nodes, matrix_path):
+    """A title-word sub-matrix for in-browser semantic search, or None.
+
+    The page cannot carry the whole distilled matrix (tens of MB), and it does
+    not need to: the search box searches TITLES, so the only words a query has
+    to resolve are the ones that appear in the titles on screen. That is a few
+    thousand words, not the corpus's tens of thousands. Subset to them, quantise
+    each row to int8 with a per-row scale (the direction is preserved exactly;
+    only the magnitude is rounded, and cosine is a direction), and base64-pack
+    the bytes. ~2 500 words x 256 dims is well under a megabyte -- small enough
+    to inline in a file that must still open with no network.
+
+    Per-row scale, not one global scale: model2vec bakes a zipf down-weighting
+    into each word's MAGNITUDE, so a single scale would clip the rare, most
+    discriminative words toward zero. The row is the unit that has to survive.
+    """
+    from .providers.static_embed import load, split_identifiers
+    matrix = load(matrix_path)
+    words, seen = [], set()
+    for n in nodes:
+        for w in split_identifiers(n["title"] or ""):
+            if w not in seen and w in matrix.vectors:
+                seen.add(w)
+                words.append(w)
+    if not words:
+        return None
+    dim = matrix.dim
+    q = bytearray()
+    scales = bytearray()
+    for w in words:
+        row = matrix.vectors[w]
+        peak = max((abs(x) for x in row), default=0.0)
+        scale = peak / 127.0 if peak > 0 else 1.0
+        scales += struct.pack("<f", scale)
+        for x in row:
+            v = round(x / scale)
+            q.append(max(-127, min(127, v)) & 0xFF)
+    return {
+        "dim": dim,
+        "model": matrix.model,
+        "words": words,
+        "q": base64.b64encode(bytes(q)).decode(),
+        "s": base64.b64encode(bytes(scales)).decode(),
+    }
+
+
 def render(model_paths, out_path, limit_per_model=2000, min_degree=0,
-           iterations=180, title="homegraph", mesh_db=None):
+           iterations=180, title="homegraph", mesh_db=None, embeddings=None):
     nodes, edges, missing = collect(model_paths, limit_per_model, min_degree,
                                     mesh_db=mesh_db)
     positions = _layout(nodes, [(a, b) for a, b, *_ in edges],
@@ -290,13 +338,62 @@ def render(model_paths, out_path, limit_per_model=2000, min_degree=0,
         "derived": sum(1 for *_, c in edges if c is not None and c < 1.0),
         "note": note or "",
     }
+    # Semantic search is opt-in: only when a matrix is named, and even then only
+    # over the words the on-screen titles actually use. Absent, the page is
+    # exactly what it was and the toggle never appears.
+    emb = _submatrix(nodes, embeddings) if embeddings else None
+    if emb is not None:
+        payload["emb"] = emb
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(_PAGE.replace("__TITLE__", html.escape(title))
+                 .replace("__EMB_JS__", _EMB_JS)
                  .replace("__DATA__", json.dumps(payload, separators=(",", ":"))))
     return {"nodes": len(nodes), "edges": len(edges), "missing": missing,
             "derived": payload["derived"], "note": note or "",
+            "embwords": len(emb["words"]) if emb else 0,
             "path": out_path,
             "bytes": os.path.getsize(out_path)}
+
+
+# The semantic core, kept DOM-free so the same code runs in the browser and
+# under node in the gate (CP-9 already extracts `fileOf`/`linkFor` this way).
+# `emSplit` is a literal port of providers.static_embed.split_identifiers -- the
+# SAME three passes in the SAME order -- because a query tokenised differently
+# from the corpus would miss the vocabulary silently. The gate runs both and
+# compares, so the two cannot drift.
+_EMB_JS = r"""
+function emSplit(text){
+  return text.replace(/[^0-9A-Za-z]+/g,' ')
+             .replace(/([A-Z]+)([A-Z][a-z])/g,'$1 $2')
+             .replace(/([a-z0-9])([A-Z])/g,'$1 $2')
+             .split(/\s+/).filter(Boolean).map(function(t){return t.toLowerCase();});
+}
+function emBuild(e){
+  var q=Uint8Array.from(atob(e.q),function(c){return c.charCodeAt(0);});
+  var sb=Uint8Array.from(atob(e.s),function(c){return c.charCodeAt(0);});
+  var scales=new Float32Array(sb.buffer,0,e.words.length);
+  var vec=new Map();
+  for(var j=0;j<e.words.length;j++){
+    var s=scales[j], row=new Float32Array(e.dim);
+    for(var d=0;d<e.dim;d++){var b=q[j*e.dim+d]; row[d]=(b<128?b:b-256)*s;}
+    vec.set(e.words[j],row);
+  }
+  return {dim:e.dim, vec:vec};
+}
+function emEmbed(EM,text){
+  var acc=new Float32Array(EM.dim), n=0, toks=emSplit(text);
+  for(var i=0;i<toks.length;i++){
+    var r=EM.vec.get(toks[i]); if(!r) continue;
+    for(var d=0;d<EM.dim;d++) acc[d]+=r[d]; n++;
+  }
+  if(!n) return null;
+  var nn=0;
+  for(var d=0;d<EM.dim;d++){acc[d]/=n; nn+=acc[d]*acc[d];}
+  nn=Math.sqrt(nn); if(nn>0) for(var d=0;d<EM.dim;d++) acc[d]/=nn;
+  return acc;
+}
+function emCos(a,b){var s=0; for(var d=0;d<a.length;d++) s+=a[d]*b[d]; return s;}
+"""
 
 
 _PAGE = """<!DOCTYPE html>
@@ -317,8 +414,12 @@ _PAGE = """<!DOCTYPE html>
    max-width:290px;box-shadow:0 2px 14px rgba(0,0,0,.10)}
  #panel h1{font-size:15px;margin:0 0 2px}
  #panel .sub{color:var(--muted);font-size:12px;margin:0 0 10px}
- #q{width:100%;padding:6px 8px;border:1px solid var(--rule);border-radius:5px;
-   background:var(--bg);color:var(--fg);font:inherit;margin-bottom:8px}
+ #srow{display:flex;gap:6px;margin-bottom:8px}
+ #q{flex:1;min-width:0;padding:6px 8px;border:1px solid var(--rule);
+   border-radius:5px;background:var(--bg);color:var(--fg);font:inherit}
+ #semtoggle{border:1px solid var(--rule);border-radius:5px;background:var(--card);
+   color:var(--fg);font:inherit;cursor:pointer;padding:0 10px;min-width:42px}
+ #semtoggle.on{background:#4a6fa5;color:#fff;border-color:#4a6fa5}
  label{display:flex;align-items:center;gap:7px;font-size:13px;padding:2px 0;
    cursor:pointer}
  .dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto}
@@ -349,7 +450,11 @@ _PAGE = """<!DOCTYPE html>
 <div id="panel">
   <h1>__TITLE__</h1>
   <p class="sub" id="stats"></p>
-  <input id="q" placeholder="søk i titler…" autocomplete="off">
+  <div id="srow">
+    <input id="q" placeholder="søk i titler…" autocomplete="off">
+    <button id="semtoggle" type="button" style="display:none"
+            title="bytt mellom bokstavelig og semantisk søk">abc</button>
+  </div>
   <div id="legend"></div>
   <div id="warn"></div>
 </div>
@@ -362,6 +467,15 @@ _PAGE = """<!DOCTYPE html>
 <div id="hint">dra for å panorere · rull for å zoome · hold over en node</div>
 <script>
 const D = __DATA__;
+__EMB_JS__
+// Semantic search, live only when the graph was built with --embeddings. EM is
+// the title-word sub-matrix; nodeVec is each node's title embedded once up
+// front. Both are null otherwise, and every semantic branch below is guarded on
+// them, so a plain graph behaves exactly as before.
+const EM = D.emb ? emBuild(D.emb) : null;
+const nodeVec = EM ? D.nodes.map(n => emEmbed(EM, n[2])) : null;
+const SEM_TOPK = 60, SEM_MIN = 0.12;
+let semMode = false, simNode = -1, matchSet = null, scoreOf = null;
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const tip = document.getElementById('tip');
 let view = {x:0, y:0, k:1}, hidden = new Set(), query = '', hover = -1;
@@ -440,25 +554,35 @@ function linkFor(key) {
 
 function updateHits() {
   hitList.textContent = '';
-  if (!query) { hitsBox.style.display = 'none'; return; }
+  if (!matchSet) { hitsBox.style.display = 'none'; return; }
+
+  // Order the matched indices: by cosine when a semantic or similar search
+  // produced scores, alphabetically when a literal one did not.
+  const idxs = [];
+  for (let i = 0; i < D.nodes.length; i++) {
+    if (hidden.has(D.nodes[i][1])) continue;
+    if (!matchSet.has(i)) continue;
+    idxs.push(i);
+  }
+  if (scoreOf) idxs.sort((a, b) => scoreOf.get(b) - scoreOf.get(a));
 
   const seen = new Set(), rows = [];
-  for (let i = 0; i < D.nodes.length; i++) {
+  for (const i of idxs) {
     const n = D.nodes[i];
-    if (hidden.has(n[1])) continue;
-    if (!n[2].toLowerCase().includes(query)) continue;
     const key = n[7] ? fileOf(n[0]) : null;
     // One row per file, not per section: a note with forty sections is one
     // thing to open.
     const id = key || n[0];
     if (seen.has(id)) continue;
     seen.add(id);
-    rows.push([id, key, n[1], n[0]]);
+    rows.push([id, key, n[1], n[0], scoreOf ? scoreOf.get(i) : null]);
   }
-  rows.sort((a, b) => a[0].localeCompare(b[0], 'no'));
+  if (!scoreOf) rows.sort((a, b) => a[0].localeCompare(b[0], 'no'));
 
   hitsBox.style.display = 'flex';
-  hitCount.textContent = rows.length.toLocaleString('no') + ' treff';
+  const lead = simNode >= 0 ? '≈ ' + D.nodes[simNode][2] + ' — '
+             : semMode ? 'semantisk — ' : '';
+  hitCount.textContent = lead + rows.length.toLocaleString('no') + ' treff';
   // No silent cap. The list stops at maxhits and says that it did -- a cut
   // list that does not admit it reads as the whole answer.
   hitCut.textContent = rows.length > D.maxhits
@@ -469,7 +593,7 @@ function updateHits() {
     hitList.appendChild(li);
     return;
   }
-  for (const [id, key, model, nodeKey] of rows.slice(0, D.maxhits)) {
+  for (const [id, key, model, nodeKey, score] of rows.slice(0, D.maxhits)) {
     const li = document.createElement('li');
     const cut = id.lastIndexOf('/');
     if (key) {
@@ -495,15 +619,70 @@ function updateHits() {
     }
     const m = document.createElement('span');
     m.className = 'm';
-    m.textContent = '  ' + ((D.names && D.names[model]) || model);
+    m.textContent = '  ' + ((D.names && D.names[model]) || model)
+      + (score != null ? '  ' + score.toFixed(2) : '');
     li.appendChild(m);
     hitList.appendChild(li);
   }
 }
 
-document.getElementById('q').oninput = e => {
-  query = e.target.value.toLowerCase(); draw(); updateHits();
+// The active search result, whatever produced it -- literal substring, a
+// semantic query, or "similar to this node". draw() and updateHits() read
+// matchSet (which nodes) and scoreOf (how close, when there is a score) and do
+// not care which of the three filled them: one render path, three inputs.
+function rankBy(scoreFn, exclude) {
+  const arr = [];
+  for (let i = 0; i < D.nodes.length; i++) {
+    if (i === exclude || hidden.has(D.nodes[i][1])) continue;
+    const sc = scoreFn(i);
+    if (sc > SEM_MIN) arr.push([i, sc]);
+  }
+  arr.sort((a, b) => b[1] - a[1]);
+  const top = arr.slice(0, SEM_TOPK);
+  matchSet = new Set(top.map(x => x[0]));
+  scoreOf = new Map(top);
+}
+function recompute() {
+  matchSet = null; scoreOf = null;
+  if (simNode >= 0 && nodeVec && nodeVec[simNode]) {
+    rankBy(i => nodeVec[i] ? emCos(nodeVec[simNode], nodeVec[i]) : -1, simNode);
+    return;
+  }
+  if (!query) return;
+  if (semMode && EM) {
+    const qv = emEmbed(EM, query);
+    // No in-vocabulary token -> no semantic answer: an empty set, said plainly,
+    // not a silent fall back to substring that answers a different question.
+    if (qv) rankBy(i => nodeVec[i] ? emCos(qv, nodeVec[i]) : -1, -1);
+    else matchSet = new Set();
+    return;
+  }
+  const s = new Set();
+  for (let i = 0; i < D.nodes.length; i++)
+    if (D.nodes[i][2].toLowerCase().includes(query)) s.add(i);
+  matchSet = s;
+}
+
+const qInput = document.getElementById('q');
+qInput.oninput = e => {
+  query = e.target.value.toLowerCase();
+  if (query) simNode = -1;              // typing leaves "similar to node" mode
+  recompute(); draw(); updateHits();
 };
+
+// The toggle appears only when there is a matrix to search with. Absent, the
+// box stays a literal title search and nothing on the page changed.
+if (EM) {
+  const t = document.getElementById('semtoggle');
+  t.style.display = 'block';
+  t.onclick = () => {
+    semMode = !semMode;
+    t.textContent = semMode ? '≈' : 'abc';
+    t.classList.toggle('on', semMode);
+    qInput.placeholder = semMode ? 'søk etter betydning…' : 'søk i titler…';
+    recompute(); draw(); updateHits();
+  };
+}
 
 function fit() {
   cv.width = innerWidth * devicePixelRatio;
@@ -555,11 +734,14 @@ function draw() {
   for (let i = 0; i < D.nodes.length; i++) {
     if (!vis(i)) continue;
     const n = D.nodes[i];
-    const match = query && n[2].toLowerCase().includes(query);
-    ctx.globalAlpha = (!query || match) ? 1 : 0.12;
+    const anchor = i === simNode;                 // the "similar to" node
+    const match = matchSet ? matchSet.has(i) : false;
+    const lit = match || anchor;
+    ctx.globalAlpha = (!matchSet || lit) ? 1 : 0.12;
     ctx.beginPath();
-    ctx.arc(sx(n), sy(n), match ? 5 : (i === hover ? 5 : 2.6), 0, 6.283);
-    ctx.fillStyle = match ? '#d94f3d' : (D.colours[n[1]] || '#8b8680');
+    ctx.arc(sx(n), sy(n), lit ? 5 : (i === hover ? 5 : 2.6), 0, 6.283);
+    ctx.fillStyle = anchor ? '#4a6fa5'
+      : (match ? '#d94f3d' : (D.colours[n[1]] || '#8b8680'));
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -568,7 +750,21 @@ function draw() {
 let drag = null;
 cv.onmousedown = e => { drag = {x:e.clientX, y:e.clientY, vx:view.x, vy:view.y};
   cv.classList.add('drag'); };
-addEventListener('mouseup', () => { drag = null; cv.classList.remove('drag'); });
+addEventListener('mouseup', e => {
+  const moved = drag &&
+    (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y)) > 4;
+  drag = null; cv.classList.remove('drag');
+  // A click (a mouseup that did not drag) on a node with an embedding shows its
+  // nearest neighbours; a click on empty space clears the search. Only when a
+  // matrix is loaded -- otherwise a click does nothing it did not before.
+  if (moved || !EM) return;
+  if (hover >= 0 && nodeVec[hover]) {
+    simNode = hover; query = ''; qInput.value = '';
+  } else {
+    simNode = -1;
+  }
+  recompute(); draw(); updateHits();
+});
 cv.onmousemove = e => {
   if (drag) { view.x = drag.vx + e.clientX - drag.x;
               view.y = drag.vy + e.clientY - drag.y; draw(); return; }

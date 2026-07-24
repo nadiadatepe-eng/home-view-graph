@@ -318,7 +318,8 @@ def cmd_visualize(args):
                       for s in args.model)},
                     args.out, limit_per_model=args.limit,
                     min_degree=args.min_degree, title=args.title,
-                    mesh_db=getattr(args, "mesh_db", None))
+                    mesh_db=getattr(args, "mesh_db", None),
+                    embeddings=getattr(args, "embeddings", None))
     for key, value in report.items():
         print("%-12s %s" % (key, value))
     print("\nOpen it in a browser:  file://%s" % os.path.abspath(args.out))
@@ -1212,6 +1213,10 @@ def main(argv=None):
     p.add_argument("--min-degree", dest="min_degree", type=int, default=0,
                    help="drop nodes with fewer than N edges")
     p.add_argument("--title", default="homegraph")
+    p.add_argument("--embeddings", default=None, metavar="MATRIX",
+                   help="a matrix data file; adds an abc/≈ toggle for semantic "
+                        "title search and click-a-node-for-similar. Only the "
+                        "on-screen titles' words are inlined (well under 1 MB).")
     p.set_defaults(func=cmd_visualize)
 
     p = sub.add_parser("mcp", help="run the MCP server on stdio")
