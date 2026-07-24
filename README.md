@@ -151,7 +151,8 @@ layout would still be imposed.
 | `lock.py` | one writer per store: lock file plus `BEGIN IMMEDIATE`, refuses rather than queues |
 | `query.py` | the closed query language; grammar in `DECISIONS.md` section 25 |
 | `temporal.py` | observations, `datelist_int` bitmask, 90-day retention |
-| `search.py` | FTS5, RRF fusion, `_out_mode` |
+| `search.py` | FTS5, static-vector rerank over the FTS shortlist, RRF fusion, `_out_mode`, `--mode auto\|vector\|fts` |
+| `providers/static_embed.py` | the static lookup-table embedder: identifier-split, weighted mean-pool, L2 — a data file, never the network |
 | `incremental.py` | mtime+size, then hash to confirm |
 | `update.py` | applies that diff to a built model |
 | `models/m1_*` | documents: pdf, odt, docx, tex |
@@ -163,7 +164,7 @@ layout would still be imposed.
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
 | `portable.py` | node keys with the root taken out, and put back |
 | `export.py` / `importer.py` | the portable artifact: lzma JSON Lines, digest in a trailer |
-| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `watch`, `build`, `export`, `import`, `inspect` |
+| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `watch`, `build`, `embed`, `export`, `import`, `inspect` |
 
 ## What the edges say
 
@@ -237,6 +238,16 @@ homegraph mesh build --model m3=/tmp/m3.db --model m1=/tmp/m1.db \
 
 # One self-contained HTML file -- open it in any browser, offline, forever
 homegraph visualize --model m3=/tmp/m3.db --out graph.html
+
+# Semantic search (H3), opt-in. Distil a matrix ONCE, build-time -- the only
+# step that touches the network or a model, and it is a tool, not the package
+# (dependencies=[] stays true):
+uv run --with model2vec python3 tools/distill_matrix.py \
+        --store /tmp/m3.db --out matrix.json
+homegraph embed  --model m3=/tmp/m3.db                     # needs an [embeddings] config block
+homegraph search /tmp/m3.db --embeddings matrix.json --mode vector "how memory persists"
+# ...and the graph gets an abc/≈ toggle + click-a-node-for-similar:
+homegraph visualize --model m3=/tmp/m3.db --embeddings matrix.json --out graph.html
 
 # MCP server on stdio
 homegraph mcp --model m3=/tmp/m3.db
@@ -611,6 +622,31 @@ worth building and one was worth recording as a warning:
   catch, not easier. The lesson here: never dress an uncertain answer in
   language that discourages verification. It is why `provenance_note` says
   `partial` out loud rather than presenting a guessed edge as fact.
+
+### `codegraph-ai/CodeGraph`
+
+The source of the **H1–H3 harvest** (2026-07-24).
+
+- **Eval before mechanism** (H1): decide whether semantic search helps by
+  *measuring* it — recall@k / MRR over labelled pairs — not by feel. The
+  scoreboard was built before the embedder it grades.
+- **Static lookup-table embeddings** (H3), the model2vec pattern: an embedding
+  is arithmetic over a distilled `vocab × dim` matrix — tokenise, look rows up,
+  weighted mean-pool, L2-normalise — so semantic search costs no runtime
+  dependency and no network. Distillation is build-time; the "model" is a data
+  file. **FTS shortlist → cosine over the union → RRF**, never a whole-corpus
+  scan; the `provider:model:dim` namespace with re-embed-on-change; identifier
+  splitting (`getUserById → get user by id`, +6% recall).
+- Its **anti-patterns confirmed choices already made**: a heavy embedding
+  runtime (a static lookup avoids it), auto-downloaded models (an explicit data
+  file instead), hashing counts rather than content.
+
+### `minishlab / model2vec`
+
+The distillation technique H3's build-time tool applies, and the pre-distilled
+`potion-multilingual-128M` static model the real matrix was made from
+(`tools/distill_matrix.py`). A build-time tool run through `uv`, never a runtime
+dependency — the package stays `dependencies=[]`.
 
 ### `DataExpert-io/data-engineer-handbook`
 

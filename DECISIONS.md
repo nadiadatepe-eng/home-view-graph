@@ -1415,6 +1415,66 @@ cp13 mutation loop never runs. Rerooted at a neutral marker.
 
 ---
 
+## 29 · Semantic search is a static lookup table, off by default, and the gate had to be forced to fail
+
+Borrowed from `codegraph-ai/CodeGraph` (the model2vec pattern): an embedding
+does not need a neural net at inference. Distil a teacher once, offline, into a
+`vocab × dim` matrix, and at run time an embedding is arithmetic — tokenise,
+look each word's row up, weighted mean-pool, L2-normalise. No ONNX, no torch, no
+download, no `dependencies = []` broken. The distillation is a **build-time
+tool** (`tools/distill_matrix.py`, run through `uv --with model2vec`); the
+"model" that ships is a data file the user already has. A provider that fetched
+a model at first search would be the code-review-graph #711 failure — a build
+path that quietly costs money — designed out rather than warned about.
+
+Four properties are load-bearing, and each has a mutation that proves the gate
+can see it removed:
+
+- **Namespace, and invalidation.** Every stored vector carries
+  `(provider, model, dim)`, and every read filters on it. A model switch leaves
+  the old vectors under the old namespace, so a query for the new one finds
+  zero and reports `None` — "did not run, re-embed" — rather than ranking one
+  model's query against another model's vectors, which are not comparable.
+- **Shortlist, not scan.** The vector path reranks an **OR-FTS shortlist** by
+  cosine; it never scores every vector in the store. The cost is honest: a
+  query with no lexical overlap gets nothing, because the shortlist is empty.
+  That is the price of never scanning the corpus, and it is the one paid.
+- **`None` vs `[]`.** Preserved through every exit: `None` is "did not run"
+  (embeddings off, or nothing embedded in this namespace); `[]` is "ran, found
+  nothing". Collapsing them is how a silently-degraded search reads as a working
+  one — the failure `_out_mode` exists to prevent.
+- **`--mode`.** `auto` fuses FTS and vectors by RRF; `vector` is pure cosine
+  with no lexical fallback (a silent fallback would answer a different question
+  than the one asked); `fts` ignores the embedder. `search` still reads a
+  database path and no config — the matrix is named explicitly.
+
+**The reusable lesson is the gate itself.** The first "semantic beats lexical"
+gate did not test cosine at all: the fixture's target shared *more* FTS terms
+than the decoy (`lists` ≠ `list`, no stemming), so plain OR-BM25 already ranked
+it first and replacing `_cosine` with a constant left the suite green. A gate
+that names a component must have that component's failure redden it. It was
+closed by rebuilding the fixture so BM25 order and cosine order **disagree** —
+a decoy that shares more terms but is topically off — measuring against OR-BM25
+rather than the AND-FTS strawman, and adding a cosine-disabling mutation that
+now flips it. Same family as the empty-gate rule (decision 20), one level up:
+not "the gate cannot say no" but "the gate says no for the wrong reason".
+
+**Off by default, and the real corpus said keep it that way.** Distilled
+`potion-multilingual-128M` over the real `$HOME` (the corpus is Norwegian and
+English) and ran the stop-rule: on the leakage-guarded heading→file eval AND-FTS
+dominates (r@1 0.71) and fusing vectors *regresses* it (0.64) — a lexical task,
+where semantic reranking only adds noise. So embeddings stay opt-in
+(`search --embeddings`, `[embeddings]` config absent by default), exactly as
+shipped. The value is real on the queries they are *for*: a paraphrase AND-FTS
+answers with the wrong file, or nothing, the vector path answers with the right
+one. A quantitative semantic verdict still needs a labelled paraphrase set — the
+same honest gap the synthetic gate had, recorded rather than papered over.
+
+The graph page (`visualize --embeddings`) carries the same embedder as a
+DOM-free JS port plus an int8 title-word sub-matrix (~1 MB, self-contained), and
+the gate runs that port under node and compares it number-for-number to the
+Python one, so the two cannot drift.
+
 ## 14 · Deferred
 
 Kept current, because a deferral list that is not re-read becomes a list of
