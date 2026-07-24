@@ -107,12 +107,12 @@
 <header>
   <h1>homegraph — status &amp; veikart</h1>
   <p class="sub">Hvor prosjektet står, og hva som er neste utviklingsarbeid.</p>
-  <p class="meta">2026-07-24 · <code>main</code> på <code>bd4ad49</code> · publisert som <code>home-view-graph</code></p>
+  <p class="meta">2026-07-24 · <code>main</code> på <code>670b156</code> · publisert som <code>home-view-graph</code></p>
 </header>
 
 <div class="status">
 <h2>Hvor vi står</h2>
-<p class="when">Fem-modells kunnskapsgraf over hjemmekatalogen (<code>$HOME</code>), publisert på GitHub. Tolv+ checkpoints, mutasjonstestet, ingen kjøretidsavhengigheter utenfor standardbiblioteket. I dag ble en watch-loop løst ved roten, og et integrasjonssteg (Ollama · Obsidian · Graphify) planlagt.</p>
+<p class="when">Fem-modells kunnskapsgraf over hjemmekatalogen (<code>$HOME</code>), publisert på GitHub. Tolv+ checkpoints, mutasjonstestet, ingen kjøretidsavhengigheter utenfor standardbiblioteket. Etter en idé-høsting fra fire nabo-repoer har tre høst-checkpoints landet: <strong>H1</strong> (eval-scoreboard), <strong>H2</strong> (inferert-etikett bærer konfidens) og <strong>H3</strong> (statiske lookup-tabell-embeddings + hybrid semantisk søk — semantisk gjenfinning uten å bryte <code>dependencies=[]</code>).</p>
 <p class="links">
 </p>
 </div>
@@ -129,30 +129,30 @@
 
 <h2>Nylig gjort <span class="tag done">FERDIG</span></h2>
 <ul class="check">
-  <li class="done"><strong>Watch-loopen løst ved roten.</strong> <code>.claude/</code> og <code>.codex/</code> invertert fra deny-liste til wholesale-eksklusjon + <code>[allow]</code>-liste, så churn kan aldri starte en rebuild-loop. Bygget indekserer fortsatt authored innhold; watch pruner treet. Verifisert på ekte data. <span class="k">b99bd1f · bd4ad49</span></li>
-  <li class="done"><strong>Corpus-relevans-gaten testet gjennom den ekte CLI-wiringen</strong> (var kun testet via injisert lambda) — ny CLI-nivå test + mutant. <span class="k">c61de6c</span></li>
-  <li class="done"><strong><code>.credentials.json</code> (OAuth-tokens) tettet</strong> — manglet ledende punktum i secret-navn; nå redacted overalt.</li>
-  <li class="done"><strong>Personvern-regresjon fjernet</strong> — nattens test-fixturer brukte en forbudt hjemkatalog-literal som personvernvakten avviser i publiserte filer; rerotet til et nøytralt navn. Vakt 12/12.</li>
-  <li class="done"><strong>DECISIONS §28</strong> dokumenterer begge inverteringene og personvernfiksen.</li>
-  <li class="done"><strong>Integrasjonsplan skrevet</strong> (Ollama · Obsidian · Graphify via config), forankret i kodens faktiske utvidelsespunkter.</li>
+  <li class="done"><strong>CP-H3 · Statiske embeddings + hybrid semantisk søk.</strong> Embedding = tokeniser → slå opp token-rader i en vokab×dim-matrise → vektet mean-pool → L2-norm. Ingen nevralt nett, ingen nett-nedlasting — «modellen» er en datafil. <code>vector_search</code>: OR-FTS shortlist → cosine kun over unionen → RRF, aldri hele korpuset; <code>None</code> (kjørte ikke) vs <code>[]</code> (tomt) bevart; namespace <code>provider:model:dim</code> invalideres ved modellbytte. test_h3 32/32, mutate_h3 8/8 drept. <span class="k">670b156</span></li>
+  <li class="done"><strong>Sim-auditoren fanget en gate som ikke testet det den navnga.</strong> Første «semantisk slår leksikalsk»-gate testet i praksis ikke cosine — <code>_cosine→0.0</code> lot suiten stå grønn. Lukket med et fixture der BM25-orden og cosine-orden er uenige, målt mot OR-BM25, + en cosine-nøytraliserende mutasjon.</li>
+  <li class="done"><strong>CP-H2 · Inferert etikett bærer OG surfacer konfidens.</strong> M3-titler tagges <code>declared</code>/<code>verbatim</code>/<code>inferred</code> (migrasjon 3); en gjettet tittel serveres aldri som fakta — konfidensen når helt ut til MCP-konsumenten. <span class="k">0f67292</span></li>
+  <li class="done"><strong>CP-H1 · Eval-først retrieval-scoreboard.</strong> recall@k / MRR med lekkasje-vakter, bygget FØR mekanismen det måler. Måleinstrumentet H3 slås mot. <span class="k">aaf844a</span></li>
+  <li class="done"><strong>Watch-loopen løst ved roten</strong> og integrasjonsplanen skrevet. <span class="k">b99bd1f · bd4ad49</span></li>
 </ul>
 
 <h2>Veikart — neste utviklingsarbeid</h2>
 <p class="lede">Alt styres gjennom config, av som standard, kun standardbiblioteket. Rekkefølge 0 → 1 → 2 → 3. Full begrunnelse i integrasjonsplanen (i repoet).</p>
 
-<h3>Fase 0 · Config-fundament <span class="tag next">NESTE</span></h3>
+<h3>Fase 0 · Config-fundament <span class="tag done">DELVIS FERDIG</span></h3>
 <ul class="check">
-  <li><span class="k">userconfig.py</span> Nytt <code>[embeddings]</code>/<code>[ollama]</code>/<code>[obsidian]</code>/<code>[graphify]</code>-avsnitt: dataklasse, <code>load()</code>, <code>render()</code>. Alt av som standard.</li>
-  <li><span class="k">providers/</span> Ny pakke med én tynn stdlib-HTTP-klient (<code>urllib</code>) som delt substrat.</li>
+  <li class="done"><span class="k">userconfig.py</span> <code>[embeddings]</code>-avsnitt (av som standard) — dataklasse, <code>load()</code>, <code>render()</code>. <code>[obsidian]</code>/<code>[graphify]</code> gjenstår.</li>
+  <li class="done"><span class="k">providers/</span> Pakken finnes; første provider er <code>static_embed</code> (ren stdlib, datafil, ingen nett). En nett-klient (<code>urllib</code>) legges til når Ollama tas.</li>
 </ul>
 
-<h3>Fase 1 · Ollama → semantisk søk <span class="tag next">HØYEST VERDI</span></h3>
+<h3>Fase 1 · Semantisk søk <span class="tag done">FERDIG (statisk)</span></h3>
+<p class="lede">Endret fra høstingen: den statiske lookup-tabellen (model2vec-mønsteret, lånt fra codegraph-ai) ble <em>default</em>-veien — ren stdlib, ingen nett — ikke Ollama. Ollama blir en opt-in provider senere.</p>
 <ul class="check">
-  <li><span class="k">providers/ollama.py</span> Embeddings-provider over <code>/api/embeddings</code>.</li>
-  <li><span class="k">store.py</span> Ny <code>upsert_embedding()</code> (tabellen finnes alt).</li>
-  <li><span class="k">cli.py</span> Fyll ut <code>embed</code>-kommandoen (i dag stubb). Nekter med exit 2 om Ollama er uåbar.</li>
-  <li><span class="k">search.py</span> Fyll ut <code>vector_search()</code> (brute-force cosine). Bevar <code>None</code> vs <code>[]</code>. <code>hybrid_search</code> fusjonerer FTS+vektor via RRF automatisk.</li>
-  <li>Gate med <strong>fake embedder</strong> (known-answer), aldri ekte Ollama — tester røret, ikke modellen.</li>
+  <li class="done"><span class="k">store.py</span> <code>upsert_embedding()</code> + namespace-filtrert lesning (modellbytte invaliderer gamle vektorer).</li>
+  <li class="done"><span class="k">cli.py</span> <code>embed</code>-kommandoen fylt (var stubb); nekter exit 2 om datafila mangler.</li>
+  <li class="done"><span class="k">search.py</span> <code>vector_search()</code>: FTS-shortlist → cosine kun over unionen → RRF. <code>None</code> vs <code>[]</code> bevart, aldri hel-korpus-skann.</li>
+  <li class="done">Gate med <strong>fake embedder</strong> (syntetisk matrise, known-answer) — tester røret, aldri en ekte/nedlastet modell.</li>
+  <li><span class="k">providers/ollama.py</span> <span class="tag later">SENERE</span> Embeddings over <code>/api/embeddings</code> som opt-in provider — pluss den ekte distillerte matrisen og stopp-regelen mot H1-scoreboardet på det ekte korpuset.</li>
 </ul>
 
 <h3>Fase 2 · Obsidian-eksport <span class="tag next">PLANLAGT</span></h3>
@@ -185,7 +185,7 @@
 </ul>
 
 <hr>
-<p class="footnote">Status per 2026-07-24 på <code>bd4ad49</code>. Diagrammet er generert med Archify og eksportert som bilde; det interaktive diagrammet og de to planene lenkes øverst. Tell tilstanden på nytt før den siteres.</p>
+<p class="footnote">Status per 2026-07-24 på <code>670b156</code> (CP-H3). Diagrammet er generert med Archify og eksportert som bilde; det interaktive diagrammet og de to planene lenkes øverst. Tell tilstanden på nytt før den siteres.</p>
 
 </div>
 </body>
