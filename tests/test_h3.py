@@ -486,6 +486,63 @@ def t_embed_command():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def t_search_modes():
+    """--mode picks the retriever, and each mode is honest about which ran.
+
+    'vector' is the reason this exists: pure cosine order, no RRF fusion, so a
+    strong lexical match cannot ride up next to the semantic ones (the wart the
+    real-corpus stop-rule surfaced). The load-bearing checks are that vector
+    mode does NOT fuse and has NO lexical fallback -- a silent fallback would
+    answer a different question than the one asked.
+    """
+    from homegraph import cli
+
+    d = _tmp()
+    try:
+        db, ids, emb = _build_embedded(d)
+        with _open(db) as s:
+            r = hybrid_search(s, _QUERY, embedder=emb, mode="vector")
+            check("mode=vector reports out_mode 'vector'",
+                  r._out_mode == "vector", r._out_mode)
+            check("mode=vector ranks by cosine (target first)",
+                  bool(r.hits) and r.hits[0]["node_id"] == ids["target.md"])
+            check("mode=vector does not fuse (every source is vector-only)",
+                  all(all(src.startswith("vector#") for src in h.get("sources", []))
+                      for h in r.hits) and bool(r.hits))
+
+            # fts mode ignores the embedder entirely.
+            rf = hybrid_search(s, "retrieval", embedder=emb, mode="fts")
+            check("mode=fts reports out_mode 'fts' even with an embedder passed",
+                  rf._out_mode == "fts", rf._out_mode)
+            check("mode=fts returns the lexical hit",
+                  ids["target.md"] in [h["node_id"] for h in rf.hits])
+
+            try:
+                hybrid_search(s, _QUERY, embedder=emb, mode="magic")
+                check("an unknown mode is refused", False, "no raise")
+            except ValueError:
+                check("an unknown mode is refused", True)
+
+        # vector mode with embeddings OFF: nothing, and it says why -- no
+        # silent fall-through to lexical.
+        with Store(db) as s:
+            r = hybrid_search(s, _QUERY, embedder=emb, mode="vector")
+            check("mode=vector with embeddings off returns nothing, and says why",
+                  r._out_mode == "vector" and r.hits == []
+                  and any("vector mode" in w for w in r.warnings),
+                  "%r %r" % (r._out_mode, r.warnings))
+
+        # CLI refuses vector mode without a matrix, up front.
+        class Args:
+            def __init__(self):
+                self.db, self.query, self.limit = db, [_QUERY], 20
+                self.embeddings, self.mode = None, "vector"
+        check("CLI: --mode vector without --embeddings exits 2",
+              cli.cmd_search(Args()) == 2)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main() -> int:
     t_tokenizer()
     t_embed_by_hand()
@@ -496,6 +553,7 @@ def main() -> int:
     t_namespace_invalidation()
     t_data_file_not_network()
     t_embed_command()
+    t_search_modes()
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))

@@ -220,8 +220,15 @@ def vector_search(store: "Store", query: str, limit: int = 20,
         if v is not None:
             scored.append((_cosine(qvec, v), nid))
     scored.sort(key=lambda t: -t[0])
-    ranked_ids = [nid for _, nid in scored[:limit]]
-    return _hits_for(store, ranked_ids)
+    top = scored[:limit]
+    hits = _hits_for(store, [nid for _, nid in top])
+    # Carry the cosine so `--mode vector` can show it: fused hits get an RRF
+    # score instead, but a pure-vector answer is more honest when it says how
+    # close each hit was, not a placeholder 0.
+    score_by = {nid: sc for sc, nid in top}
+    for h in hits:
+        h["score"] = score_by[h["node_id"]]
+    return hits
 
 
 def _hits_for(store: "Store", node_ids: Sequence[int]) -> list[Hit]:
@@ -268,17 +275,31 @@ def rrf_fuse(rankings: Mapping[str, Sequence[Hit]], k: int = RRF_K,
 def hybrid_search(store: "Store", query: str, limit: int = 20,
                   include_all: bool = False,
                   hidden_subtypes: Sequence[str] = DEFAULT_HIDDEN_SUBTYPES,
-                  embedder: "Embedder | None" = None
+                  embedder: "Embedder | None" = None,
+                  mode: str = "auto"
                   ) -> SearchResult:
     """include_all=True is the `--all` escape hatch: nothing is hidden.
 
     `embedder` is how the vector path is turned on: without one, embeddings are
-    off and this is a lexical search (out_mode "fts"); with one, the query is
-    embedded, an FTS shortlist is reranked by cosine, and the two rankings are
-    fused by RRF (out_mode "hybrid"). It is passed in rather than built here so
+    off and this is a lexical search. It is passed in rather than built here so
     that `search`, which by contract never reads the machine config, stays that
     way -- the caller that has the data file names it.
+
+    `mode` chooses the retriever, and the choice is honest about its cost:
+
+      * "auto" (default) -- lexical, fused with the vector ranking by RRF when
+        the vector path ran (out_mode "fts" or "hybrid"). Robust, but the RRF
+        fusion lets a strong lexical match ride up next to the semantic ones.
+      * "vector" -- the vector ranking ALONE, no lexical fusion (out_mode
+        "vector"). Cleaner semantic order; the price is that a query with no
+        lexical overlap gets nothing and there is no lexical fallback, because a
+        silent fallback would answer a different question than the one asked.
+      * "fts" -- lexical only; the embedder is ignored (out_mode "fts").
     """
+    if mode not in ("auto", "vector", "fts"):
+        raise ValueError(
+            "unknown search mode %r; use 'auto', 'vector' or 'fts'" % mode)
+
     warnings = []
     hidden = () if include_all else tuple(hidden_subtypes)
     if hidden:
@@ -290,10 +311,33 @@ def hybrid_search(store: "Store", query: str, limit: int = 20,
             "FTS index covers %d of %d nodes -- results are incomplete. "
             "Run rebuild_fts()." % (store.fts_count(), store.node_count()))
 
-    lex = fts_search(store, query, limit=limit, hidden_subtypes=hidden)
+    if mode == "fts":
+        lex = fts_search(store, query, limit=limit, hidden_subtypes=hidden)
+        return SearchResult(hits=_ranked(lex, "fts"), out_mode="fts",
+                            warnings=warnings)
+
     vec = vector_search(store, query, limit=limit, embedder=embedder,
                         hidden_subtypes=hidden)
 
+    if mode == "vector":
+        if vec is None:
+            # The vector path did not run, and vector mode has no lexical
+            # fallback on purpose: quietly answering with FTS would be a
+            # different search than the one asked for. Say why, return nothing.
+            if store.embeddings is None:
+                warnings.append(
+                    "vector mode needs embeddings, but they are OFF (no "
+                    "embedder / matrix supplied); no results.")
+            else:
+                warnings.append(
+                    "vector mode: nothing is embedded under the current model's "
+                    "namespace; run `homegraph embed`.")
+            return SearchResult(hits=[], out_mode="vector", warnings=warnings)
+        return SearchResult(hits=_ranked(vec, "vector"), out_mode="vector",
+                            warnings=warnings)
+
+    # mode == "auto"
+    lex = fts_search(store, query, limit=limit, hidden_subtypes=hidden)
     if vec is None:
         if store.embeddings is None:
             warnings.append(
@@ -306,21 +350,24 @@ def hybrid_search(store: "Store", query: str, limit: int = 20,
                 "embeddings are configured but nothing is embedded under the "
                 "current model's namespace; the vector path did not run. Run "
                 "`homegraph embed` (a model change invalidates old vectors).")
-        # Both arms of the old conditional said "fts". Whether the lexical
-        # side found anything is already carried by `hits`; inventing a
-        # branch that cannot differ only made the mode look computed.
-        mode = "fts"
-        return SearchResult(hits=_ranked(lex), out_mode=mode, warnings=warnings)
+        return SearchResult(hits=_ranked(lex, "fts"), out_mode="fts",
+                            warnings=warnings)
 
     fused = rrf_fuse({"fts": lex, "vector": vec}, limit=limit)
     return SearchResult(hits=fused, out_mode="hybrid", warnings=warnings)
 
 
-def _ranked(hits: Sequence[Hit]) -> list[Hit]:
+def _ranked(hits: Sequence[Hit], label: str = "fts") -> list[Hit]:
+    """Attach rank and a single-source tag; preserve whatever score a hit has.
+
+    `label` names the retriever ("fts" or "vector"), so a single-retriever
+    result says which one it came from -- the same `sources` vocabulary the RRF
+    fuser writes ("fts#3", "vector#1"), just with one entry.
+    """
     out = []
     for i, h in enumerate(hits, start=1):
         item = dict(h)
         item["rank"] = i
-        item["sources"] = ["fts#%d" % i]
+        item["sources"] = ["%s#%d" % (label, i)]
         out.append(item)
     return out

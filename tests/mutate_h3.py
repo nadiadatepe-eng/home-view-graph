@@ -24,6 +24,22 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMEOUT = 300
 
 MUTATIONS = [
+    # Vector mode secretly falls through to fusion, so the "pure cosine, no
+    # lexical noise" promise is a lie and out_mode is 'hybrid', not 'vector'.
+    ("mode=vector falls through to RRF fusion instead of pure cosine",
+     "homegraph/search.py",
+     '    if mode == "vector":',
+     '    if False:  # mutated: vector mode fuses',
+     "mode=vector reports out_mode 'vector'"),
+
+    # FTS mode stops short-circuiting, so it runs the vector path it promised to
+    # ignore.
+    ("mode=fts no longer ignores the embedder",
+     "homegraph/search.py",
+     '    if mode == "fts":',
+     '    if False:  # mutated: fts mode runs vectors anyway',
+     "mode=fts reports out_mode 'fts' even with an embedder passed"),
+
     # Cosine is disabled -- it returns a constant, so the stable sort leaves the
     # shortlist in its BM25 order and the decoy (more term matches) wins. This is
     # the mutation the first cut of the gate could NOT catch: the fixture was

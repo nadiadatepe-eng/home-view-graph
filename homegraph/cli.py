@@ -286,9 +286,18 @@ def cmd_search(args):
             return 2
         embeddings = {"provider": embedder.provider, "model": embedder.model}
 
+    mode = getattr(args, "mode", "auto")
+    if mode == "vector" and embedder is None:
+        # Vector mode has no lexical fallback, so without a matrix it can only
+        # return nothing. Refuse up front with the fix rather than print an
+        # empty result and a warning.
+        print("`--mode vector` needs `--embeddings <matrix>`; there is no "
+              "lexical fallback in vector mode.", file=sys.stderr)
+        return 2
+
     with Store(args.db, embeddings=embeddings) as s:
         res = hybrid_search(s, " ".join(args.query), limit=args.limit,
-                            embedder=embedder)
+                            embedder=embedder, mode=mode)
         for w in res.warnings:
             print("WARNING: %s\n" % w)
         # Printed even when empty, and the mode is printed either way: a search
@@ -1129,6 +1138,10 @@ def main(argv=None):
                    help="a matrix data file; turns on semantic reranking. The "
                         "store must have been embedded with the same matrix "
                         "(homegraph embed).")
+    p.add_argument("--mode", choices=("auto", "vector", "fts"), default="auto",
+                   help="auto (default): lexical, fused with vectors by RRF. "
+                        "vector: pure cosine ranking, no lexical fusion (needs "
+                        "--embeddings). fts: lexical only, ignores embeddings.")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("md", help="M3 markdown model")
