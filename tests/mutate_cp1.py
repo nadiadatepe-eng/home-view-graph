@@ -156,8 +156,8 @@ MUTATIONS = [
 
     ("FTS terms ORed instead of ANDed",
      "homegraph/search.py",
-     'return " AND ".join',
-     'return " OR ".join',
+     'def fts_query(text: str | None, op: str = "AND")',
+     'def fts_query(text: str | None, op: str = "OR")',
      "sentence query without embeddings returns 0"),
 
     ("time travel ignores last_seen",

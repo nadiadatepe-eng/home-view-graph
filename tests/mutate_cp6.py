@@ -286,8 +286,10 @@ MUTATIONS = [
     # SQL alone, so the SQL is what a mutation must break.
     ("the mesh mirror stops filtering out path-less nodes",
      "homegraph/mesh.py",
-     '"subtype, datelist_int FROM nodes WHERE path IS NOT NULL"',
-     '"subtype, datelist_int FROM nodes"',
+     '"kind, subtype, datelist_int FROM nodes "\n'
+     '                    "WHERE path IS NOT NULL"',
+     '"kind, subtype, datelist_int FROM nodes "\n'
+     '                    "WHERE 1=1"',
      "a node with no path is not mirrored into mesh"),
 
     # A model that silently drops files raises nothing anywhere. The only place

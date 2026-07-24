@@ -128,8 +128,8 @@ MUTATIONS = [
 
     ("the datelist anchor is left behind",
      "homegraph/export.py",
-     "NODE_COLUMNS = (\"kind\", \"subtype\", \"title\", \"body\", \"size\", \"mtime\",\n                \"content_hash\", \"first_seen\", \"last_seen\",\n                \"activity_datelist\", \"datelist_int\", \"datelist_anchor\")",
-     "NODE_COLUMNS = (\"kind\", \"subtype\", \"title\", \"body\", \"size\", \"mtime\",\n                \"content_hash\", \"first_seen\", \"last_seen\")  # mutated",
+     "\"activity_datelist\", \"datelist_int\", \"datelist_anchor\")",
+     "\"activity_datelist\", \"datelist_int\")  # mutated: anchor left behind",
      "a round trip under the same root changes nothing"),
 
     ("structure keeps the file text after all",

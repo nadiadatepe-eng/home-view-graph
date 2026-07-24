@@ -117,6 +117,18 @@ def t_search_says_no(tmp):
                       body="associative trails between notes")
         s.rebuild_fts()
 
+        # Asserted before any search. With embeddings mutated on-by-default the
+        # vector path now REFUSES at the first hybrid_search (configured, but no
+        # embedder), so checking the default here names the defect instead of
+        # letting it surface as a NotImplementedError crash further down.
+        check("embeddings are off by default", s.embeddings is None, "")
+        try:
+            Store(os.path.join(tmp, "bad.db"), embeddings={"provider": "x"})
+            ok = False
+        except ValueError:
+            ok = True
+        check("embeddings need provider AND model", ok, "half-config rejected")
+
         hit = hybrid_search(s, "corvid")
         check("real term finds its document", len(hit) == 1,
               "%d hits, mode=%s" % (len(hit), hit._out_mode))
@@ -150,14 +162,6 @@ def t_search_says_no(tmp):
               "%d warning(s): %s" % (len(stale.warnings),
                                      [w[:32] for w in stale.warnings]))
         s.rebuild_fts()
-
-        check("embeddings are off by default", s.embeddings is None, "")
-        try:
-            Store(os.path.join(tmp, "bad.db"), embeddings={"provider": "x"})
-            ok = False
-        except ValueError:
-            ok = True
-        check("embeddings need provider AND model", ok, "half-config rejected")
 
 
 # -- 4. RRF fuses ranks, not scores ---------------------------------------
