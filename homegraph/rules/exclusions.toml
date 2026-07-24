@@ -22,7 +22,8 @@
 # confirm -- the filename is the whole basis.
 names = [
   ".env", ".netrc", ".pgpass", ".npmrc", ".git-credentials",
-  "credentials.json", "auth.json", ".Xauthority", ".ICEauthority",
+  "credentials.json", ".credentials.json", "auth.json",
+  ".Xauthority", ".ICEauthority",
 ]
 globs = [
   ".env.*", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
@@ -48,6 +49,14 @@ globs = [
 # build/update while the wholesale exclusion keeps the live watch from ever
 # descending into .claude/ -- authored content is indexed but not live-watched,
 # which for files you edit by hand is the behaviour you want.
+#
+# `.codex/` is excluded wholesale for the same reason (its history.jsonl,
+# session_index.jsonl and *.sqlite state churn while Codex runs). These carve-
+# outs keep its config and the vendored plugin/skill docs -- FASIT decision 1's
+# "first-class" markdown -- in the corpus. `plugins/` holds only a download
+# cache today, so allowing it re-indexes that cache; it is not live-watched
+# (the wholesale exclusion prunes .codex/ from the watch) so there is no loop
+# risk, and keeping it is decision 1 read literally.
 paths = []
 globs = [
   "{root}/.claude/agents/*",
@@ -55,6 +64,10 @@ globs = [
   "{root}/.claude/skills/*",
   "{root}/.claude/tools/*",
   "{root}/.claude/projects/*/memory/*",
+  "{root}/.codex/config.toml",
+  "{root}/.codex/hooks.json",
+  "{root}/.codex/plugins/*",
+  "{root}/.codex/skills/*",
 ]
 
 [cache]
@@ -105,12 +118,13 @@ prefixes = [
 # the authored content is pulled back by the [allow] carve-outs above -- an
 # allow-list is bounded and explicit where the deny-list grew in the dark. This
 # also stops a live `watch` from ever looping on .claude/ churn, the bug it
-# closes. `.codex/` still holds BOTH and is excluded per subdirectory below --
-# it has not shown the same live-churn problem.
+# closes. `.codex/` is inverted the same way: its history.jsonl,
+# session_index.jsonl and *.sqlite state churn while Codex runs, so the whole
+# tree is excluded and the [allow] carve-outs above keep its config and the
+# vendored plugin/skill docs.
 prefixes_scoped = [
   "{root}/.claude/",
-  "{root}/.codex/shell_snapshots/", "{root}/.codex/ipc/",
-  "{root}/.codex/plugins/cache/",
+  "{root}/.codex/",
 ]
 # Machine-generated identity artifacts at the home top level. Deliberately
 # narrow: `.bashrc`, `.gtkrc-2.0` and `.xsession-errors` are user config and

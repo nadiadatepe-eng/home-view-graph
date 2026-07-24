@@ -1360,6 +1360,59 @@ Six mutations survived the first run, and none of them were about the feature:
 And one crash-kill became a gate: `load()` raising ended the run instead of
 failing a check.
 
+## 28 · The agent-state dirs are excluded by an allow-list, not a deny-list
+
+`homegraph watch` looped on a real home: `.claude/` is a live directory Claude
+Code rewrites every few seconds during a session -- per-session transcripts,
+`usage-state.json`, `history.jsonl`, `daemon.log`, `stats-cache.json` -- and
+each write triggered a rebuild that then excluded those very files, a core
+pegged for as long as a session ran. Commit 88c67c2 excluded the two loudest
+files by name. It closed two sources; it did not close the shape.
+
+A deny-list on a live directory is a losing game. Every Claude Code release adds
+another churny file; a dated `settings.json.bak-20260705` slips the `*.bak`
+cache glob (the same gap FASIT §4 records for `.bash_history.bak-`). A deny-list
+grows in the dark -- what it does not name yet is indexed, and each new name is
+found by a loop that had to be killed by hand.
+
+So the default is inverted. `.claude/` and `.codex/` are excluded **wholesale**
+as app-state, and an `[allow]` list names the content worth keeping: for
+`.claude/`, `agents/ plans/ skills/ tools/` and the memory notes; for `.codex/`,
+its `config.toml`, `hooks.json`, and the vendored plugin/skill docs decision 1
+called first-class. An allow-list is bounded and explicit; adding a churny file
+to the agent tool now changes nothing, because the default is exclude.
+
+The two questions the watch conflated come apart because the build and the watch
+read the same exclusion differently. **Corpus membership**: the build descends
+into the tree and classifies each file; allow wins over the app-state prefix
+(`corpus.py`, before every exclusion layer), so `agents/foo.md` and the memory
+notes are indexed while `history.jsonl`, `settings.json` and `.credentials.json`
+are not. **Rebuild trigger**: the watch prunes a directory whose probe is
+EXCLUDED at a structural layer, and `.claude/`'s probe now is, so the whole tree
+is pruned from inotify and no churn under it can start the loop. Authored content
+is therefore indexed on a manual build/update but not live-watched -- which for
+files edited by hand is the wanted behaviour, not a regression.
+
+`.codex/` inverts against a locked decision, and does so on purpose. Decision 1
+called the markdown under it first-class corpus; FASIT §1 found that number
+rests on vendored third-party plugin docs, none user-written, most under `.tmp/`
+which layer 3 kills anyway -- "the decision is the user's and is not overruled
+here". Read literally, the plugin/skill docs are kept (allow `plugins/*` and
+`skills/*`); what the inversion drops is the machine state beside them
+(`session_index.jsonl`, the `*.sqlite` goal/log/memory stores), which was never
+what decision 1 was about. Re-indexing `plugins/cache/` is safe: `.codex/` is
+pruned from the watch wholesale, so a cache in the corpus is not a cache the
+watch loops on.
+
+Two smaller holes closed with it. `.credentials.json` -- the Claude Code OAuth
+token file -- was labelled `misc` and indexed, because the secrets layer listed
+`credentials.json` without the leading dot; it is a secret name now, redacted
+everywhere, not only under the `.claude/` it happens to live in today. And a
+privacy-guard regression the night commits introduced: `test_cp13.py` fixtures
+rooted at the literal `/home/`, which `test_no_real_paths.py` forbids in any
+published file -- caught only because that guard is a separate file the cp13
+mutation loop never runs. Rerooted at `/u/`.
+
 ---
 
 ## 14 · Deferred
