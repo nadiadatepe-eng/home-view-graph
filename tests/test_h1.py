@@ -91,9 +91,117 @@ def t_can_report_zero():
 def t_empty_eval_raises():
     try:
         evaluate([], lambda q: [1, 2, 3])
-        check("an empty eval raises, never reports 100%", False, "no raise")
+        check("an empty eval raises, never reports 100%", False, "returned, no raise")
     except ValueError:
         check("an empty eval raises, never reports 100%", True)
+    except Exception as exc:                                    # noqa: BLE001
+        # A ZeroDivisionError here means the guard is gone and the mean divided
+        # by zero -- still a failure of "refuse cleanly", named rather than a
+        # crash that would leave the gate looking untested.
+        check("an empty eval raises, never reports 100%", False,
+              "raised %s, not a clean refusal" % type(exc).__name__)
+
+
+# -- the corpus-driven generator, on a controlled mini-corpus ---------------
+# Fasit, declared before the code: four markdown files whose H2 headings are the
+# only eval source. The expected pairs are exactly the UNIQUE, multi-word, non-
+# title headings; everything else must be dropped by a named guard.
+_CORPUS = {
+    "alpha.md": ("# Alpha Project\nIntro.\n"
+                 "## Token Budget Scaling\nHow the budget scales.\n"
+                 "## Cache Invalidation Strategy\nWhen the cache is dropped.\n"),
+    "beta.md": ("# Beta Notes\n"
+                "## Vector Index Layout\nThe layout of the vector index.\n"
+                "## Reciprocal Rank Fusion\nFusing rankings without scores.\n"),
+    # "Cache Invalidation Strategy" repeats alpha -> ambiguous, dropped.
+    "gamma.md": ("# Gamma Guide\n"
+                 "## Cache Invalidation Strategy\nA different take.\n"),
+    # "Notes" is one word -> dropped; title "Delta" never appears as an H2.
+    "delta.md": ("# Delta\n## Notes\nShort.\n"),
+}
+# Unique, multi-word, non-title, unambiguous:
+_EXPECTED_QUERIES = {
+    "Token Budget Scaling",      # alpha only
+    "Vector Index Layout",       # beta only
+    "Reciprocal Rank Fusion",    # beta only
+}
+# Paraphrases: each is ABOUT a file but shares no term with it, so a term-ANDing
+# FTS must miss every one. They are the headroom semantic search (CP-H3) exists
+# to close -- and the proof that this scoreboard can register a lexical->semantic
+# gap at all, which the verbatim-heading source alone cannot. (sim-auditor #1.)
+_PARAPHRASE = [
+    ("output length grows with corpus size", "alpha.md"),   # ~ Token Budget Scaling
+    ("merging ranked result lists fairly", "beta.md"),      # ~ Reciprocal Rank Fusion
+]
+
+
+def t_corpus_eval():
+    import shutil
+    import tempfile
+
+    from homegraph.models.m3_build import build as m3_build
+    from homegraph.store import Store
+    from tests.eval.build_eval import (
+        AS_OF, build_pairs, fts_baseline, fts_search_fn)
+    from tests.eval.scoreboard import evaluate
+
+    tmp = tempfile.mkdtemp(prefix="h1-corpus-",
+                           dir=os.path.expanduser("~/.homegraph"))
+    try:
+        paths = []
+        for name, text in _CORPUS.items():
+            p = os.path.join(tmp, name)
+            open(p, "w").write(text)
+            paths.append(p)
+        db = os.path.join(tmp, "m3.db")
+        with Store(db, model="m3") as s:
+            m3_build(s, sorted(paths), AS_OF)
+            s.rebuild_fts()
+        with Store(db) as s:
+            pairs = build_pairs(s)
+            queries = {q for q, _ in pairs}
+            check("the generator emits exactly the unique multi-word headings",
+                  queries == _EXPECTED_QUERIES,
+                  "got %r" % sorted(queries))
+            check("the ambiguous heading is dropped, not guessed",
+                  "Cache Invalidation Strategy" not in queries)
+            check("the one-word heading is dropped",
+                  "Notes" not in queries)
+
+            ids = {os.path.basename(r["node_key"]): r["id"]
+                   for r in s.db.execute(
+                       "SELECT id, node_key FROM nodes WHERE kind='file'")}
+            fn = fts_search_fn(s, limit=10)
+
+            # LEXICAL baseline only: the heading is a verbatim substring of the
+            # file body, so this is a self-match. It proves FTS works, NOT that
+            # retrieval is hard -- labelled so CP-H3 is never measured against it
+            # as if it had headroom. (sim-auditor #1/#4.)
+            base = fts_baseline(s, pairs)
+            check("lexical baseline: exact-phrase FTS finds the owning file (r@10=1)",
+                  base.recall[10] == 1.0, base.line())
+
+            # HEADROOM: paraphrases share no term with their file, so a term-
+            # ANDing FTS must miss, and the scoreboard MUST show recall below the
+            # lexical baseline. Without this the eval could never register a
+            # semantic win. (sim-auditor #1.)
+            para = [(q, ids[name]) for q, name in _PARAPHRASE]
+            head = evaluate(para, fn, ks=(10,))
+            check("paraphrases score below the lexical baseline (headroom exists)",
+                  head.recall[10] < base.recall[10],
+                  "lexical r@10=%.2f paraphrase r@10=%.2f"
+                  % (base.recall[10], head.recall[10]))
+
+            # DISCRIMINATION across FILES, so no shared-file accident hands it a
+            # free hit: a query owned by one file, expected in another, misses.
+            # (sim-auditor #3.)
+            mismatch = [("Token Budget Scaling", ids["beta.md"]),
+                        ("Vector Index Layout", ids["alpha.md"])]
+            mis = evaluate(mismatch, fn, ks=(10,))
+            check("a cross-file mismatch scores 0 (the metric tells right from wrong)",
+                  mis.recall[10] == 0.0, "mismatch r@10=%.2f" % mis.recall[10])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main() -> int:
@@ -102,6 +210,7 @@ def main() -> int:
     t_evaluate_hand()
     t_can_report_zero()
     t_empty_eval_raises()
+    t_corpus_eval()
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))

@@ -21,7 +21,7 @@ Et checkpoint er ikke ferdig før alle seks holder:
 
 | CP | Idé | Kilde | Status | sim-auditor |
 |----|-----|-------|--------|-------------|
-| **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ⏳ PÅGÅR (metrikk-kjerne ✅) | gjenstår |
+| **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ✅ instrument (baseline på ekte korpus → H3-tid) | 4 funn, alle lukket |
 | **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ☐ planlagt | — |
 | **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ☐ planlagt | — |
 | H4 | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ☐ backlog | — |
@@ -68,10 +68,16 @@ Anti-mønstrene bekreftet homegraphs valg — disse gjøres til eksplisitte gate
 - [ ] `tests/mutate_h1.py` — muter recall-telleren (av-for-én, alltid-treff, alltid-bom) → drept av navngitt gate.
 - [ ] Ekte-data-kjøring: baseline på ekte hjem-korpus (gitignorert), tall i minne, ikke repo.
 
-### sim-auditor-runde (obligatorisk — kjøres når `build_eval` + baseline er på plass)
-Pek revisoren på: **label-lekkasje** (avledes labelen fra nøyaktig samme signal som testes — filnavn→dok målt av filnavn-søk = trivielt 100 %?), **gamebar metrikk** (kan recall@k blåses opp ved å returnere alt?), **tom eval** (0 par → falskt 100 %? — metrikk-kjernen nekter allerede, verifiser at generatoren ikke omgår det), **determinisme**. En eval som ikke kan gi et *lavt* tall måler ingenting.
+### sim-auditor-runde ✅ (07-24) — fire funn, alle lukket
+Revisoren bekreftet at aritmetikken er ren, men fant at *parene* og *tallenes betydning* var skjeve:
+1. **🔴 Verbatim body-lekkasje** — headingen er ordrett i fila, så r@10=1.0 er gitt og mrr=0.5 en strukturkonstant; ingen målerom for semantisk søk. **Lukket:** baselinen er nå ærlig merket «leksikalsk», og en håndlaget **parafrase-mengde** (`_PARAPHRASE`) beviser at instrumentet kan vise FTS bomme (r@10=0.00) — headroom-et H3 skal fylle.
+2. **🔴 0 par på ekte fixture + `main()` returnerte exit 0** rundt tom-eval-vakten. **Lukket:** `main()` feiler nå med exit 2 på 0 par.
+3. **🟡 Diskrimineringstest degenererte** ved delt fil. **Lukket:** byttet til kryss-fil-mismatch (r@10=0.00, ingen tilfeldig treff).
+4. **🟢 `r@10==1.0`-tautologi.** Lukket (merket som leksikalsk sanity, subsumert av #1).
 
-**Status (07-24):** metrikk-kjerne + known-answer FERDIG (16/16, ruff rent). Fasiten står. Neste: `build_eval.py` (korpus-drevne par, lekkasjefri) → FTS-baseline → mutasjon → sim-auditor.
+**Ærlig gjenstående begrensning (ikke en defekt):** heading→fil-kilden gir 0 par på det lille syntetiske fixturet (én heading per fil = tittel), og parafrase-headroom er 2 håndlagde par på mini-korpuset. Et *fullt* semantisk eval trenger flere håndlagde parafrase-par på det ekte korpuset — kjøres når H3 landes (det er ingenting å slå før da).
+
+**Status (07-24): FERDIG som instrument.** `scoreboard.py` (metrikk, aritmetikk sim-auditor-ren) + `build_eval.py` (generator + lekkasje-vakter) + `test_h1.py` (22/22, known-answer + mini-korpus + headroom + diskriminering) + `mutate_h1.py` (6/6 drept av navngitt gate, 0 overlevende). ruff + mypy(pakke) rene. **Ekte-korpus-baseline utsatt til H3-tid.**
 
 ---
 
