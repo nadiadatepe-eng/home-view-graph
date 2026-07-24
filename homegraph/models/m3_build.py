@@ -136,7 +136,8 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
         # file that was just read anyway.
         nid = store.upsert_node(
             path, kind="file", subtype=data["subtype"], path=path,
-            title=data["title"], body=data["body"], size=st.st_size,
+            title=data["title"], title_method=data["title_method"],
+            body=data["body"], size=st.st_size,
             mtime=st.st_mtime, content_hash=_safe_hash(path), as_of=as_of)
         record_observation(store, nid, as_of, size=st.st_size)
         refresh_datelist(store, nid, as_of)

@@ -246,14 +246,24 @@ class MarkdownExtractor:
         tags.extend(raw_tags)
         tags.extend(m.group(1) for m in RE_INLINE_TAG.finditer(clean))
 
-        title = front.get("title") or (sections[0]["title"] if sections
-                                       else page_name(path))
+        # How the title was arrived at travels with it. A frontmatter title is
+        # DECLARED; the filename is a VERBATIM read; the first heading pressed
+        # into service because neither existed is an INFERRED guess -- it may be
+        # "Introduction", not the document's name -- and that is the one a
+        # consumer must not cite as if the author had written it.
+        if front.get("title"):
+            title, title_method = front["title"], "declared"
+        elif sections:
+            title, title_method = sections[0]["title"], "inferred"
+        else:
+            title, title_method = page_name(path), "verbatim"
 
         return {
             "path": path,
             "name": page_name(path),
             "subtype": subtype_of(path, self.rules),
             "title": title,
+            "title_method": title_method,
             "body": body,
             "frontmatter": front,
             "frontmatter_problems": front_problems,

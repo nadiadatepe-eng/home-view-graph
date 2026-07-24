@@ -299,7 +299,8 @@ def _node(store: Store, row: dict[str, Any], root: str) -> None:
     path = to_local(row["path"], root) if row.get("path") is not None else None
     store.upsert_node(
         key, kind=row.get("kind") or "file", subtype=row.get("subtype"),
-        path=path, title=row.get("title"), body=row.get("body"),
+        path=path, title=row.get("title"),
+        title_method=row.get("title_method"), body=row.get("body"),
         size=row.get("size"), mtime=row.get("mtime"),
         content_hash=row.get("content_hash"),
         as_of=row.get("first_seen"))

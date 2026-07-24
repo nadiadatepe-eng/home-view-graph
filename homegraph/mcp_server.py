@@ -160,7 +160,9 @@ class Server:
                 "models_missing": res.models_missing,
                 "warnings": res.warnings,
                 "hits": [{"rank": h["rank"], "model": h["model"],
-                          "title": h.get("title"), "node_key": h["node_key"],
+                          "title": h.get("title"),
+                          "title_confidence": h.get("title_confidence"),
+                          "node_key": h["node_key"],
                           "path": h.get("path"), "sources": h["sources"]}
                          for h in res.hits],
             }

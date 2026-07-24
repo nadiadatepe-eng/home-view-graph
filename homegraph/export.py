@@ -92,7 +92,8 @@ SHAPE_DROPS = ("body", "mtime", "content_hash", "size",
 # a fresh mask. The importer restores them explicitly, and CP-12 compares them
 # as part of the equivalence -- history that survives a round trip only
 # because nobody looked at it is not history.
-NODE_COLUMNS = ("kind", "subtype", "title", "body", "size", "mtime",
+NODE_COLUMNS = ("kind", "subtype", "title", "title_method", "title_confidence",
+                "body", "size", "mtime",
                 "content_hash", "first_seen", "last_seen",
                 "activity_datelist", "datelist_int", "datelist_anchor")
 

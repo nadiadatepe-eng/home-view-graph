@@ -67,6 +67,21 @@ EDGE_METHODS: dict[str, float] = {
     "cohort": 0.4,
 }
 
+# The node-label analogue of EDGE_METHODS: how a title was arrived at, and how
+# much to trust it. `declared` is an author's frontmatter title; `verbatim` is a
+# direct read (a heading, a filename) -- both are facts about the source, not
+# guesses. `inferred` is the guess: the first heading pressed into service as a
+# title when none was declared, and later any generated summary or cluster name.
+# A title stored WITHOUT one of these keys records no provenance -- NULL, an
+# honest absence -- rather than the silent claim of fact that would let a guess
+# be cited downstream as if the author had written it.
+TITLE_METHODS: dict[str, float] = {
+    "declared": 1.0,
+    "verbatim": 1.0,
+    "inferred": 0.5,
+}
+
+
 def provenance_note(rows: "Iterable[Any]") -> str | None:
     """One warning naming every derivation below 1.0 in `rows`, or None.
 
@@ -198,6 +213,19 @@ ALTER TABLE edges ADD COLUMN method     TEXT NOT NULL DEFAULT 'exact';
 ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0;
 CREATE INDEX idx_edges_confidence ON edges(confidence);
 """),
+
+    (3, "titles carry how they were derived", """
+-- The node-label analogue of migration 2. A title can be DECLARED (an author's
+-- frontmatter title), read VERBATIM from the source (a heading, a filename), or
+-- INFERRED (the first heading taken as a title when none was declared -- a
+-- guess, and the one this column exists to keep from being cited as fact).
+-- Unlike edges there is NO `NOT NULL DEFAULT`: most nodes have no title at all,
+-- so a backfilled 'verbatim' would assert a derivation for rows that never had
+-- one. NULL means "provenance not recorded", which is honest absence.
+ALTER TABLE nodes ADD COLUMN title_method     TEXT;
+ALTER TABLE nodes ADD COLUMN title_confidence REAL;
+CREATE INDEX idx_nodes_title_confidence ON nodes(title_confidence);
+"""),
 ]
 
 
@@ -286,18 +314,30 @@ class Store:
                     title: str | None = None, body: str | None = None,
                     size: int | None = None, mtime: float | None = None,
                     content_hash: str | None = None,
+                    title_method: str | None = None,
                     as_of: str | None = None) -> int:
         as_of = as_of or today()
+        # A title's provenance is optional (most nodes have none to record), but
+        # a recorded one must be a known method -- an unknown key is a caller
+        # bug, not a new confidence tier to invent silently. The confidence is
+        # looked up, never passed, so it cannot drift from the method.
+        title_confidence = None
+        if title_method is not None:
+            if title_method not in TITLE_METHODS:
+                raise ValueError("unknown title method %r; known: %s"
+                                 % (title_method, ", ".join(sorted(TITLE_METHODS))))
+            title_confidence = TITLE_METHODS[title_method]
         row = self.db.execute("SELECT id FROM nodes WHERE node_key = ?",
                               (node_key,)).fetchone()
         if row is None:
             cur = self.db.execute(
                 """INSERT INTO nodes(node_key, kind, subtype, path, title, body,
                                      size, mtime, content_hash,
+                                     title_method, title_confidence,
                                      first_seen, last_seen)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (node_key, kind, subtype, path, title, body, size, mtime,
-                 content_hash, as_of, as_of))
+                 content_hash, title_method, title_confidence, as_of, as_of))
             if cur.lastrowid is None:
                 # Not defensive padding: sqlite3 genuinely returns None when a
                 # statement inserted no row, and every caller uses this id as
@@ -307,10 +347,11 @@ class Store:
             return cur.lastrowid
         self.db.execute(
             """UPDATE nodes SET kind=?, subtype=?, path=?, title=?, body=?,
-                                size=?, mtime=?, content_hash=?, last_seen=?
+                                size=?, mtime=?, content_hash=?,
+                                title_method=?, title_confidence=?, last_seen=?
                WHERE id=?""",
             (kind, subtype, path, title, body, size, mtime, content_hash,
-             as_of, row["id"]))
+             title_method, title_confidence, as_of, row["id"]))
         return int(row["id"])
 
     def restore_node_history(self, node_key: str, *, first_seen: str,

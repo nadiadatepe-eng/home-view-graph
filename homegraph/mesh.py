@@ -180,8 +180,8 @@ class Mesh:
         being edited would be the one nobody reads. `kind` is the only thing
         the two callers differ by.
         """
-        sql = ("SELECT n.id node_id, n.node_key, n.title, n.subtype, "
-               "n.path, n.content_hash, bm25(nodes_fts) score "
+        sql = ("SELECT n.id node_id, n.node_key, n.title, n.title_confidence, "
+               "n.subtype, n.path, n.content_hash, bm25(nodes_fts) score "
                "FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid "
                "WHERE nodes_fts MATCH ?")
         args: list[object] = [expr]
@@ -307,7 +307,9 @@ class Mesh:
                 key = Mesh._fusion_key(row)
                 slot = fused.setdefault(key, {
                     "key": key, "model": model, "node_key": row["node_key"],
-                    "title": row.get("title"), "path": row.get("path"),
+                    "title": row.get("title"),
+                    "title_confidence": row.get("title_confidence"),
+                    "path": row.get("path"),
                     "score": 0.0, "sources": [], "models": []})
                 slot["score"] += 1.0 / (RRF_K + rank)
                 slot["sources"].append("%s#%d" % (model, rank))
@@ -386,13 +388,18 @@ class Mesh:
         mirrored = set()
         for model, s in loaded.items():
             for row in s.db.execute(
-                    "SELECT node_key, title, path, content_hash, kind, "
-                    "subtype, datelist_int FROM nodes WHERE path IS NOT NULL"):
+                    "SELECT node_key, title, title_method, path, content_hash, "
+                    "kind, subtype, datelist_int FROM nodes "
+                    "WHERE path IS NOT NULL"):
                 key = "%s::%s" % (model, row["node_key"])
                 mirrored.add(key)
+                # Carry title_method through: without it an inferred title is
+                # laundered to NULL in the federation the MCP serves, so the
+                # guess reappears unflagged. (sim-auditor CP-H2 #2.)
                 mesh.upsert_node(key, kind=row["kind"] or "file",
                                  subtype="%s/%s" % (model, row["subtype"] or ""),
                                  path=row["path"], title=row["title"],
+                                 title_method=row["title_method"],
                                  body=row["title"] or "", as_of=as_of)
                 # No `if row["path"]` here: the query already says
                 # `WHERE path IS NOT NULL`, so the branch could not be taken.

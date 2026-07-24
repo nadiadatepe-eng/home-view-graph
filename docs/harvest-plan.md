@@ -22,7 +22,7 @@ Et checkpoint er ikke ferdig før alle seks holder:
 | CP | Idé | Kilde | Status | sim-auditor |
 |----|-----|-------|--------|-------------|
 | **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ✅ instrument (baseline på ekte korpus → H3-tid) | 4 funn, alle lukket |
-| **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ☐ planlagt | — |
+| **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ✅ ferdig (skrive + lese-side) | 5 funn: 3 lukket, 2 backlog |
 | **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ☐ planlagt | — |
 | H4 | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ☐ backlog | — |
 | H5 | git co-change-kant + churn | Cirilcetra | ☐ backlog | — |
@@ -93,8 +93,15 @@ Revisoren bekreftet at aritmetikken er ren, men fant at *parene* og *tallenes be
 - [ ] Håndhev i typen: en skrive-vei for en inferert etikett kan ikke kalles uten `method` (påkrevd nøkkelordargument, som `upsert_edge`s `method`).
 - [ ] `tests/test_h2.py` + `tests/mutate_h2.py` — en inferert etikett skrevet uten tag MÅ feile; en direkte-lest etikett MÅ ikke kreve tag.
 
-### sim-auditor-runde
-Let etter: **omgåelsesvei** (finnes en skrive-vei der en inferert etikett kan lagres som eksakt?), **tom gate** (sjekker gaten faktisk noe, eller er `method`-defaulten arvet stille?), **duplisert invariant** (samme regel to steder som kan drifte fra kant-proveniensen).
+### sim-auditor-runde ✅ (07-24) — fem funn: skrive-siden ren, lese-siden manglet
+Revisoren bekreftet at skrive-garantien er låst (confidence slås opp fra method, ukjent method avvist, m3 klassifiserer korrekt), men fant at **H2 først bare leverte HALVE garantien**:
+1. **🔴 Lese-siden fantes ikke** — `title_confidence` ble skrevet, men INGEN konsument leste den; en `inferred` tittel ble servert til en agent identisk med en `declared`. En proveniens ingen leser kan ikke stoppe en sitering ([[mechanisms-need-production-callers]]). **Lukket:** surfacet gjennom `fts_search` OG `mesh_search` (MCP-stien) — konsumenten ser nå `title_confidence`.
+2. **🟡 Mesh-mirror laundret den til NULL** — føderasjonen MCP serverer droppet `title_method`. **Lukket:** mirror bærer den nå videre.
+3. **🟡 Round-trip tapte den stille** (ikke i `NODE_COLUMNS`, cp12-ekvivalens så ikke tapet). **Lukket:** lagt til `NODE_COLUMNS` + importer bevarer den.
+4. **🟢 Dekningshull (backlog):** m4 format-deteksjon (magic-bytes-gjetning) og rollup «mostly %s» er ekte gjetning-som-etikett, ikke dekket. → egen fremtidig CP (utvid `inferred` til m4). Ikke en regresjon; m3-tittelen var den avgrensede første kalleren.
+5. **🟢 `provenance_note` er hardkodet til `EDGE_METHODS`** — ikke gjenbrukt naivt for titler (ville gitt confidence 0.0); surfacet `title_confidence` direkte i stedet. Hensyntatt.
+
+**Status: FERDIG (skrive + lese-side).** `store.py` (TITLE_METHODS, migrasjon 3, upsert-validering) · `m3_markdown.py`/`m3_build.py` (declared/verbatim/inferred) · `mesh.py`+`search.py`+`mcp_server.py` (surface) · `export.py`+`importer.py` (round-trip). test_h2 **9/9**, mutate_h2 **6/6 drept 0 overlevende**, full suite grønn (cp6/cp8/cp12 tålte migrasjonen), ruff+mypy(pakke) rene.
 
 ---
 

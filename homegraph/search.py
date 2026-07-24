@@ -89,8 +89,8 @@ def fts_search(store: "Store", query: str, limit: int = 20,
     expr = fts_query(query)
     if not expr:
         return []
-    sql = ("""SELECT n.id node_id, n.node_key, n.title, n.subtype,
-                     bm25(nodes_fts) score
+    sql = ("""SELECT n.id node_id, n.node_key, n.title, n.title_confidence,
+                     n.subtype, bm25(nodes_fts) score
               FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid
               WHERE nodes_fts MATCH ?""")
     args: list[object] = [expr]
