@@ -18,14 +18,15 @@ Models: M1 documents · M2 images · M3 markdown · M4 everything else · M5 mes
 
 | | |
 |---|---|
-| `pytest tests/ -q` | 13 passed (CP-0..CP-11 plus the privacy guard) |
-| Mutation harnesses, twelve of them | 282 mutations · 281 killed by a named gate · 1 by a different gate · 0 detected only by a crash · 0 survived |
-| `tests/mutation_coverage.py` | 397 checks, 232 covered (58%) |
+| `pytest tests/ -q` | 19 passed (CP-0..CP-13, H1–H3 and the graph gate, plus the privacy guard) |
+| Mutation harnesses, eighteen of them | 384 mutations · 381 killed by a named gate · 3 by a different gate · 0 detected only by a crash · 0 survived |
+| `tests/mutation_coverage.py` | 498 checks, 296 covered (59%) |
 | `ruff check .` | clean |
-| `mypy homegraph/` | clean on 25 files; strict on seven modules |
+| `mypy homegraph/` | clean on 31 files; strict on seven modules |
 
 Reproduce: `uvx --with pytest --from pytest pytest tests/ -q`, then
-`python3 tests/mutate_cp{0..11}.py`. The synthetic corpus is the default and
+`for m in tests/mutate_*.py; do python3 "$m"; done` (CP-0..CP-13 plus H1–H3 and
+the graph gate). The synthetic corpus is the default and
 generates identically on any machine. `HOMEGRAPH_REAL_CORPUS=1` needs
 `tests/gold/real_corpus.py`, which is gitignored and not distributed — so
 `test_no_real_paths.py` fails in a fresh clone or worktree, by design: it
@@ -36,8 +37,8 @@ refuses to report "nothing leaked" when there was nothing present to leak.
 These are the weak points as understood from the inside. An external reviewer
 who only confirms them has not added much; the value is in what is not listed.
 
-1. **Mutation coverage is still a minority.** 282 mutations against 397 checks;
-   165 checks have no mutation aimed at them. This project's own history says
+1. **Mutation coverage is still a minority.** 384 mutations against 498 checks;
+   202 checks have no mutation aimed at them. This project's own history says
    empty gates cluster exactly where no mutation reaches — fourteen were found
    that way, every one in a checkpoint that had been green on the first run.
    The unmutated checks are the place to start, and `mutation_coverage.py`
@@ -50,6 +51,15 @@ who only confirms them has not added much; the value is in what is not listed.
    survivors is deliberate and correct — a harness that skipped quietly would
    claim a score it had not earned — but nothing forces anyone to read the
    summary line. Both are repaired; the class of failure is not closed.
+
+   It recurred on 2026-07-24. The H3 `fts_query(op=...)` refactor orphaned
+   CP-1's AND/OR needle; an earlier mesh-SQL split orphaned CP-6's; H2's
+   `NODE_COLUMNS` change orphaned CP-12's; and H3's new `vector_search` guard
+   turned CP-1's "embeddings default on" mutation into a `NotImplementedError`
+   crash *upstream* of the assertion meant to catch it — a survivor by a fourth
+   route, a shifted failure mode. All four were found by a full recount and
+   repaired (the assertion moved ahead of the search for the last one). The
+   recount is the check; nothing smaller catches a needle that stopped biting.
 
 3. **The incremental update path.** `update.py`. The load-bearing claim is
    "same result as a full rebuild, but cheaper." The equivalence gate compares
