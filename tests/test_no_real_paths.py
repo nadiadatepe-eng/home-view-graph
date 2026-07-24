@@ -390,6 +390,48 @@ def t_real_corpus_material_is_ignored(files):
     check("none of it would be published", not leaked, "leaked: %s" % leaked)
 
 
+# The coverage-artifact family, by name. This is belt-and-suspenders to the
+# unreadable-file check in t_no_personal_identifiers, and the two catch
+# different things. That one rejects a binary `.coverage` because it fails to
+# decode -- but coverage tooling also emits *readable* reports (`coverage.xml`,
+# `lcov.info`, the `htmlcov/` tree) that carry the same absolute source paths
+# and would pass a "is it text?" test cleanly. Parallel mode adds
+# `.coverage.<host>.<pid>.<rand>` siblings, whose names a single `.coverage`
+# ignore line does not always cover. Naming the family here fails on all of
+# them, with a message that says which artifact rather than the generic
+# "unreadable".
+COVERAGE_ARTIFACTS = [
+    r"(^|/)\.coverage($|\.)",            # .coverage and parallel-mode .coverage.<host>.<pid>.<rand>
+    r"(^|/)coverage\.(xml|json|lcov)$",  # machine-readable reports: text, but path-laden
+    r"(^|/)lcov\.info$",
+    r"(^|/)htmlcov/",                    # the generated HTML report tree
+]
+
+
+def t_no_coverage_artifacts(files):
+    """No coverage artifact, by name, may be in the publishable tree.
+
+    See COVERAGE_ARTIFACTS for why this exists alongside the content check.
+    """
+    offenders = [rel for rel in files
+                 if any(re.search(p, rel) for p in COVERAGE_ARTIFACTS)]
+    # The patterns must be able to match. A regex list that matches nothing
+    # passes this gate on every tree, including one carrying a `.coverage` --
+    # the same always-green failure the digest band guards against with its
+    # canary. Prove the family matches its own names before trusting a clean
+    # result over the real tree.
+    canary = [n for n in (".coverage", ".coverage.host.123.456",
+                          "sub/.coverage", "htmlcov/index.html",
+                          "coverage.xml", "lcov.info")
+              if any(re.search(p, n) for p in COVERAGE_ARTIFACTS)]
+    check("the coverage-artifact patterns can match", len(canary) == 6,
+          "%d/6 canary names matched" % len(canary))
+    check("no coverage artifact is publishable", not offenders,
+          "%d offender(s)%s" % (len(offenders),
+                                "" if not offenders
+                                else "  %s" % offenders[:6]))
+
+
 def main():
     files = publishable_files()
     print("publishable tree: %d file(s)\n" % len(files))
@@ -397,6 +439,7 @@ def main():
     t_package_names_no_directory(files)
     t_fixture_only_names_what_it_creates(files)
     t_real_corpus_material_is_ignored(files)
+    t_no_coverage_artifacts(files)
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
     return 1 if failed else 0
