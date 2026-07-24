@@ -37,14 +37,25 @@ globs = [
 # Allowlist wins over every layer below it (never over `secrets`). Each entry
 # is a hole in the partition proof and must be argued for.
 #
-# The memory dir is the one argued hole: `.claude/projects/` is excluded as
-# app-state below (its per-session transcripts are machine state and churn on
-# every message, which a live watch turns into a full rebuild each time), but
-# the memory notes under `.claude/projects/*/memory/` are hand-written content
-# the graph should keep. Allow wins over that app-state exclusion, so the
-# transcripts go and the memory stays.
+# `.claude/` is excluded wholesale as app-state below, because it is a live
+# directory Claude Code rewrites constantly during a session -- per-session
+# transcripts, usage-state, history.jsonl, daemon.log, stats -- and a live
+# `watch` turned that churn into a rebuild loop that had to be killed by hand.
+# Excluding the whole tree kills the loop at its source. These carve-outs pull
+# the authored content back into the corpus: agent definitions, plans, skills,
+# the tools dir, and the hand-written memory notes. Allow wins over the
+# app-state exclusion, so a file matched here is indexed on a manual
+# build/update while the wholesale exclusion keeps the live watch from ever
+# descending into .claude/ -- authored content is indexed but not live-watched,
+# which for files you edit by hand is the behaviour you want.
 paths = []
-globs = ["{root}/.claude/projects/*/memory/*"]
+globs = [
+  "{root}/.claude/agents/*",
+  "{root}/.claude/plans/*",
+  "{root}/.claude/skills/*",
+  "{root}/.claude/tools/*",
+  "{root}/.claude/projects/*/memory/*",
+]
 
 [cache]
 # Layer 3. Matches at ANY depth, not just the top level.
@@ -85,22 +96,19 @@ prefixes = [
   "{root}/.vscode/", "{root}/.mozilla/", "{root}/.pki/",
   "{root}/.unsloth/", "{root}/snap/",
 ]
-# `.claude/` and `.codex/` hold BOTH machine state and real content (agent
-# definitions, memory, plans), so they are excluded per subdirectory rather
-# than wholesale.
+# `.claude/` holds machine state that churns every few seconds during a live
+# session (transcripts, usage-state, history.jsonl, daemon.log, stats-cache)
+# mixed with authored content (agent defs, plans, skills, tools, memory). It
+# used to be excluded file-by-file, but that is a losing deny-list: every
+# Claude Code release adds a new churny file, and a dated `settings.json.bak-
+# 20260705` backup slips the cache glob. So the whole tree is excluded here and
+# the authored content is pulled back by the [allow] carve-outs above -- an
+# allow-list is bounded and explicit where the deny-list grew in the dark. This
+# also stops a live `watch` from ever looping on .claude/ churn, the bug it
+# closes. `.codex/` still holds BOTH and is excluded per subdirectory below --
+# it has not shown the same live-churn problem.
 prefixes_scoped = [
-  "{root}/.claude/file-history/", "{root}/.claude/session-env/",
-  "{root}/.claude/shell-snapshots/", "{root}/.claude/tasks/",
-  "{root}/.claude/sessions/", "{root}/.claude/cache/",
-  "{root}/.claude/paste-cache/", "{root}/.claude/telemetry/",
-  "{root}/.claude/daemon/", "{root}/.claude/jobs/",
-  "{root}/.claude/ide/", "{root}/.claude/backups/",
-  "{root}/.claude/uploads/", "{root}/.claude/downloads/",
-  # Per-session transcripts (one .jsonl appended on every message) and the
-  # usage-state file rewritten alongside them: machine state that a live watch
-  # otherwise turns into a full rebuild on every keystroke. The memory notes
-  # nested under here are kept by an [allow] carve-out above.
-  "{root}/.claude/projects/", "{root}/.claude/usage-state.json",
+  "{root}/.claude/",
   "{root}/.codex/shell_snapshots/", "{root}/.codex/ipc/",
   "{root}/.codex/plugins/cache/",
 ]

@@ -154,11 +154,11 @@ def t_corpus_relevance():
     excluded = lambda p: p.endswith("usage-state.json")     # noqa: E731
     keep = lambda p: w.relevant_to_corpus(p, ig, excluded)  # noqa: E731
     check("a corpus-excluded churny file does not count",
-          keep("/home/.claude/usage-state.json") is False)
+          keep("/u/.claude/usage-state.json") is False)
     check("a store write still does not count",
           keep("/store/m3.db") is False)
     check("an ordinary corpus change counts",
-          keep("/home/notes.md") is True)
+          keep("/u/notes.md") is True)
 
 
 def t_no_spin():
@@ -185,22 +185,22 @@ def t_no_spin():
 
 
 def t_store_prune():
-    """Fasit for the store-dir prune, by hand. Root `/home`; a store at
-    `/home/.hg/stores/m.db` means `/home/.hg/stores` and anything under it is
+    """Fasit for the store-dir prune, by hand. Root `/u`; a store at
+    `/u/.hg/stores/m.db` means `/u/.hg/stores` and anything under it is
     pruned -- unwatched -- while the corpus dirs beside it are not. A store *at*
     root or *above* it is not pruned: pruning at root would take the whole tree,
     and one above root is never walked, so both are left to the loop's backoff.
     """
-    p = w.store_prune("/home", ["/home/.hg/stores/m.db",
-                                "/home/.hg/stores/mesh.db"])
+    p = w.store_prune("/u", ["/u/.hg/stores/m.db",
+                                "/u/.hg/stores/mesh.db"])
     check("the directory holding a store is pruned from the watch",
-          p("/home/.hg/stores") is True and p("/home/.hg/stores/sub") is True)
+          p("/u/.hg/stores") is True and p("/u/.hg/stores/sub") is True)
     check("a sibling corpus directory is still watched",
-          p("/home/projects") is False and p("/home/.hg") is False)
+          p("/u/projects") is False and p("/u/.hg") is False)
     check("a store at root does not prune the whole tree",
-          w.store_prune("/home", ["/home/m.db"])("/home/projects") is False)
+          w.store_prune("/u", ["/u/m.db"])("/u/projects") is False)
     check("a store above root is not pruned",
-          w.store_prune("/home/corpus", ["/home/m.db"])("/home/corpus/sub")
+          w.store_prune("/u/corpus", ["/u/m.db"])("/u/corpus/sub")
           is False)
     # A store reached through a symlinked component must still prune the real
     # directory os.walk visits, not the link the kernel never reports events
@@ -435,18 +435,23 @@ def t_cli_excludes_churn():
     `t_corpus_relevance` injects `endswith("usage-state.json")` and so proves
     the composition but never the production wiring (`clf.explain(p).label ==
     EXCLUDED` in cmd_watch). That wiring is exactly what commit 88c67c2 added and
-    what a store-guard-only regression would silently undo. So this spawns the
-    CLI over a real synthetic root and drives two files into the SAME watched
-    `.claude/` directory:
+    what a store-guard-only regression would silently undo.
 
-      - `.claude/usage-state.json` -- L2 app_state, excluded -> must NOT trigger
-      - `.claude/note.md`          -- markdown, kept     -> MUST trigger
+    The churny file lives in the watched corpus ROOT, not under `.claude/`: once
+    `.claude/` became a wholesale app-state exclusion it is pruned from the watch
+    entirely, so an excluded file under it is silent because its *directory* is
+    unwatched -- which would make this gate vacuous. The `keep` gate's remaining
+    job is a churny file the classifier excludes by content (a `*.tmp`/`*.lock`/
+    `-wal` sibling) sitting in a directory that IS watched. So this spawns the
+    CLI over a real synthetic root and drives two files into that watched root:
+
+      - `scratch.tmp`  -- cache-excluded by the `*.tmp` glob -> must NOT trigger
+      - `kept-note.md` -- markdown, kept                     -> MUST trigger
 
     The second is the positive control. Without it "no trigger" would be
-    vacuous: if `.claude/` were pruned wholesale (it is not -- its probe is
-    `misc`, not excluded) the excluded file would be silent for the wrong
-    reason. The note firing proves the directory is armed, so the usage-state
-    silence is the `keep` gate doing its job, not an unwatched tree.
+    vacuous: if the root were somehow unwatched the excluded file would be silent
+    for the wrong reason. The note firing proves the directory is armed, so the
+    `.tmp` silence is the `keep` gate doing its job, not an unwatched tree.
     """
     if _inotify_absent():
         check("a corpus-excluded churny file, through the CLI, fires no update",
@@ -463,10 +468,6 @@ def t_cli_excludes_churn():
         root = os.path.join(tmp, "korpus")
         db = build_corpus(root, syn)
         cfg = syn._config_for(root)
-        # `.claude/` must exist at watch start so inotify arms on it; the
-        # churny file is created afterwards, as it is in a live session.
-        claude = os.path.join(root, ".claude")
-        os.makedirs(claude, exist_ok=True)
         env = dict(os.environ, PYTHONPATH=ROOTDIR)
         proc = subprocess.Popen(
             [sys.executable, "-m", "homegraph.cli", "watch",
@@ -511,17 +512,17 @@ def t_cli_excludes_churn():
         time.sleep(0.3)                      # let inotify arm before the change
 
         # The excluded churny file: several rewrites, as a live session does.
-        usage = os.path.join(claude, "usage-state.json")
+        churn = os.path.join(root, "scratch.tmp")
         for _ in range(3):
-            open(usage, "w").write("churn\n")
+            open(churn, "w").write("churn\n")
             time.sleep(0.1)
         # Well past the 0.3 debounce: if it were going to trigger, it has.
         time.sleep(1.5)
         churn_silent = updates() == 0
 
         # Positive control in the SAME watched dir: a kept file MUST trigger,
-        # proving `.claude/` is armed and the silence above was the gate.
-        open(os.path.join(claude, "note.md"), "w").write("real content\n")
+        # proving the root is armed and the silence above was the gate.
+        open(os.path.join(root, "kept-note.md"), "w").write("real content\n")
         note_fired = wait_updates(1, 10)
 
         proc.send_signal(subprocess.signal.SIGINT)
