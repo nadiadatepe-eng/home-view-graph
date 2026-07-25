@@ -1618,6 +1618,214 @@ textless node is now inserted on purpose. And the cascade mutation renamed
 `PRAGMA foreign_keys` now, which is the real dependency and the one a refactor
 would actually lose.
 
+## 32 · An Obsidian vault is a second printer, not a second exporter
+
+The integration plan's phase 2. `homegraph export-obsidian --vault DIR` writes
+one markdown note per node, with `[[wikilinks]]` built from edges that already
+exist.
+
+**It reuses `export.py`'s substrate rather than paralleling it.** `_rows`
+streams every node and edge with portable paths; `redact` is the one function
+that decides what a level carries. `obsidian.py` imports both. The point is not
+tidiness -- it is that a vault **cannot** leak more than a `.hgx` at the same
+level, because there is one path and this is a different printer on the end of
+it. Two code paths written to agree agree until one is edited, which is the
+failure this package keeps meeting (section 26's stale comment, section 27's
+uncalled answer key).
+
+**Four defects, all found by the gates rather than by review:**
+
+1. **The naming pass ignored the redaction level.** Note names have to be known
+   before a link can be written, so a first pass collects keys. At `shape`,
+   `redact` hashes `node_key` -- and the writing pass then looked up a key the
+   map did not hold. The fix is not to hash in the naming pass too, which would
+   be the rule written down twice; it is to run the bare key through `redact`,
+   the one function that owns the answer.
+2. **Only node rows were redacted.** Edge rows carry `src` and `dst`, and at
+   `shape` those are names. An unredacted edge did not crash: it simply stopped
+   matching the hashed node names, so **every link silently vanished** from a
+   vault whose report still counted itself complete. The half of the stream
+   nobody thinks of as carrying names is exactly where a redaction level gets
+   defeated.
+3. **Containment was checked against the vault instead of the model
+   directory.** Notes live in `<vault>/m3/`, so a single `..` climbs into
+   `<vault>/` -- still inside the vault, and the guard allowed it. Nothing had
+   escaped; a note had merely left the model it belongs to, where it can
+   collide with a name `vault_names` proved unique. A guard that only catches
+   the dramatic failure is not catching the one that happens. This is the same
+   shape as section 27's `..`: the promise enforced on the side that generates
+   names, trusted on the side that opens files.
+4. **A dropped-link counter that could not move.** The first draft skipped an
+   edge whose target was not exported and reported
+   `links_dropped_unresolved` beside the real counts. `_rows` joins both
+   endpoints against the same store's `nodes` table, so that number is
+   **structurally always zero**. A metric that cannot move reads as evidence
+   that something was checked. Removed; the condition stays as a refusal,
+   because it stops being unreachable the moment phase 4's federation-in
+   exports edges from one store against names from another.
+
+**Names are the hard part, and the collision rules are load-bearing.** A node
+key is unique; a note name is a lossy function of it. Collisions are detected
+**case-folded** -- `plan.md` and `Plan.md` are two nodes on ext4 and one file
+on exFAT or macOS, and a vault that loses a node depending on where it is
+opened is not an export. A colliding name takes a digest of its own key, so
+two exports of the same store are identical and adding a node renames nothing
+around it. Names are cut to 180 **bytes**, counted as bytes because the corpus
+is Norwegian and `ø` is two.
+
+**Frontmatter quoting and escaping are two mechanisms, and the mutation run
+proved it.** Removing the quotes left the escaping intact, so the gate about
+newlines stayed green over frontmatter no YAML reader would accept
+(`title: he said: "---" # done` is a parse error followed by a comment). They
+now have a gate each. Obsidian renders a broken block as body text, which is
+how a redaction level's promise would quietly stop being kept.
+
+**`.canvas` is not written.** The plan lists it as optional, and the JSON
+Canvas schema is not readable from anything on this machine -- Obsidian here is
+a flatpak and no vault holds a `.canvas` to read the real shape off. Graphify's
+schema was read out of its installed source before a line of that exporter was
+written; guessing this one because it is "just JSON" would be the same mistake
+with a friendlier excuse. Same rule as `shape` shipping refused rather than
+approximated (section 27).
+
+**A populated vault is refused without `--force`.** The natural mistake is
+pointing this at a vault you already keep notes in, and ten thousand generated
+notes mixed into hand-written ones is not an operation with an undo.
+
+**Measured on the real corpus:** m1-m4, `structure`, **10 402 notes and 9 605
+links in 1.3 s**, 4.3 MB. Every link resolves to a note that exists (0
+unresolved), no name carries a forbidden character, longest filename 183 bytes,
+and the root's name appears in no note. Gate `test_i3.py` 34/34; mutation
+`mutate_i3.py` **14 killed by a named gate, 0 survivors**.
+
+The mesh is not exported, for the reason section 27 already gives: it is
+derived, and shipping it means shipping paths to files the reader does not have.
+
+## 33 · The list that decides what gets tested was itself untested
+
+`pyproject.toml` lists collectable test files **by name**, deliberately, so a
+new checkpoint has to be added on purpose. The comment defending that choice
+ended: "if that is forgotten, it is visible as a test that never appears rather
+than as a test that quietly passes."
+
+It was forgotten twice. **`test_i1.py` and `test_i2.py` were written, run by
+hand, cited as green, and never collected by `pytest tests/` at all.** The
+suite reported 19 passed and nobody compared that against 22 files on disk.
+
+This is the third time this package has been bitten by the same shape, and the
+shape is worth naming: **the mechanism that decides what gets verified is
+itself unverified.** CP-11 capped a count with a hardcoded bound; CP-I1 found
+`mutation_coverage.py` globbing `test_cp*.py` and silently skipping the whole
+H-series; this is the list that feeds pytest. Each time, the number that came
+out was smaller than the truth and looked exactly like a healthy number.
+
+Visibility that depends on someone comparing two lists is not a mechanism.
+`tests/test_suite_is_complete.py` now fails when any `tests/test_*.py` is
+missing from `python_files`, and when a name listed there no longer exists. The
+suite went from 19 to **23 collected**.
+
+The lesson generalises past this repo: a green suite is a claim about the tests
+that ran, and nothing in it reports the tests that did not.
+
+## 34 · The Graphify export, and the schema that was read instead of guessed
+
+The integration plan made phase 3 conditional: *"read Graphify's actual JSON
+schema from the repo. The format is not guessed -- the same rule as not citing
+a number we have not measured. Until it is read, this phase is a form with no
+content."* It was read: `validate.py` and `cli.py` from the installed package
+(0.9.16), plus a real 974-node `graph.json` on disk.
+
+**What the reading settled, none of which was guessable:**
+
+- **There are two shapes, not one.** The *extraction* shape
+  (`{"nodes": [...], "edges": [...]}`) is what `build` validates on the way in.
+  The *graph.json* shape is networkx `node_link_data(G, edges="links")` on the
+  way out, and it is what `merge-graphs` and `global add` consume.
+- **One file can be both.** `validate_extraction` accepts `links` as a fallback
+  for `edges` (`validate.py:55`). So this writer emits the node-link shape
+  carrying the extraction shape's required fields: one artifact, two consumers,
+  rather than two printers to keep in step.
+- **`file_type` is closed** -- six values (`validate.py:4`) -- and **`confidence`
+  is closed** -- three (`validate.py:5`). Neither is free text. Both get an
+  explicit table, and an unmapped value is refused.
+- **`confidence` has a float companion.** The real `graph.json` carries
+  `confidence_score` beside the enum. That is what makes the mapping acceptable:
+  homegraph's five methods have fixed numeric confidences (1.0, 0.7, 0.6, 0.5,
+  0.4), and squeezing five values into three buckets would be lossy if the
+  number did not travel alongside. The enum is a bucket; the number is the
+  evidence.
+- **`merge-graphs` names nodes after the file's grandparent directory**
+  (`build.py:1065`). Writing to `~/graphify.json`, as the phase-0 config sketch
+  suggested, would prefix every node with the home directory's name. The CLI
+  now says so and recommends `<project>/graphify-out/graph.json`.
+
+**The mapping is keyed on `kind`, and that is a measurement.** The real stores
+hold **17 distinct kinds** and over 60 subtypes -- and the subtypes are composed
+at runtime (`pdf/needs_ocr`, `docx/corrupt`, `m3/h2`), so a table keyed on
+subtype would refuse a PDF for the crime of needing OCR. `kind` is the axis the
+builders actually fix.
+
+**An unmapped kind is refused, not defaulted** -- chosen deliberately over a
+`concept` fallback. A fallback would let a node class nobody has considered
+arrive in a federated graph labelled as a concept and be cited from there --
+the shape this project keeps meeting, where a guess written down as a fact
+loses its uncertainty on the way to the next reader. `check_tables()` applies
+the same rule to edges: `EDGE_METHODS` describes a sixth method as "a decision
+rather than a tuning knob", and adding one now stops this exporter instead of
+defaulting it to EXTRACTED.
+
+**`rationale` is deliberately unused.** homegraph has no node recording WHY
+something is the case. Mapping something into that type to fill the set would
+invent a claim the corpus does not make.
+
+**`multigraph: true`, and it was measured rather than chosen.** homegraph's
+edges are keyed `(src, dst, rel)`, so one pair of nodes can carry two
+relations -- 23 pairs in m3 do. networkx 3.6.1 was asked directly: `false`
+collapsed two parallel edges into one, `true` kept both and needed no explicit
+key. A file that had already lost those 23 would look tidier and be wrong.
+
+**What Graphify then does with it is their decision, and the distinction
+matters.** `merge-graphs` flattens every input to a plain `nx.Graph`
+(`cli.py`, `_to_simple`), so the merged view drops direction and parallelism.
+Measured end to end on the real export: 13 745 edges written, of which
+**13 509 survive** a simple undirected view -- 23 parallel relations and 213
+reciprocal pairs collapse. Merging our graph with a copy of itself produced
+exactly 2 x 13 509 = 27 018 edges, which is how that number is known rather
+than assumed. **We hand them everything; they choose what a merged view keeps.**
+
+**`--redaction full` was a lie for one commit.** The first `_node` enumerated
+the fields worth carrying and never looked at `body`, so `full` produced a file
+byte-identical to `structure` while promising the full text of every file.
+Fields are now passed through rather than enumerated: the level decides what
+the row holds, and whatever the row holds is what comes out. A second list of
+what-to-carry is a second policy that drifts from `redact`, which is the one
+thing that decides. Same family as section 32's naming pass.
+
+**The strongest gates in CP-I4 do not run our code.** They hand the output to
+Graphify's own `validate_extraction` and to the `networkx` in Graphify's
+environment. A round trip through a parser we wrote would only prove we are
+self-consistent, which is precisely what "read the schema" exists to prevent.
+The interpreter is discovered from the `graphify` entry point's shebang, so the
+checkpoint names no machine's directory layout. **When Graphify is absent those
+gates fail rather than passing** -- and a mutation asserts it, by making
+Graphify unfindable and requiring the suite to go red. A gate that quietly
+passes when the thing it verifies against is missing would make every other
+gate in that file decorative.
+
+**Measured on the real corpus** (m1-m4, `structure`): **10 402 nodes and
+13 745 links in 0.48 s**, 9.8 MB, 23 parallel edges kept.
+`validate_extraction` returns zero errors; `node_link_graph` loads it as a
+`MultiDiGraph` with every node and edge intact; `graphify merge-graphs`
+accepts it. File types: 9 559 document, 480 concept, 183 image, 180 paper.
+Gate `test_i4.py` 23/23; mutation `mutate_i4.py` **13 killed by a named gate,
+0 survivors**.
+
+**Nothing belonging to another account was touched.** Graphify is installed in
+this user's own `uv` tool directory; `~/.graphify/global-graph.json` -- the one
+piece of cross-project Graphify state -- does not exist, and `global add`, the
+only command that would create it, is never run. The end-to-end merge wrote to
+a scratch directory. No existing `graphify-out/` was modified.
+
 ## 14 · Deferred
 
 Kept current, because a deferral list that is not re-read becomes a list of

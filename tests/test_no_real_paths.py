@@ -87,8 +87,24 @@ CANARY_DIGEST = {
 }
 
 # Band 2 and 3. Directory names that belong to one desktop language.
+#
+# `graphify-out` and `graph-out` were in this list from the first commit, with
+# no recorded reason, under a comment that describes only localised desktop
+# directories. They are not that: `graphify-out` is a third-party tool's
+# documented default output directory, named in its own `--help`, and this
+# package now credits that tool and exports to it (DECISIONS section 34). The
+# exporter's own code has to compare against the literal to warn about the node
+# prefix `merge-graphs` derives, and spelling it in pieces to satisfy a guard
+# would be worse than the thing the guard was protecting against.
+#
+# Removing an entry from a privacy guard is not a tidy-up, so what still holds
+# is written down rather than assumed: an ACTUAL path is caught by
+# `GENERIC = [r"/home/"]`, which the comment there already calls stronger than
+# listing users, and every personal identifier is still checked by digest.
+# What is given up is the ability to hide that a directory of that name exists
+# somewhere -- which this repository announces on purpose.
 LOCALISED = ["Bilder", "Dokumenter", "Nedlastinger", "Skrivebord",
-             "Skjermbilder", "graphify-out", "graph-out"]
+             "Skjermbilder"]
 
 # Band 1 exemptions. Two, and each is a deliberate authorship or attribution
 # statement rather than something leaked:

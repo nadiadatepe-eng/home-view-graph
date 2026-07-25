@@ -621,6 +621,65 @@ def cmd_export(args):
     return 0
 
 
+def cmd_export_obsidian(args):
+    """Write the models to an Obsidian vault, one note per node.
+
+    `--root` defaults to the configured root for the same reason `export`
+    does, and is printed rather than assumed for the same reason too.
+    """
+    from .export import ExportError
+    from .obsidian import export_vault
+
+    root = getattr(args, "root", None)
+    if not root:
+        cfg = userconfig.load(getattr(args, "config", None))
+        root = cfg.root
+        print("root   %s  (from %s)" % (root, cfg.path))
+    if args.redaction == "full":
+        print("WARNING  redaction=full writes the FULL TEXT of every file "
+              "into the vault. Treat the vault as private.", file=sys.stderr)
+    try:
+        report = export_vault(_models_from(args.model), args.vault, root,
+                              redaction=args.redaction, force=args.force)
+    except ExportError as exc:
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    for key, value in report.items():
+        print("%-24s %s" % (key, value))
+    print("\nOpen the vault in Obsidian:  %s" % report["vault"])
+    return 0
+
+
+def cmd_export_graphify(args):
+    """Write the models as a Graphify graph."""
+    from .export import ExportError
+    from .graphify import export_graph
+
+    root = getattr(args, "root", None)
+    if not root:
+        cfg = userconfig.load(getattr(args, "config", None))
+        root = cfg.root
+        print("root   %s  (from %s)" % (root, cfg.path))
+    try:
+        report = export_graph(_models_from(args.model), args.out, root,
+                              redaction=args.redaction)
+    except ExportError as exc:
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        return 2
+    for key, value in report.items():
+        print("%-22s %s" % (key, value))
+    # `merge-graphs` takes its per-repo node prefix from the file's grandparent
+    # directory, so where this lands decides what every node is called in a
+    # federated graph. Said once, here, rather than left to be discovered.
+    parent = os.path.basename(os.path.dirname(os.path.dirname(report["out"])))
+    if os.path.basename(os.path.dirname(report["out"])) != "graphify-out":
+        print("\nNOTE   `graphify merge-graphs` tags nodes with the name of "
+              "the directory ABOVE the file's own. For a readable tag, write "
+              "this to <project>/graphify-out/graph.json; from here every "
+              "node would be prefixed %r." % (parent or "/"))
+    return 0
+
+
 def cmd_inspect(args):
     """Print an artifact's manifest without importing it.
 
@@ -1426,6 +1485,40 @@ def main(argv=None):
                         "edge but no file text")
     p.add_argument("--config", default=None)
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("export-obsidian",
+                       help="write the models to an Obsidian vault")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH")
+    p.add_argument("--vault", required=True,
+                   help="directory to write notes into; refused if it "
+                        "already holds files, unless --force")
+    p.add_argument("--root", default=None,
+                   help="the root these stores were built against; defaults "
+                        "to the configured one")
+    p.add_argument("--redaction", default="structure",
+                   choices=("full", "structure", "shape"),
+                   help="structure (default) carries paths, titles and every "
+                        "link but no file text")
+    p.add_argument("--force", action="store_true",
+                   help="write into a vault that already holds files")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_export_obsidian)
+
+    p = sub.add_parser("export-graphify",
+                       help="write the models as a Graphify graph.json")
+    p.add_argument("--model", action="append", required=True, metavar="M=PATH")
+    p.add_argument("--out", required=True,
+                   help="write here; <project>/graphify-out/graph.json is the "
+                        "path `merge-graphs` derives a readable tag from")
+    p.add_argument("--root", default=None,
+                   help="the root these stores were built against; defaults "
+                        "to the configured one")
+    p.add_argument("--redaction", default="structure",
+                   choices=("full", "structure", "shape"),
+                   help="structure (default) carries paths, titles and every "
+                        "edge but no file text")
+    p.add_argument("--config", default=None)
+    p.set_defaults(func=cmd_export_graphify)
 
     p = sub.add_parser("inspect", help="print an artifact's manifest")
     p.add_argument("artifact")

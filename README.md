@@ -398,6 +398,74 @@ Two things keep it honest, and CP-13 checks both through the CLI:
   `.venv` / `.git` churn. `watch` reuses the corpus classifier to prune those,
   and armed 676 watches instead on the home it was measured against.
 
+## Exporting to an Obsidian vault
+
+```
+homegraph export-obsidian --model m3=m3.db --model m4=m4.db --vault ~/graph-vault
+```
+
+One markdown note per node: YAML frontmatter with the node's kind, subtype,
+provenance and dates, and `[[wikilinks]]` built from edges that **already
+exist** -- M3's `WIKILINKS_TO` / `LINKS_TO` / `EMBEDS`, the mesh's
+`MENTIONS_FILE` / `FIGURE_FOR` / `CITES_CODE`, M1's `REFERENCES_FILE`. Nothing
+is recomputed and no link is inferred from one title resembling another, so a
+vault exported this way and indexed again is the graph it came from.
+
+`--redaction` is the same flag `export` takes and means the same thing, because
+it is the same function: `structure` (the default) carries paths, titles and
+every link but no file text. A vault cannot leak more than a `.hgx` would.
+
+Notes go in one directory per model, but names are unique across the **whole**
+vault -- Obsidian resolves `[[name]]` vault-wide, so a name repeated in two
+directories is a link that lands somewhere the graph did not point. Collisions
+are resolved case-folded, because `plan.md` and `Plan.md` are two nodes on ext4
+and one file on a case-insensitive filesystem.
+
+**A vault that already holds files is refused** unless you pass `--force`. The
+mistake this guards is pointing the command at a vault of hand-written notes.
+
+No `.canvas` file is written. It is optional in the plan, and the JSON Canvas
+schema was not readable from anything here -- see `DECISIONS.md` section 32 for
+why that means "not written" rather than "written approximately".
+
+Measured on the real corpus: **10 402 notes and 9 605 links in 1.3 s**, 4.3 MB,
+every link resolving to a note that exists.
+
+## Exporting to Graphify
+
+```
+homegraph export-graphify --model m3=m3.db --out project/graphify-out/graph.json
+```
+
+Writes the graph in Graphify's node-link form, carrying the fields Graphify's
+own `validate_extraction` requires -- so **one file serves both consumers**:
+`graphify merge-graphs` and `global add` load it, and it passes `assert_valid`.
+
+The schema was read out of the installed package (0.9.16) and a real
+`graph.json`, not guessed. Two things that follow from the reading:
+
+- **`file_type` and `confidence` are closed sets** (six and three values).
+  homegraph's 17 node kinds and 5 edge methods map onto them through explicit
+  tables, and **an unmapped kind stops the export** rather than defaulting to
+  `concept`. The numeric confidence is not lost to the three-valued enum -- it
+  travels in `confidence_score`, the float field beside it.
+- **Where you write it decides what nodes are called.** `merge-graphs` takes
+  its per-repo prefix from the file's *grandparent* directory, so
+  `<project>/graphify-out/graph.json` gives a readable tag and `~/graph.json`
+  tags everything with your home directory's name. The command says so if you
+  aim it somewhere else.
+
+The file is a **multigraph**, because homegraph's edges are keyed by relation
+and one pair of nodes can carry two. On the real corpus 23 pairs do, and a
+simple graph drops one of each silently. `merge-graphs` then flattens to a
+plain undirected graph on its side -- 13 509 of 13 745 edges survive that view,
+losing the 23 parallel and 213 reciprocal ones. That is Graphify's decision
+about a merged view, and a different thing from handing them a graph that had
+already lost data.
+
+Measured on the real corpus: **10 402 nodes and 13 745 links in 0.48 s**,
+9.8 MB, zero validation errors from Graphify's own validator.
+
 ## Viewing the graph
 
 `visualize` writes a single HTML file with the layout precomputed in Python and
@@ -434,15 +502,25 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Fourteen checkpoints plus a privacy check. 352 mutations, 0 survived, 0
-detected only by a crash**, measured 2026-07-23 after the foreground watch
-landed. CP-3's count is 27, not the 26 printed here for a day -- recounted
-rather than carried forward, which this file has had to do before. The split of *how* they died is the
-fragile number and is timestamped for a reason: it has moved twice within an
-hour of measurement. **0 survived is the load-bearing claim**; a mutation
-moving between *the named gate said no* and *the suite died* changes how much
-that kill is worth, so re-run the harnesses after touching a checkpoint rather
-than trusting the numbers here.
+**Twenty-two checkpoints plus a privacy check and a suite-completeness check.
+440 mutations, 0 survived, 0 detected only by a crash**, measured 2026-07-25
+after the Graphify export landed, by running every harness in one sweep rather
+than one at a time. The split of *how* they died is the fragile number and is
+timestamped for a reason: it has moved twice within an hour of measurement.
+**0 survived is the load-bearing claim**; a mutation moving between *the named
+gate said no* and *the suite died* changes how much that kill is worth, so
+re-run the harnesses after touching a checkpoint rather than trusting the
+numbers here.
+
+**Run the sweep, not the single harness.** A gate can pass standalone and be
+flaky under load -- CP-I1 shipped one that raced a socket close, went green on
+its own and survived its own mutation in a full run. Standalone is a smoke
+test; the sweep is the measurement.
+
+The table below stopped at CP-13 for two days while the H- and I-series were
+being written, and nothing noticed, for the same reason `pytest` was not
+collecting `test_i1.py` -- see `DECISIONS.md` section 33. Recounted, not
+carried forward.
 
 | harness | mutations | killed by the named gate |
 |---|---|---|
@@ -459,11 +537,19 @@ than trusting the numbers here.
 | CP-10 query | 26 | 26 |
 | CP-11 write barrier | 20 | 20 |
 | CP-12 portable artifact | 33 | 33 |
-| CP-13 foreground watch | 9 | 9 |
-| **total** | **352** | **351** |
+| CP-13 foreground watch | 16 | 16 |
+| H-1 static embeddings | 6 | 6 |
+| H-2 matrix distillation | 6 | 6 |
+| H-3 semantic search | 10 | 10 |
+| H-3 graph page | 3 | 3 |
+| CP-I1 Ollama provider | 23 | 23 |
+| CP-I2 vector expiry | 6 | 6 |
+| CP-I3 Obsidian vault | 14 | 14 |
+| CP-I4 Graphify export | 13 | 13 |
+| **total** | **440** | **437** |
 
-The one CP-6 mutation not in the right-hand column was killed by a *different*
-gate than the one that named it — recorded rather than rounded away, because a
+The three mutations not in the right-hand column -- one in CP-6, two in
+CP-12 -- were killed by a *different* gate than the one that named them — recorded rather than rounded away, because a
 kill by the wrong gate means the named gate still tests nothing.
 
 Two mutations rotted and were repaired on 2026-07-23: each one finds its target
@@ -620,6 +706,13 @@ historical one.
   broken wikilinks turned out to be `[[_COMMUNITY_…]]` cluster labels from
   generated graph reports, which is where the `generated` subtype came from.
   A borrowed lesson rather than a borrowed design, and worth naming as one.
+- **Its JSON schema**, read out of the installed package (0.9.16) for
+  `export-graphify` (CP-I4): the node-link shape `merge-graphs` consumes, the
+  closed `file_type` and `confidence` vocabularies, the `confidence_score`
+  float that sits beside the enum, and the fact that `merge-graphs` derives a
+  repo prefix from the file's grandparent directory. Read, never guessed --
+  the plan made that a precondition for building this at all, and the gates
+  check the output against Graphify's own validator rather than against ours.
 
 ### `DeusData/codebase-memory-mcp`
 
@@ -699,6 +792,24 @@ host nobody named — the same family as the code-review-graph \#711 failure,
 though not the same mechanism: #711 was a *build path* that loaded a model
 because it ran, and what stops that here is that importing the provider opens
 no socket at all, which CP-I1 asserts with an audit hook.
+
+### `Obsidian`
+
+The vault conventions `export-obsidian` writes into (CP-I3): YAML frontmatter
+delimited by `---`, `[[wikilink]]` resolution **by name across the whole
+vault**, and the characters a note name may not carry because the link syntax
+claims them (`#` makes the rest a heading anchor, so `[[a#b]]` resolves to a
+section of `a` rather than to a note named `a#b`).
+
+Borrowed as a **format, not a dependency** — a vault is a directory of markdown
+and the writer is `open()` and `str.join`. Nothing is vendored, no plugin API is
+called, and Obsidian does not need to be installed for the export to run or for
+the vault to be read by anything else.
+
+`.canvas` is deliberately **not** written: the JSON Canvas schema was not
+readable from anything on the machine this was built on, and the rule that
+produced the Graphify exporter — read the schema from the source, never guess it
+— applies to a friendly-looking format too.
 
 ### `DataExpert-io/data-engineer-handbook`
 
