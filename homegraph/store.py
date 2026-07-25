@@ -618,7 +618,42 @@ class Store:
             "embeddings": self.db.execute(
                 "SELECT COUNT(*) c FROM embeddings").fetchone()["c"],
             "embeddings_enabled": self.embeddings is not None,
+            "embeddings_coverage": self.embedding_coverage(),
         }
+
+    def embedding_coverage(self) -> list[dict[str, object]]:
+        """Per namespace: how many nodes with text have a vector, and how many.
+
+        `fts_stale` has existed since the beginning and answers the same
+        question for the text index. Nothing answered it for vectors, and the
+        gap was not theoretical: an `update` that adds 1173 nodes leaves them
+        unembedded, `vector_search` still runs because the namespace is not
+        empty, and the search reports `_out_mode=hybrid` -- a confident ranking
+        over 82% of the corpus with nothing marking it partial. Measured on the
+        author's own store on 2026-07-25, one day after the mechanism shipped.
+
+        A LIST rather than a single stale flag, because a store may hold rows
+        from a namespace nobody is querying any more (the model-switch case
+        decision 29 describes), and collapsing them into one boolean would need
+        this method to guess which namespace is the current one. It cannot: the
+        store is opened without one by `status`. Reporting each is the honest
+        shape, and the caller decides which line matters.
+
+        The denominator is nodes with text, not all nodes: a node with neither
+        title nor body is skipped by `embed` on purpose, and counting it as
+        missing would make full coverage unreachable and the number useless.
+        """
+        total = self.db.execute(
+            "SELECT COUNT(*) c FROM nodes "
+            "WHERE COALESCE(title,'') || COALESCE(body,'') != ''"
+        ).fetchone()["c"]
+        rows = self.db.execute(
+            "SELECT e.provider, e.model, e.dim, COUNT(*) c FROM embeddings e "
+            "JOIN nodes n ON n.id = e.node_id "
+            "GROUP BY e.provider, e.model, e.dim ORDER BY c DESC").fetchall()
+        return [{"provider": r["provider"], "model": r["model"],
+                 "dim": r["dim"], "embedded": r["c"], "of": total,
+                 "stale": r["c"] < total} for r in rows]
 
     def begin_immediate(self) -> None:
         """Take SQLite's write lock now rather than at the first INSERT.

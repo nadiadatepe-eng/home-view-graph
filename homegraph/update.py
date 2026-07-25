@@ -333,6 +333,22 @@ def forget(store, path: str, keep_self: bool = False) -> int:
         nid = store.node_id(path)
         if nid is not None:
             store.db.execute("DELETE FROM edges WHERE src = ?", (nid,))
+            # ...and its VECTOR, for exactly the same reason one step further.
+            # The node keeps its id and its history; its text does not. An
+            # embedding is a claim about text, so once the rebuild overwrites
+            # the body, the old vector describes something that is gone.
+            #
+            # This was reachable and reproduced: a file edited from "retrieval
+            # search ranking" to "onion onion onion" kept the vector pointing at
+            # `retrieval` and went on ranking confidently for a query it no
+            # longer answers. Missing vectors make a node unfindable, which is
+            # visible; a stale one makes it findable for the WRONG thing, which
+            # is not. Deleting is right rather than re-embedding here: `update`
+            # has no embedder and must not acquire one -- the provider is opt-in
+            # and may cost a network round trip per node, which is not a thing a
+            # filesystem diff gets to decide. `embed` fills the hole afterwards,
+            # and now knows to look for it.
+            store.db.execute("DELETE FROM embeddings WHERE node_id = ?", (nid,))
     return len(keys)
 
 

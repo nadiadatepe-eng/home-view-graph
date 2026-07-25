@@ -1569,6 +1569,55 @@ were possible.
 taken in `docs/harvest-plan.md` by the markdown heading-tree, which is a
 different track and still backlog.
 
+## 31 · A vector is a claim about text, and it expires when the text does
+
+Found by using CP-I1 rather than by reviewing it: the question "why does a file
+I made an hour ago not turn up?" walked straight into three defects that are
+one defect seen from three sides.
+
+**A rebuilt node kept its old vector.** `forget(keep_self=True)` deletes a
+changed file's derived nodes and its outbound edges, because both describe
+content that is gone — and left the embedding, which describes exactly the same
+gone content. Reproduced: a file edited from `retrieval search ranking` to
+`onion onion onion` kept the vector pointing at `retrieval` and went on
+answering a query it no longer contains. **A missing vector makes a node
+unfindable, which someone notices. A stale one makes it findable for the wrong
+thing, which nobody does.** `update` deletes rather than re-embeds, and that is
+deliberate: it has no embedder and must not acquire one, because a filesystem
+diff does not get to decide to spend a network round trip per node.
+
+**Nothing reported partial coverage.** `fts_stale` has existed since the
+beginning; there was no equivalent for vectors, and the gap was measured rather
+than imagined — an `update` on the author's own store added 1 173 nodes,
+`vector_search` still ran because the namespace was not empty, and the search
+reported `_out_mode=hybrid` over 82% of the corpus with nothing marking it
+partial. `status` now reports coverage per namespace with a denominator, and
+warns. Per namespace and not as one flag, because a store may hold rows from a
+namespace nobody queries any more, and collapsing them would need `status` to
+guess which one is current — it cannot, it opens the store without one.
+
+**`embed` re-embedded everything, every time**, which is what made the first two
+hurt: closing a 1 320-node hole cost twenty minutes against bge-m3, so it did
+not get closed. It skips nodes already covered in the namespace now — measured
+at 4m15s against 20m10s — with `--force` for the case the namespace cannot see,
+a changed *matrix* under an unchanged name.
+
+**The order is the point.** Incremental embed is only safe *because* `forget`
+now clears the vector of a rebuilt node. Without that, a changed file would keep
+its old vector, count as covered, and be skipped forever: the cheap fix would
+have turned a bug one re-embed cured into a permanent one. They ship as one
+checkpoint because neither is correct alone, and CP-I2's gates assert the
+dependency rather than the two behaviours separately.
+
+Two of CP-I2's own gates could not fail on the first cut, and the mutation
+harness found both. The coverage-denominator check compared against the same
+query re-run inside the test, over a fixture where every node had text — so
+`WHERE 1=1` returned the same number and the mutation survived untouched; a
+textless node is now inserted on purpose. And the cascade mutation renamed
+`delete_node`, which crashed instead of reddening; it turns
+`PRAGMA foreign_keys` now, which is the real dependency and the one a refactor
+would actually lose.
+
 ## 14 · Deferred
 
 Kept current, because a deferral list that is not re-read becomes a list of

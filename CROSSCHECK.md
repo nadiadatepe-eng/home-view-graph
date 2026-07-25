@@ -18,14 +18,14 @@ Models: M1 documents · M2 images · M3 markdown · M4 everything else · M5 mes
 
 | | |
 |---|---|
-| `pytest tests/ -q` | 20 passed (CP-0..CP-13, H1–H3 and the graph gate, CP-I1, plus the privacy guard) |
-| Mutation harnesses, nineteen of them | 407 mutations · 404 killed by a named gate · 3 by a different gate · 0 detected only by a crash · 0 survived |
-| `tests/mutation_coverage.py` | 649 checks, 343 covered (53%) — see the note below on why this fell |
+| `pytest tests/ -q` | 21 passed (CP-0..CP-13, H1–H3 and the graph gate, CP-I1, CP-I2, plus the privacy guard) |
+| Mutation harnesses, twenty of them | 413 mutations · 410 killed by a named gate · 3 by a different gate · 0 detected only by a crash · 0 survived |
+| `tests/mutation_coverage.py` | 666 checks, 349 covered (52%) — see the note below on why this fell |
 | `ruff check .` | clean |
 | `mypy homegraph/` | clean on 31 files; strict on seven modules |
 
 Reproduce: `uvx --with pytest --from pytest pytest tests/ -q`, then
-`for m in tests/mutate_*.py; do python3 "$m"; done` (CP-0..CP-13, CP-I1, H1–H3 and
+`for m in tests/mutate_*.py; do python3 "$m"; done` (CP-0..CP-13, CP-I1, CP-I2, H1–H3 and
 the graph gate). The synthetic corpus is the default and
 generates identically on any machine. `HOMEGRAPH_REAL_CORPUS=1` needs
 `tests/gold/real_corpus.py`, which is gitignored and not distributed — so
@@ -47,8 +47,8 @@ who only confirms them has not added much; the value is in what is not listed.
    mutation harness reports 0% rather than being omitted. The honest number went
    from 59% to 53%; nothing about the tests changed, only what was counted.
 
-1. **Mutation coverage is still a minority.** 407 mutations against 649 checks;
-   306 checks have no mutation aimed at them. This project's own history says
+1. **Mutation coverage is still a minority.** 413 mutations against 666 checks;
+   317 checks have no mutation aimed at them. This project's own history says
    empty gates cluster exactly where no mutation reaches — fourteen were found
    that way, every one in a checkpoint that had been green on the first run.
    The unmutated checks are the place to start, and `mutation_coverage.py`

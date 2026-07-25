@@ -156,7 +156,7 @@ layout would still be imposed.
 | `providers/ollama.py` | the opt-in network embedder: `/api/embed` over `urllib`, dim measured not declared, vectors L2-normalised on the way in |
 | `providers/__init__.py` | which provider a config or an `--embeddings` locator names; an unknown one is refused, never defaulted |
 | `incremental.py` | mtime+size, then hash to confirm |
-| `update.py` | applies that diff to a built model |
+| `update.py` | applies that diff to a built model, and drops the vector of anything it rebuilds |
 | `models/m1_*` | documents: pdf, odt, docx, tex |
 | `models/m2_*` | images: filenames and `stat()` only |
 | `models/m3_*` | markdown: the richest edge set |
@@ -256,9 +256,11 @@ homegraph visualize --model m3=/tmp/m3.db --embeddings matrix.json --out graph.h
 # package. The endpoint is never assumed; you name it.
 #   [embeddings] provider = "ollama", model = "all-minilm",
 #                endpoint = "http://localhost:11434"
-homegraph embed  --model m3=/tmp/m3.db
+homegraph embed  --model m3=/tmp/m3.db          # only what has no vector yet
+homegraph embed  --model m3=/tmp/m3.db --force  # ...and when the MATRIX changed
 homegraph search /tmp/m3.db --embeddings ollama://bge-m3@localhost --mode vector \
         "how memory persists"
+homegraph status /tmp/m3.db                     # says when coverage is partial
 # Model choice is not a detail, and neither is provider choice. Measured on one
 # lived-in Norwegian+English corpus, 6203 markdown nodes, 2026-07-25:
 #

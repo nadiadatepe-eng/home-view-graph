@@ -258,9 +258,27 @@ def cmd_status(args):
                     "observations", "observations_monthly", "fts_rows",
                     "fts_stale", "embeddings", "embeddings_enabled"):
             print("%-22s %s" % (key, st[key]))
+        for ns in st["embeddings_coverage"]:
+            pct = 100.0 * ns["embedded"] / ns["of"] if ns["of"] else 0.0
+            print("%-22s %s:%s:%d  %d/%d nodes with text (%.0f%%)%s"
+                  % ("embeddings_ns", ns["provider"], ns["model"], ns["dim"],
+                     ns["embedded"], ns["of"], pct,
+                     "  INCOMPLETE" if ns["stale"] else ""))
         if st["fts_stale"]:
             print("\nWARNING: the FTS index does not cover every node. "
                   "Searches will silently under-return until rebuild_fts().")
+        # Printed for the same reason `fts_stale` is, and it was missing for as
+        # long as embeddings have existed. An incomplete namespace does not make
+        # the vector path refuse -- it makes it run over part of the corpus and
+        # report `hybrid`, which reads as a whole answer.
+        for ns in st["embeddings_coverage"]:
+            if ns["stale"]:
+                print("\nWARNING: %d of %d node(s) with text have no vector "
+                      "under %s:%s:%d. Semantic search will run and quietly "
+                      "leave them out; `homegraph embed` fills the gap and now "
+                      "only embeds what is missing."
+                      % (ns["of"] - ns["embedded"], ns["of"],
+                         ns["provider"], ns["model"], ns["dim"]))
     return 0
 
 
@@ -714,7 +732,7 @@ def cmd_import(args):
     return 0
 
 
-def _embed_store(db, embedder):
+def _embed_store(db, embedder, force=False):
     """Write a vector for every node in `db` that has text. Returns the count.
 
     Through `_writing`, like every other writer, so CP-11's barrier check sees
@@ -741,13 +759,34 @@ def _embed_store(db, embedder):
     Nothing warned. That is the exact failure `_out_mode` exists to prevent,
     arriving from the provider side instead of the index side.
 
-    Returns `(embedded, degenerate)` so the caller can tell "some nodes had no
-    usable text" from "this model returns nothing usable at all".
+    **Incremental by default.** A node that already has a vector under this
+    exact namespace is skipped, so filling the gap an `update` opened costs the
+    new nodes and not the corpus: 1320 of 7376 on the author's store, four
+    minutes against twenty. `force=True` re-embeds everything, which is what a
+    changed *matrix* needs -- the namespace name would be identical while the
+    numbers behind it moved, and nothing in the store could tell.
+
+    Skipping is only safe because `update.forget` now deletes the vector of any
+    node it rebuilds. Without that, a file whose text changed would keep its old
+    vector, be counted as covered, and be skipped forever -- the incremental
+    path would have turned a bug that one re-embed cured into a permanent one.
+    The two changes are one change; neither is correct alone.
+
+    Returns `(embedded, degenerate, skipped)`.
     """
     provider, model, dim = embedder.namespace
-    embedded = degenerate = 0
+    embedded = degenerate = skipped = 0
     with _writing(db, model="unknown") as store:
-        rows = store.db.execute("SELECT id, title, body FROM nodes").fetchall()
+        if force:
+            rows = store.db.execute(
+                "SELECT id, title, body FROM nodes").fetchall()
+        else:
+            rows = store.db.execute(
+                "SELECT n.id, n.title, n.body FROM nodes n "
+                "LEFT JOIN embeddings e ON e.node_id = n.id "
+                "  AND e.provider = ? AND e.model = ? AND e.dim = ? "
+                "WHERE e.node_id IS NULL", (provider, model, dim)).fetchall()
+            skipped = store.embedding_count(provider, model, dim)
         for r in rows:
             text = " ".join(p for p in (r["title"], r["body"]) if p).strip()
             if not text:
@@ -758,7 +797,7 @@ def _embed_store(db, embedder):
                 continue
             store.upsert_embedding(r["id"], provider, model, dim, vec)
             embedded += 1
-    return embedded, degenerate
+    return embedded, degenerate, skipped
 
 
 def cmd_embed(args):
@@ -821,7 +860,8 @@ def cmd_embed(args):
             failed = True
             continue
         try:
-            n, degenerate = _embed_store(db, embedder)
+            n, degenerate, skipped = _embed_store(
+                db, embedder, force=getattr(args, "force", False))
         except providers.PROVIDER_ERRORS as exc:
             # A provider that dies mid-store leaves NOTHING behind: `Store`
             # rolls back on any exception, so the store still holds whatever it
@@ -844,8 +884,10 @@ def cmd_embed(args):
                   % (name, degenerate), file=sys.stderr)
             failed = True
             continue
-        print("  %-6s embedded %d node(s) under namespace %s:%s:%d"
-              % (name, n, provider, model, dim))
+        print("  %-6s embedded %d node(s) under namespace %s:%s:%d%s"
+              % (name, n, provider, model, dim,
+                 "" if not skipped else
+                 " (%d already had one; --force re-embeds them)" % skipped))
         if degenerate:
             # Not fatal -- a handful of nodes whose whole text is out of the
             # embedder's vocabulary is a real and honest state -- but counted
@@ -1403,6 +1445,11 @@ def main(argv=None):
                             "[embeddings] config block)")
     p.add_argument("--model", action="append", required=True, metavar="M=PATH",
                    help="which store(s) to embed; repeatable")
+    p.add_argument("--force", action="store_true",
+                   help="re-embed every node, not just the ones with no "
+                        "vector in this namespace. Needed when the MATRIX "
+                        "changed but its name did not -- the namespace "
+                        "would look identical while the numbers moved.")
     p.add_argument("--config", default=None)
     p.set_defaults(func=cmd_embed)
 

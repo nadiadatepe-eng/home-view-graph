@@ -6,7 +6,9 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = []          # stdlib only, on purpose -- see DECISIONS.md §5
-keywords = ["knowledge-graph", "sqlite", "fts5", "personal-search", "mcp"]
+keywords = ["knowledge-graph", "sqlite", "fts5", "personal-search", "mcp",
+            "ollama", "embeddings", "semantic-search", "vector-search",
+            "hybrid-search", "local-first", "offline-first"]
 classifiers = [
   "Programming Language :: Python :: 3.12",
   "License :: OSI Approved :: MIT License",
