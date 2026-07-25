@@ -257,8 +257,26 @@ homegraph visualize --model m3=/tmp/m3.db --embeddings matrix.json --out graph.h
 #   [embeddings] provider = "ollama", model = "all-minilm",
 #                endpoint = "http://localhost:11434"
 homegraph embed  --model m3=/tmp/m3.db
-homegraph search /tmp/m3.db --embeddings ollama://all-minilm@localhost --mode vector \
+homegraph search /tmp/m3.db --embeddings ollama://bge-m3@localhost --mode vector \
         "how memory persists"
+# Model choice is not a detail, and neither is provider choice. Measured on one
+# lived-in Norwegian+English corpus, 6203 markdown nodes, 2026-07-25:
+#
+#   static potion-multilingual  dim  256    9 s   +5 MB   no server needed
+#   ollama all-minilm     23M   dim  384    3 min +5 MB
+#   ollama bge-m3        567M   dim 1024   20 min +20 MB
+#
+# `all-minilm` is English-only and it shows: on Norwegian queries it returned
+# HIGHER cosine with WORSE hits -- the signature of a model working outside its
+# language, and a reminder that a high score is not relevance. `bge-m3` gave the
+# best hits at every probe in both languages. But the static matrix builds 136x
+# faster, needs no process to stay alive, and trailed by a rank or two rather
+# than by a category. Which of those is "better" depends on whether you will
+# keep a server running.
+#
+# These are qualitative probes, not a labelled eval. The quantitative gap H3
+# recorded -- a labelled paraphrase set -- is still open, and nothing above
+# closes it.
 # One vector per node, one namespace per store: `embeddings.node_id` is the
 # primary key, so re-embedding with a second provider REPLACES the first one's
 # vectors. Switching providers is a full re-embed, not an A/B.
