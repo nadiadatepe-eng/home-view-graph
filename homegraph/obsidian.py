@@ -100,10 +100,10 @@ def _truncate_bytes(stem: str, limit: int) -> str:
 def _candidate(key: str) -> str:
     """A readable note name for one node key. Not yet guaranteed unique.
 
-    The key keeps its shape -- `~/Dokumenter/plan.md` becomes
-    `Dokumenter - plan.md` -- so a reader can still see where a note came
-    from, which is the whole reason the vault is worth having over a JSON
-    dump. The leading `~/` goes because every note has it.
+    The key keeps its shape -- `~/notes/2026/plan.md` becomes
+    `notes 2026 plan.md` -- so a reader can still see where a note came from,
+    which is the whole reason the vault is worth having over a JSON dump. The
+    leading `~/` goes because every note has it.
     """
     stem = key[2:] if key.startswith("~/") else key
     stem = "".join(" " if ch in FORBIDDEN else ch for ch in stem)

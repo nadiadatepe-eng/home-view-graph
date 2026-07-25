@@ -163,7 +163,8 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
     for data in extractions:
         path = data["path"]
         for i, _ in enumerate(data["sections"]):
-            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of, method="exact")
+            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS",
+                              as_of, method="exact")
             report.edges["CONTAINS"] += 1
 
         for target in data["wikilinks"]:

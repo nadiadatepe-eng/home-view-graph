@@ -153,11 +153,13 @@ def build(store, paths, as_of, report: DocBuildReport | None = None) -> DocBuild
             continue
         data = extract(path)
         for i, _ in enumerate(data["sections"]):
-            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS", as_of, method="exact")
+            store.upsert_edge(path, "%s#%d" % (path, i), "CONTAINS",
+                              as_of, method="exact")
             report.edges["CONTAINS"] += 1
         author = (data["metadata"].get("author") or "").strip()
         if author:
-            store.upsert_edge(path, "author:%s" % author, "AUTHORED_BY", as_of, method="exact")
+            store.upsert_edge(path, "author:%s" % author, "AUTHORED_BY",
+                              as_of, method="exact")
             report.edges["AUTHORED_BY"] += 1
         for ref in data["outbound_refs"][:MAX_REFS_PER_DOC]:
             key = "ref:%s:%s" % (ref["kind"], ref["value"])

@@ -141,10 +141,22 @@ def publishable_files():
     wrong. When git is unavailable the check is not skipped -- it fails, since
     "we could not look" and "we looked and it was clean" are different facts.
     """
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO,
-                         capture_output=True, text=True)
+    # `--others --exclude-standard` alongside the tracked set, and it is the
+    # whole difference between a guard and a formality. `git ls-files` alone
+    # lists TRACKED files, so a brand-new module is invisible to this check
+    # until it is committed -- which is to say, the guard goes green over
+    # exactly the file most likely to be leaking, right up to the moment the
+    # leak becomes permanent. It happened: `obsidian.py` and `graphify.py` were
+    # both written, checked green here, and committed with an example path
+    # naming a localised directory that this file exists to catch.
+    #
+    # Ignored files stay excluded -- `tests/gold/` holds the real corpus keys
+    # on purpose and git is still the one deciding what is ignored.
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=REPO, capture_output=True, text=True)
     if out.returncode == 0 and out.stdout.strip("\0"):
-        return sorted(p for p in out.stdout.split("\0") if p)
+        return sorted(set(p for p in out.stdout.split("\0") if p))
 
     # Not a repository yet. Enumerate, then let git filter with the same
     # .gitignore it will use on the day this is committed. A scratch git

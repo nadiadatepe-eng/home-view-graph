@@ -84,6 +84,26 @@ strict_equality = true
 line-length = 88
 target-version = "py312"
 
+# Pinned, because inheriting a tool's default means the gate can change meaning
+# without anyone editing the repository -- and it did. These four were ruff's
+# default when `uvx ruff check .` was first recorded as clean; by ruff 0.16 the
+# bare command reported 2 200 findings over an unchanged tree, 1 399 of them
+# `UP031` objecting to the `%`-formatting this codebase uses throughout on
+# purpose. Nothing had regressed. The command had.
+#
+# Same shape as the pytest file list in DECISIONS.md section 33: **the thing
+# that decides what gets checked was implicit**, so it could drift while every
+# reported number stayed green. Written down here, `uvx ruff check .` means the
+# same next year as today.
+#
+# E501 (line length) is deliberately NOT selected. `line-length` above still
+# governs any formatter run, but as a gate it would fail 49 lines that are
+# mostly string literals in mutation needles, where wrapping makes the needle
+# harder to read than the long line. If that trade is ever worth revisiting,
+# add "E5" here and expect to touch those files.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Each test_cp*.py is a script first and a pytest module second. Without the
