@@ -395,6 +395,53 @@ def cp0_one_place_only(clf):
           "categories.toml has no root key; _categorize does not consult one")
 
 
+def cp0_authored_vs_derived(clf):
+    """Authored content under an excluded tree stays in; derived output stays out.
+
+    Both directions were live bugs on 2026-07-25, and neither failed anything.
+
+    IN: the memory notes moved from `.claude/projects/*/memory/` to a single
+    `.claude/memory/`. The allow-list named only the old pattern, so the notes
+    left the corpus the moment they moved -- silently, because an allow-list
+    that stops matching produces no error. DECISIONS 28 says these notes are
+    corpus; this check is what makes that claim falsifiable.
+
+    OUT: `homegraph-vault/` is this package's own export, written inside the
+    indexed root. A build after an export ingested the export -- 21 774 of
+    31 400 m3 nodes -- and the next export wrote notes about those notes. A
+    derived artifact inside the corpus is a feedback loop.
+
+    Names only; nothing is created or read.
+    """
+    home = clf.home.rstrip("/")
+    # Claude Code names a project directory after the cwd with the separators
+    # flattened, so the slug is derived here rather than written out -- a
+    # literal one would carry this machine's home path into a published repo,
+    # which is what test_no_real_paths exists to stop (and did stop, once).
+    slug = "-" + home.strip("/").replace("/", "-")
+    kept = [
+        home + "/.claude/memory/a-note.md",
+        home + "/.claude/projects/" + slug + "/memory/an-older-note.md",
+        home + "/.claude/agents/an-agent.md",
+    ]
+    dropped = [
+        home + "/homegraph-vault/m3/some exported note.md",
+        home + "/homegraph-vault/m1/a.md",
+        home + "/.claude/history.jsonl",
+        home + "/.claude/usage-state.json",
+    ]
+    kept_bad = [p for p in kept if clf.classify(p) == EXCLUDED]
+    drop_bad = [p for p in dropped if clf.classify(p) != EXCLUDED]
+    check("authored notes under .claude survive the wholesale exclusion",
+          not kept_bad,
+          "both memory paths + agents" if not kept_bad
+          else "EXCLUDED: %s" % kept_bad)
+    check("the package's own export is not corpus",
+          not drop_bad,
+          "vault out, .claude churn out" if not drop_bad
+          else "included: %s" % drop_bad)
+
+
 def cp0_secrets(clf):
     """The corpus layer owns the secrets rule, so it is tested here.
 
@@ -605,6 +652,7 @@ def main(inv=None):
     cp0_exclusion_report(rows, counts, spec, spec["home"])
     cp0_idempotent(clf, rows)
     cp0_one_place_only(clf)
+    cp0_authored_vs_derived(clf)
     cp0_secrets(clf)
     cp0_gold_set(clf)
 

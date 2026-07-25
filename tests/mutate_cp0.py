@@ -154,6 +154,24 @@ MUTATIONS = [
      'names = [  # mutated: secrets no longer named\n  ".__never__",',
      "secret filenames are excluded"),
 
+    # -- authored in, derived out ---------------------------------------
+    #
+    # Both of these were real states on 2026-07-25 and neither failed anything.
+    # The first is the shape that matters most: an allow-list entry does not
+    # break when the content moves, it just stops matching, and the content
+    # leaves the corpus in silence.
+    ("the memory notes' new home dropped from the allow-list",
+     "homegraph/rules/exclusions.toml",
+     '  "{root}/.claude/memory/*",\n',
+     '',   # mutated: the notes moved here and nothing names them any more
+     "authored notes under .claude survive the wholesale exclusion"),
+
+    ("the package's own vault export back inside the corpus",
+     "homegraph/rules/exclusions.toml",
+     '  "{root}/homegraph-vault/",\n',
+     '',   # mutated: a build after an export ingests the export
+     "the package's own export is not corpus"),
+
     # -- the exclusion report -------------------------------------------
     #
     # A silent truncation reads as full coverage. These are the mutations

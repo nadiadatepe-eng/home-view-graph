@@ -48,3 +48,9 @@ build/
 # tracked file it cannot decode, which is the general form of this mistake.
 .coverage
 .coverage.*
+
+# Lokal framdriftsfil. Holdes UTENFOR publisering med vilje: den navngir
+# maskinstier og private minnenotater, og personvernvakten i
+# tests/test_no_real_paths.py fanget nettopp det (14 treff). Fila er til for
+# at man skal se hvor arbeidet står på DENNE maskinen, ikke for leseren av repoet.
+TODO.md

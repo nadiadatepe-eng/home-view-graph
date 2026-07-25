@@ -63,6 +63,14 @@ globs = [
   "{root}/.claude/plans/*",
   "{root}/.claude/skills/*",
   "{root}/.claude/tools/*",
+  # The memory notes live in TWO places, and both are here on purpose.
+  # `projects/*/memory/` was the only home until 2026-07-25, when the notes
+  # moved to a single `.claude/memory/` so a session started in any directory
+  # reads the same memory. The old pattern stays because the pre-move copies
+  # are still on disk under `projects/*/memory.pre-global-*/` -- and because a
+  # carve-out that silently stops matching is exactly how this gap opened:
+  # nothing failed, the notes just left the corpus. Guarded by CP-0.
+  "{root}/.claude/memory/*",
   "{root}/.claude/projects/*/memory/*",
   "{root}/.codex/config.toml",
   "{root}/.codex/hooks.json",
@@ -108,6 +116,19 @@ prefixes = [
   "{root}/.themes/", "{root}/.icons/", "{root}/.fonts/",
   "{root}/.vscode/", "{root}/.mozilla/", "{root}/.pki/",
   "{root}/.unsloth/", "{root}/snap/",
+  # This package's own Obsidian export, and the reason it is here: the vault is
+  # written INTO the indexed root, so a build after an export ingests the
+  # export. Measured 2026-07-25 -- 21 774 of 31 400 m3 nodes (69%) were the
+  # vault's own notes, and the next export turned those into notes about notes
+  # (`... MEMORY.md.md.md`). A derived artifact inside the corpus is a feedback
+  # loop, not a corpus.
+  #
+  # KNOWN LIMIT, stated rather than hidden: this is the DEFAULT vault path.
+  # `export-obsidian --vault` takes any directory, and a vault written
+  # somewhere else under the root will self-ingest exactly the same way. The
+  # general fix is a marker file the exporter writes and the walk honours; this
+  # names the one path that actually exists on this machine.
+  "{root}/homegraph-vault/",
 ]
 # `.claude/` holds machine state that churns every few seconds during a live
 # session (transcripts, usage-state, history.jsonl, daemon.log, stats-cache)
