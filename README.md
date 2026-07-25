@@ -153,6 +153,8 @@ layout would still be imposed.
 | `temporal.py` | observations, `datelist_int` bitmask, 90-day retention |
 | `search.py` | FTS5, static-vector rerank over the FTS shortlist, RRF fusion, `_out_mode`, `--mode auto\|vector\|fts` |
 | `providers/static_embed.py` | the static lookup-table embedder: identifier-split, weighted mean-pool, L2 — a data file, never the network |
+| `providers/ollama.py` | the opt-in network embedder: `/api/embed` over `urllib`, dim measured not declared, vectors L2-normalised on the way in |
+| `providers/__init__.py` | which provider a config or an `--embeddings` locator names; an unknown one is refused, never defaulted |
 | `incremental.py` | mtime+size, then hash to confirm |
 | `update.py` | applies that diff to a built model |
 | `models/m1_*` | documents: pdf, odt, docx, tex |
@@ -248,6 +250,20 @@ homegraph embed  --model m3=/tmp/m3.db                     # needs an [embedding
 homegraph search /tmp/m3.db --embeddings matrix.json --mode vector "how memory persists"
 # ...and the graph gets an abc/≈ toggle + click-a-node-for-similar:
 homegraph visualize --model m3=/tmp/m3.db --embeddings matrix.json --out graph.html
+
+# Or point at an Ollama you are already running (CP-I1). Same contract, same
+# namespace rules, still opt-in and still no dependency -- urllib, not a client
+# package. The endpoint is never assumed; you name it.
+#   [embeddings] provider = "ollama", model = "all-minilm",
+#                endpoint = "http://localhost:11434"
+homegraph embed  --model m3=/tmp/m3.db
+homegraph search /tmp/m3.db --embeddings ollama://all-minilm@localhost --mode vector \
+        "how memory persists"
+# One vector per node, one namespace per store: `embeddings.node_id` is the
+# primary key, so re-embedding with a second provider REPLACES the first one's
+# vectors. Switching providers is a full re-embed, not an A/B.
+# `visualize --embeddings` stays static-only and says so: the page inlines a
+# word matrix so the browser can embed offline, and a server has none to inline.
 
 # MCP server on stdio
 homegraph mcp --model m3=/tmp/m3.db
@@ -647,6 +663,22 @@ The distillation technique H3's build-time tool applies, and the pre-distilled
 `potion-multilingual-128M` static model the real matrix was made from
 (`tools/distill_matrix.py`). A build-time tool run through `uv`, never a runtime
 dependency — the package stays `dependencies=[]`.
+
+### `Ollama`
+
+The local inference endpoint the second embeddings provider speaks to
+(`providers/ollama.py`, CP-I1). Borrowed as a **protocol, not a package**: the
+`/api/embed` request and response shape, reimplemented over `urllib` from the
+standard library, so `dependencies = []` survives a network provider. Nothing
+is vendored and the `ollama` Python client is not used.
+
+The endpoint is never assumed — `[embeddings].endpoint` is required, and the
+command-line form (`ollama://model@host[:port]`) names the host too. A provider
+that fell back to `localhost:11434` on its own would be opening a socket to a
+host nobody named — the same family as the code-review-graph \#711 failure,
+though not the same mechanism: #711 was a *build path* that loaded a model
+because it ran, and what stops that here is that importing the provider opens
+no socket at all, which CP-I1 asserts with an audit hook.
 
 ### `DataExpert-io/data-engineer-handbook`
 

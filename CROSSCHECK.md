@@ -18,14 +18,14 @@ Models: M1 documents · M2 images · M3 markdown · M4 everything else · M5 mes
 
 | | |
 |---|---|
-| `pytest tests/ -q` | 19 passed (CP-0..CP-13, H1–H3 and the graph gate, plus the privacy guard) |
-| Mutation harnesses, eighteen of them | 384 mutations · 381 killed by a named gate · 3 by a different gate · 0 detected only by a crash · 0 survived |
-| `tests/mutation_coverage.py` | 498 checks, 296 covered (59%) |
+| `pytest tests/ -q` | 20 passed (CP-0..CP-13, H1–H3 and the graph gate, CP-I1, plus the privacy guard) |
+| Mutation harnesses, nineteen of them | 407 mutations · 404 killed by a named gate · 3 by a different gate · 0 detected only by a crash · 0 survived |
+| `tests/mutation_coverage.py` | 649 checks, 343 covered (53%) — see the note below on why this fell |
 | `ruff check .` | clean |
 | `mypy homegraph/` | clean on 31 files; strict on seven modules |
 
 Reproduce: `uvx --with pytest --from pytest pytest tests/ -q`, then
-`for m in tests/mutate_*.py; do python3 "$m"; done` (CP-0..CP-13 plus H1–H3 and
+`for m in tests/mutate_*.py; do python3 "$m"; done` (CP-0..CP-13, CP-I1, H1–H3 and
 the graph gate). The synthetic corpus is the default and
 generates identically on any machine. `HOMEGRAPH_REAL_CORPUS=1` needs
 `tests/gold/real_corpus.py`, which is gitignored and not distributed — so
@@ -37,8 +37,18 @@ refuses to report "nothing leaked" when there was nothing present to leak.
 These are the weak points as understood from the inside. An external reviewer
 who only confirms them has not added much; the value is in what is not listed.
 
-1. **Mutation coverage is still a minority.** 384 mutations against 498 checks;
-   202 checks have no mutation aimed at them. This project's own history says
+0. **The coverage map was not covering everything, and the number fell when it
+   did.** `mutation_coverage.py` globbed `test_cp*.py`, so H1, H2, H3, the graph
+   gate and `test_no_real_paths.py` had been outside the map since 2026-07-24 —
+   140 checks, invisible, while this document cited the total as the guide to
+   where empty gates hide. It is the CP-11 failure in a second shape: the fix
+   then was "glob, do not hardcode a bound", and what capped it this time was a
+   hardcoded *pattern*. Every `test_*.py` is enumerated now, and a file with no
+   mutation harness reports 0% rather than being omitted. The honest number went
+   from 59% to 53%; nothing about the tests changed, only what was counted.
+
+1. **Mutation coverage is still a minority.** 407 mutations against 649 checks;
+   306 checks have no mutation aimed at them. This project's own history says
    empty gates cluster exactly where no mutation reaches — fourteen were found
    that way, every one in a checkpoint that had been green on the first run.
    The unmutated checks are the place to start, and `mutation_coverage.py`

@@ -1475,6 +1475,100 @@ DOM-free JS port plus an int8 title-word sub-matrix (~1 MB, self-contained), and
 the gate runs that port under node and compares it number-for-number to the
 Python one, so the two cannot drift.
 
+## 30 · A second embeddings provider, and what it was not allowed to change
+
+Integration plan phase 1. `[embeddings] provider = "ollama"` points the vector
+path at a local inference server instead of a distilled matrix. What matters is
+how little moved: `search.py` was not edited, `store.py` was not edited, and the
+`Embedder` protocol did not gain a field. The providers package promised in its
+own docstring that a second provider could be added "WITHOUT the search path
+learning a new shape", and this is the payment on that promise.
+
+Borrowed as a **protocol, not a package**: the `/api/embed` request and response
+shape, reimplemented over `urllib`. No `ollama` client, no vendored code,
+`dependencies = []` intact. See README §Credits.
+
+Four properties, each with a mutation that reddens the gate that names it:
+
+- **The endpoint is never assumed.** `[embeddings].endpoint` is required, and
+  the command-line locator (`ollama://model@host[:port]`) names the host too. A
+  default of `localhost:11434` would be a socket opened to a host nobody named.
+  That is the same *family* as code-review-graph #711 but not the same
+  mechanism, and the first draft of this paragraph conflated them: #711 was a
+  build path that loaded a model because it ran. What rules that out here is a
+  separate property — importing the provider opens no socket — asserted with an
+  audit hook rather than argued. The port may be defaulted and the host may not:
+  naming a host IS the act of choosing where to go; 11434 is a convention about
+  where a chosen host listens.
+- **The locator is parsed, not interpolated.** An early version built the URL by
+  string substitution and let urllib apply RFC 3986, which is not the reading a
+  person gives it: `ollama://a@b@c` reached host `c` (urllib read `b` as
+  userinfo), a `#` hid the real host in a fragment, `h:1:2` and port `99999`
+  were accepted, and a full-width digit passed `str.isdigit()` and then raised
+  `UnicodeEncodeError` out of urllib on plain command-line input. Every
+  component is validated before a URL exists, and each case above is now a gate.
+- **`dim` is measured, not declared.** A matrix self-describes; a server can
+  only be asked, so `connect()` embeds one probe string and reads the length.
+  That call is also the reachability check, which is why a dead endpoint costs
+  one refusal *before any store is opened* rather than a failure halfway through
+  six thousand nodes. A config that also declares `dim` is checked against the
+  measured one — same reason `static_embed` checks the declared model against
+  the file's.
+- **Vectors are L2-normalised on the way in.** `search._cosine` is a plain dot
+  product because its operands are documented as unit vectors. Ollama documents
+  `/api/embed` as returning normalised vectors — an earlier draft here said it
+  merely "happens to", which was wrong — but that guarantee belongs to a server
+  the user chose, possibly behind a proxy or an older build, so it is re-applied
+  rather than trusted. An un-normalised operand would not crash; it would rank
+  long vectors above close ones, silently. **The gate needs a ranking check AND
+  an arithmetic one, and this paragraph originally argued for dropping the
+  second.** That was wrong, and an adversarial round proved it with two
+  mutations: under L-infinity the decoy becomes `[0.75, 1.0]`, and under a
+  skip-short rule the target stays `[0.6, 0]` — both normalise with the wrong
+  divisor, both leave the *order* correct, and both stayed green over vectors of
+  length 1.25. So the fixture carries a SHORT target as well as a long decoy,
+  and the stored vectors are read back and their norms asserted. Ranking catches
+  the operation that is missing; the norm catches the operation that is wrong.
+  Decision 29's lesson is that a gate naming a component must redden when that
+  component fails — not that arithmetic assertions are the weaker kind.
+- **A degenerate answer is a refusal.** A provider returning the zero vector for
+  text that WAS there is skipped, counted, and — when it happened for every node
+  — refused with exit 2. Storing those filled the namespace with rows that
+  cosine to 0.0 against everything, so `vector_search` ran, the stable sort left
+  the BM25 shortlist untouched, and `--mode vector` reported a "pure cosine
+  ranking" that was lexical order with `0.00000` beside every line, exit 0. The
+  audit found it; no gate had looked.
+- **A failure writes nothing.** `Store.__exit__` rolls back on any exception, so
+  a provider that dies mid-run leaves the store exactly as it was, and the
+  command says so out loud. Half a namespace is worse than none: `vector_search`
+  would run, rank the fraction that made it, and report `hybrid` — a confident
+  answer over part of the corpus with nothing marking it as partial.
+
+**`search` still reads no config.** The ollama form is a locator rather than a
+valueless flag meaning "go look in config.toml", so the promise in that
+command's help — a database path and what you name — survives a provider that
+lives on a socket.
+
+**`visualize --embeddings` stays static-only, by nature rather than by
+omission.** That page inlines an int8 word sub-matrix so the *browser* can embed
+a typed query offline; a server-backed provider has no word matrix to inline,
+and a page that called out to an endpoint would stop being the self-contained
+file the command exists to produce. It refuses an `ollama://` locator by name,
+because letting it reach `static_embed.load()` would report "no such file"
+about a string that was never a path.
+
+**One namespace per store, and this is a real limit.** `embeddings.node_id` is
+the primary key, so re-embedding replaces a node's vector. Namespace
+*invalidation* works as decision 29 describes — old rows keep the old
+`(provider, model, dim)` and are filtered out — but two providers cannot
+coexist in one store, so switching is a full re-embed and an A/B needs two
+copies. Named here because the invalidation prose reads as though coexistence
+were possible.
+
+**Numbering:** this is CP-I1 (integration phase 1), not CP-H4. H4 is already
+taken in `docs/harvest-plan.md` by the markdown heading-tree, which is a
+different track and still backlog.
+
 ## 14 · Deferred
 
 Kept current, because a deferral list that is not re-read becomes a list of

@@ -265,23 +265,24 @@ def cmd_status(args):
 
 
 def cmd_search(args):
+    from . import providers
     from .search import hybrid_search
     from .store import Store
 
-    # `--embeddings <matrix>` turns on semantic reranking. Named explicitly
+    # `--embeddings <locator>` turns on semantic reranking. Named explicitly
     # rather than read from the config, because `search` reads a database path
-    # and nothing else -- the invariant this command's help promises. The matrix
-    # self-describes its provider/model/dim, so the store is opened with that
-    # namespace and the store's own vectors must have been written under it
-    # (`homegraph embed`); a different matrix finds zero and says so.
+    # and what you type -- the invariant this command's help promises, and the
+    # reason the ollama form is a locator rather than a flag meaning "go look in
+    # config.toml". Both forms self-describe their provider/model/dim (the
+    # matrix from its own header, the server from a probe embedding), so the
+    # store is opened with that namespace and its vectors must have been written
+    # under it by `homegraph embed`; a different one finds zero and says so.
     embedder = None
     embeddings = None
     if getattr(args, "embeddings", None):
-        from .providers import static_embed
         try:
-            embedder = static_embed.load(args.embeddings)
-        except (static_embed.EmbedderDataMissing,
-                static_embed.StaticEmbedError) as exc:
+            embedder = providers.from_locator(args.embeddings)
+        except providers.PROVIDER_ERRORS as exc:
             print("%s" % exc, file=sys.stderr)
             return 2
         embeddings = {"provider": embedder.provider, "model": embedder.model}
@@ -295,9 +296,17 @@ def cmd_search(args):
               "lexical fallback in vector mode.", file=sys.stderr)
         return 2
 
+    # The provider is reached AGAIN here -- `hybrid_search` embeds the query --
+    # so the handler has to cover the search, not just the construction above.
+    # It did not, and a server that died between the probe and the query gave a
+    # traceback where every other failure in this command gives exit 2.
     with Store(args.db, embeddings=embeddings) as s:
-        res = hybrid_search(s, " ".join(args.query), limit=args.limit,
-                            embedder=embedder, mode=mode)
+        try:
+            res = hybrid_search(s, " ".join(args.query), limit=args.limit,
+                                embedder=embedder, mode=mode)
+        except providers.PROVIDER_ERRORS as exc:
+            print("%s" % exc, file=sys.stderr)
+            return 2
         for w in res.warnings:
             print("WARNING: %s\n" % w)
         # Printed even when empty, and the mode is printed either way: a search
@@ -312,14 +321,40 @@ def cmd_search(args):
 
 
 def cmd_visualize(args):
+    from . import providers
     from .visualize import render
-    report = render({n: p for n, _, p in
-                     ((s.partition("=")[0], None, s.partition("=")[2])
-                      for s in args.model)},
-                    args.out, limit_per_model=args.limit,
-                    min_degree=args.min_degree, title=args.title,
-                    mesh_db=getattr(args, "mesh_db", None),
-                    embeddings=getattr(args, "embeddings", None))
+
+    # Static matrices only, and this is a property of the OUTPUT rather than a
+    # gap in the wiring. The page inlines a word-level sub-matrix so the browser
+    # can embed a typed query with no network; a server-backed provider has no
+    # word matrix to inline, and a page that called out to an endpoint would
+    # stop being the self-contained file this command exists to produce.
+    # Refused by name, because the alternative -- `static_embed.load()` failing
+    # on a string that is obviously not a path -- would report "no such file"
+    # about a locator that was never meant to be one.
+    emb = getattr(args, "embeddings", None)
+    if emb and "://" in emb:
+        print("visualize --embeddings takes a matrix data file, not %r.\n\n"
+              "The page embeds queries in the browser from an inlined word "
+              "matrix, so it works offline; a server-backed provider has no "
+              "matrix to inline. Use a distilled matrix here, or drop "
+              "--embeddings and keep the lexical title search." % emb,
+              file=sys.stderr)
+        return 2
+    # This command had NO handler for a bad matrix at all -- a typo in the path
+    # was a traceback, while every sibling command exits 2 with the fix in it.
+    # CP-I1 touched this function without closing that, which the audit named.
+    try:
+        report = render({n: p for n, _, p in
+                         ((s.partition("=")[0], None, s.partition("=")[2])
+                          for s in args.model)},
+                        args.out, limit_per_model=args.limit,
+                        min_degree=args.min_degree, title=args.title,
+                        mesh_db=getattr(args, "mesh_db", None),
+                        embeddings=emb)
+    except providers.PROVIDER_ERRORS as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
     for key, value in report.items():
         print("%-12s %s" % (key, value))
     print("\nOpen it in a browser:  file://%s" % os.path.abspath(args.out))
@@ -694,52 +729,77 @@ def _embed_store(db, embedder):
     node with no text at all is skipped rather than embedded as a zero vector --
     it could never rank, and storing it would only inflate the namespace count
     that decides whether the vector path runs.
+
+    **A zero vector coming back for text that WAS there is skipped for exactly
+    the same reason**, and that door was open until the CP-I1 audit found it.
+    The rule used to apply only to empty text, so a provider answering all-zero
+    -- a degenerate model, a matrix whose vocabulary misses the corpus, a proxy
+    returning padding -- filled the namespace with vectors that cosine to 0.0
+    against everything. `vector_search` then ran, the stable sort left the BM25
+    shortlist in its original order, and `--mode vector` reported a "pure
+    cosine ranking" that was lexical order with a 0.00000 beside every line.
+    Nothing warned. That is the exact failure `_out_mode` exists to prevent,
+    arriving from the provider side instead of the index side.
+
+    Returns `(embedded, degenerate)` so the caller can tell "some nodes had no
+    usable text" from "this model returns nothing usable at all".
     """
     provider, model, dim = embedder.namespace
-    embedded = 0
+    embedded = degenerate = 0
     with _writing(db, model="unknown") as store:
         rows = store.db.execute("SELECT id, title, body FROM nodes").fetchall()
         for r in rows:
             text = " ".join(p for p in (r["title"], r["body"]) if p).strip()
             if not text:
                 continue
-            store.upsert_embedding(r["id"], provider, model, dim,
-                                   embedder.embed(text))
+            vec = embedder.embed(text)
+            if not any(vec):
+                degenerate += 1
+                continue
+            store.upsert_embedding(r["id"], provider, model, dim, vec)
             embedded += 1
-    return embedded
+    return embedded, degenerate
 
 
 def cmd_embed(args):
     """Write vectors for a model's nodes, so `search --embeddings` can rerank.
 
     Config-driven, the same as `build` and `update`: the `[embeddings]` block
-    names the provider and the matrix data file. And like them it refuses with
-    exit 2 rather than doing nothing quietly -- there are three ways to have no
-    vectors and each says which:
+    names the provider, and the provider decides what else it needs -- a matrix
+    data file for `static`, a reachable endpoint for `ollama`. Like them it
+    refuses with exit 2 rather than doing nothing quietly, and each way of
+    having no vectors says which it was:
 
       * no `[embeddings]` block          -- semantic search is off; add one
       * the block names a missing matrix -- distil it, or fix the path
+      * the endpoint does not answer     -- start it, or fix the host
+      * the server has no such model     -- pull an embedding model
       * a store path that does not exist -- build the model first
 
     A no-op that exits 0 here would leave `search --embeddings` degrading to
     lexical-only over an empty namespace, which is the silent failure the whole
     None-vs-empty contract exists to prevent.
+
+    The provider is built ONCE, before any store is opened. For `ollama` that
+    first call is also the reachability probe, so a dead endpoint costs one
+    refusal rather than one per `--model` -- and no store is touched at all.
     """
+    from . import providers
     from .providers import static_embed
 
     cfg = userconfig.load(getattr(args, "config", None))
     if cfg.embeddings is None:
         print("no [embeddings] block in %s -- semantic search is off. Uncomment "
-              "the template there and point it at a matrix data file, then "
-              "re-run." % cfg.path, file=sys.stderr)
+              "the template there and point it at a matrix data file, or name "
+              "an ollama endpoint, then re-run." % cfg.path, file=sys.stderr)
         return 2
     try:
-        embedder = static_embed.from_config(cfg.embeddings)
+        embedder = providers.from_config(cfg.embeddings)
     except static_embed.EmbedderDataMissing as exc:
         print("%s\n\nThe matrix is a build-time artefact: distil one offline "
               "and point [embeddings].path at it." % exc, file=sys.stderr)
         return 2
-    except static_embed.StaticEmbedError as exc:
+    except providers.PROVIDER_ERRORS as exc:
         print("%s" % exc, file=sys.stderr)
         return 2
 
@@ -760,9 +820,40 @@ def cmd_embed(args):
                   % (name, db), file=sys.stderr)
             failed = True
             continue
-        n = _embed_store(db, embedder)
+        try:
+            n, degenerate = _embed_store(db, embedder)
+        except providers.PROVIDER_ERRORS as exc:
+            # A provider that dies mid-store leaves NOTHING behind: `Store`
+            # rolls back on any exception, so the store still holds whatever it
+            # held before. Said out loud, because the alternative reading --
+            # "some of my nodes are embedded now" -- would have the user run a
+            # search over a half-filled namespace and trust the ranking.
+            print("%-6s REFUSED  %s\n         Nothing was written to %s; it is "
+                  "unchanged." % (name, exc, db), file=sys.stderr)
+            failed = True
+            continue
+        if n == 0 and degenerate:
+            # Every node with text embedded to the zero vector. That is not a
+            # corpus with nothing to say; it is a provider that cannot answer,
+            # and exiting 0 here would leave `search --mode vector` printing
+            # 0.00000 beside a lexical ranking it calls semantic.
+            print("%-6s REFUSED  every one of the %d node(s) with text embedded "
+                  "to the zero vector.\n         The model answers, but says "
+                  "nothing usable -- wrong model, or a matrix whose vocabulary "
+                  "does not overlap this corpus. Nothing was written."
+                  % (name, degenerate), file=sys.stderr)
+            failed = True
+            continue
         print("  %-6s embedded %d node(s) under namespace %s:%s:%d"
               % (name, n, provider, model, dim))
+        if degenerate:
+            # Not fatal -- a handful of nodes whose whole text is out of the
+            # embedder's vocabulary is a real and honest state -- but counted
+            # out loud, because the alternative is a namespace quietly smaller
+            # than the corpus and no way to notice.
+            print("  %-6s %d node(s) embedded to the zero vector and were "
+                  "skipped; they are not searchable by vector."
+                  % (name, degenerate))
     return 2 if failed else 0
 
 
@@ -1135,10 +1226,13 @@ def main(argv=None):
     p.add_argument("db")
     p.add_argument("query", nargs="+")
     p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--embeddings", default=None, metavar="MATRIX",
-                   help="a matrix data file; turns on semantic reranking. The "
-                        "store must have been embedded with the same matrix "
-                        "(homegraph embed).")
+    p.add_argument("--embeddings", default=None, metavar="LOCATOR",
+                   help="turns on semantic reranking. Either a matrix data "
+                        "file, or ollama://<model>@<host>[:<port>] for a "
+                        "running Ollama (port defaults to 11434). The store "
+                        "must have been embedded by the same one "
+                        "(homegraph embed); a different one finds zero and "
+                        "says so.")
     p.add_argument("--mode", choices=("auto", "vector", "fts"), default="auto",
                    help="auto (default): lexical, fused with vectors by RRF. "
                         "vector: pure cosine ranking, no lexical fusion (needs "

@@ -77,25 +77,45 @@ def main(argv=None):
     # Globbed, not `range(9)`. A hardcoded bound is a silent cap: CP-11 was
     # written, measured at 57%, and the number was the same 57% as before,
     # because the loop stopped at 8 and said nothing about it.
+    #
+    # That failure came back in a second shape, and it is worth naming because
+    # the fix above did not prevent it: the glob was `test_cp*.py`, so a
+    # hardcoded *pattern* capped what a hardcoded *bound* no longer did. The
+    # whole H-series (H1, H2, H3, the graph gate) had been outside this map
+    # since 2026-07-24 -- roughly eighty checks -- while CROSSCHECK cited the
+    # total as the guide to where empty gates hide. Every `test_*.py` is
+    # enumerated now, and one with no mutation harness at all is reported at 0%
+    # rather than omitted: "nobody has aimed a mutation here" is exactly the
+    # finding this tool exists to surface, and omission reads as absence.
     import glob
     import re
-    numbers = sorted(
-        int(m.group(1))
-        for m in (re.search(r"test_cp(\d+)\.py$", p)
-                  for p in glob.glob(os.path.join(HERE, "test_cp*.py")))
-        if m)
-    for n in numbers:
-        test = os.path.join(HERE, "test_cp%d.py" % n)
-        mut = os.path.join(HERE, "mutate_cp%d.py" % n)
-        if not os.path.exists(test):
-            continue
+
+    def _label(stem: str) -> str:
+        m = re.fullmatch(r"cp(\d+)", stem)
+        if m:
+            return "CP-%s" % m.group(1)
+        return stem.replace("_", "-").upper()
+
+    def _sortkey(stem: str) -> tuple:
+        m = re.fullmatch(r"cp(\d+)", stem)
+        return (0, int(m.group(1)), "") if m else (1, 0, stem)
+
+    stems = sorted(
+        (os.path.basename(p)[len("test_"):-len(".py")]
+         for p in glob.glob(os.path.join(HERE, "test_*.py"))),
+        key=_sortkey)
+    for stem in stems:
+        test = os.path.join(HERE, "test_%s.py" % stem)
+        mut = os.path.join(HERE, "mutate_%s.py" % stem)
         checks = check_names(test)
+        if not checks:
+            continue                      # no `check(...)` calls: nothing to map
         expected = expected_strings(mut) if os.path.exists(mut) else []
         uncovered = [c for c in checks
                      if not any(e in c or c.startswith(e) for e in expected)]
         total += len(checks)
         covered_total += len(checks) - len(uncovered)
-        rows.append(("CP-%d" % n, len(checks), len(uncovered),
+        rows.append((_label(stem), len(checks), len(uncovered),
                      len(expected), uncovered))
 
     for name, n_checks, n_unc, n_mut, uncovered in rows:

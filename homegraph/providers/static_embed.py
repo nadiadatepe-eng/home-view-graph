@@ -222,6 +222,20 @@ def from_config(cfg: dict[str, object]) -> Embedder:
             "data file")
     emb = load(path)
 
+    # The FILE's provider, not just the config's. `provider` is the first
+    # component of the namespace, and for static it is read out of the data
+    # file (`load`) while for ollama it is a hardcoded literal -- so a
+    # hand-written matrix declaring `"provider": "ollama"` would have static's
+    # arithmetic write vectors under the network provider's namespace, and a
+    # later `search --embeddings ollama://...` would serve them against real
+    # Ollama query vectors. Confidently, and wrongly. Harmless while there was
+    # one provider; reachable the moment there were two.
+    if emb.provider != "static":
+        raise StaticEmbedError(
+            "the matrix at %s declares provider %r, but it is being loaded as "
+            "'static' -- its vectors would be stored under another provider's "
+            "namespace and mixed with that provider's" % (path, emb.provider))
+
     declared_model = cfg.get("model")
     if declared_model is not None and str(declared_model) != emb.model:
         raise StaticEmbedError(
