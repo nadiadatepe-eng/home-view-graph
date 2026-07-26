@@ -95,6 +95,28 @@ Their settings are pinned in `pyproject.toml` for the same reason ruff's are.
 `pyright` reads its configuration from `pyproject.toml`, so run it without
 arguments — passing a path overrides `include` and silently changes the scope.
 
+### Running the gate in a git worktree
+
+`test_no_real_paths.py` will fail in a fresh worktree with
+`the real-corpus material exists locally  0 of 8 present`. That is the guard
+working, not a regression: the material it proves is not published is gitignored,
+and **`git worktree add` does not copy ignored files**. The gate refuses to pass
+rather than report "nothing leaked" when there was nothing present to leak.
+
+Copy the fixtures across before running the suite on a branch:
+
+```sh
+cd /path/to/main/checkout
+for f in $(git ls-files --others --ignored --exclude-standard -- tests/gold); do
+    mkdir -p "$WORKTREE/$(dirname "$f")" && cp -n "$f" "$WORKTREE/$f"
+done
+```
+
+72 MB, and gitignored on the other side too, so it cannot be committed by
+accident. Without this the suite is red for a reason that has nothing to do with
+the branch — measured 2026-07-26 during the mutation-driver collapse, where it
+looked like a regression for several minutes.
+
 ## Opening a pull request
 
 Keep a change focused on one checkpoint or one weakness. State what you

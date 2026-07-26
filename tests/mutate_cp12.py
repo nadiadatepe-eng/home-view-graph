@@ -12,13 +12,7 @@ Run:
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TIMEOUT = 900
 
 MUTATIONS = [
     # -- what the audit found, one needle each ----------------------------
@@ -262,78 +256,10 @@ MUTATIONS = [
      "importing over an existing store is refused without --force"),
 ]
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 
-def run_suite(tree):
-    try:
-        proc = subprocess.run(
-            [sys.executable, os.path.join(tree, "tests", "test_cp12.py")],
-            capture_output=True, text=True, cwd=tree, timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return {"<timeout>"}, None
-    red = set()
-    for line in proc.stdout.splitlines():
-        if line.startswith("FAIL"):
-            red.add(line[4:].strip().rsplit("  ", 1)[0].strip())
-    if proc.returncode != 0 and not red:
-        red.add("<crash> %s" % (proc.stderr.strip().splitlines() or [""])[-1])
-    return red, proc
-
-
-def main():
-    survived, killed, misattributed, crashes = [], [], [], []
-    for name, rel, needle, repl, expected in MUTATIONS:
-        tree = tempfile.mkdtemp(prefix="mut12-",
-                                dir=os.path.expanduser("~/.homegraph"))
-        try:
-            shutil.copytree(ROOT, os.path.join(tree, "pkg"),
-                            ignore=shutil.ignore_patterns("__pycache__"))
-            work = os.path.join(tree, "pkg")
-            target = os.path.join(work, rel)
-            src = open(target).read()
-            if needle not in src:
-                print("SKIP      %-52s needle missing in %s" % (name, rel))
-                survived.append((name, "needle missing"))
-                continue
-            open(target, "w").write(src.replace(needle, repl, 1))
-
-            red, proc = run_suite(work)
-            crashed = any(r.startswith("<crash>") or r == "<timeout>"
-                          for r in red)
-            gate_red = [r for r in red if not r.startswith("<crash>")
-                        and r != "<timeout>"]
-            if not red:
-                print("SURVIVED  %-52s suite still green" % name)
-                survived.append((name, "suite green"))
-            elif any(expected in r for r in gate_red):
-                print("killed    %-52s -> %s" % (name, expected))
-                killed.append(name)
-            elif gate_red:
-                print("misattrib %-52s -> %s (expected %r)"
-                      % (name, sorted(gate_red)[:1], expected))
-                misattributed.append(name)
-            elif crashed:
-                print("CRASH     %-52s -> %s" % (name, sorted(red)[:1]))
-                crashes.append(name)
-            else:
-                print("SURVIVED  %-52s unclassified" % name)
-                survived.append((name, "unclassified"))
-        finally:
-            shutil.rmtree(tree, ignore_errors=True)
-
-    print("\n%d killed by a named gate, %d killed by a different gate, "
-          "%d detected only by a crash, %d survived  (of %d)"
-          % (len(killed), len(misattributed), len(crashes), len(survived),
-             len(MUTATIONS)))
-    if crashes:
-        print("CRASH-ONLY -- no gate said no; the suite died before asserting:")
-        for name in crashes:
-            print("  %s" % name)
-    if survived:
-        print("SURVIVORS -- these gates do not test what they claim:")
-        for name, why in survived:
-            print("  %s  (%s)" % (name, why))
-    return 1 if (survived or crashes) else 0
-
+from mutate import run                                       # noqa: E402
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(MUTATIONS, "test_cp12.py", prefix="mut12-", timeout=900))

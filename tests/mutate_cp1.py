@@ -15,12 +15,7 @@ Run:
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (name, relative file, needle, replacement, check that must go red)
 MUTATIONS = [
@@ -197,77 +192,15 @@ MUTATIONS = [
      "no FTS orphans after deletion"),
 ]
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 
-def run_suite(tree):
-    proc = subprocess.run(
-        [sys.executable, os.path.join(tree, "tests", "test_cp1.py")],
-        capture_output=True, text=True, cwd=tree)
-    red = set()
-    for line in proc.stdout.splitlines():
-        if line.startswith("FAIL"):
-            red.add(line[4:].strip().rsplit("  ", 1)[0].strip())
-    return red, proc
+from mutate import run                                       # noqa: E402
 
-
-def main():
-    survived, killed, misattributed, crashes = [], [], [], []
-    for name, rel, needle, repl, expected in MUTATIONS:
-        tree = tempfile.mkdtemp(prefix="mut-", dir=os.path.expanduser(
-            "~/.homegraph"))
-        try:
-            shutil.copytree(ROOT, os.path.join(tree, "pkg"),
-                            ignore=shutil.ignore_patterns(
-                                "__pycache__", "*.tsv", ".homegraph"))
-            work = os.path.join(tree, "pkg")
-            target = os.path.join(work, rel)
-            src = open(target).read()
-            if needle not in src:
-                print("SKIP  %-44s (needle not found in %s)" % (name, rel))
-                survived.append((name, "needle missing"))
-                continue
-            open(target, "w").write(src.replace(needle, repl, 1))
-
-            red, proc = run_suite(work)
-            crashed = any(r.startswith("<crash>") or r == "<timeout>"
-                          for r in red)
-            gate_red = [r for r in red if not r.startswith("<crash>")
-                        and r != "<timeout>"]
-            if not red:
-                print("SURVIVED  %-44s suite still green" % name)
-                survived.append((name, "suite green"))
-            elif any(expected in r for r in gate_red):
-                print("killed    %-44s -> %s" % (name, expected))
-                killed.append(name)
-            elif gate_red:
-                # Red, but not the gate that was supposed to catch it. Still a
-                # kill; the attribution is wrong and worth seeing.
-                print("misattrib %-44s -> %s (expected %r)"
-                      % (name, sorted(gate_red)[:1], expected))
-                misattributed.append(name)
-            elif crashed:
-                # Detected only because the process died. No gate said no.
-                print("CRASH     %-44s -> %s" % (name, sorted(red)[:1]))
-                crashes.append(name)
-            else:
-                print("SURVIVED  %-44s unclassified" % name)
-                survived.append((name, "unclassified"))
-        finally:
-            shutil.rmtree(tree, ignore_errors=True)
-
-    print("\n%d killed by a named gate, %d killed by a different gate, "
-          "%d detected only by a crash, %d survived  (of %d)"
-          % (len(killed), len(misattributed), len(crashes), len(survived),
-             len(MUTATIONS)))
-    if crashes:
-        print("CRASH-ONLY -- no gate said no; the suite died before asserting:")
-        for name in crashes:
-            print("  %s" % name)
-    if survived:
-        print("SURVIVORS -- these gates do not test what they claim:")
-        for name, why in survived:
-            print("  %s  (%s)" % (name, why))
-    return 1 if (survived or crashes) else 0
-
-
+# 900 s fordi denne harnessen var den ENESTE av 22 uten noen timeout i det hele
+# tatt -- `subprocess.run` uten `timeout=`. En mutasjon som fikk suiten til å henge
+# ville stoppet hele sveipet i stedet for å bli rapportert som `<timeout>`. Romslig
+# satt, så ingenting som fullfører i dag begynner å tidsavbryte.
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(MUTATIONS, "test_cp1.py", prefix="mut-", timeout=900,
+                 ignore=("*.tsv", ".homegraph")))
