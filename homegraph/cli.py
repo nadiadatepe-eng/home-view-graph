@@ -726,16 +726,13 @@ def cmd_inspect(args):
 
 
 def _cleanup(paths):
-    import contextlib as _ctx
     for path in paths:
-        with _ctx.suppress(OSError):
+        with contextlib.suppress(OSError):
             os.remove(path)
 
 
 def cmd_import(args):
     """Read an artifact into stores, rooted wherever the reader says."""
-    import contextlib as _ctx
-
     from .importer import ImportError_, load
     from .store import Store
 
@@ -788,7 +785,7 @@ def cmd_import(args):
                   % (path, os.path.basename(backup)))
 
     try:
-        with _ctx.ExitStack() as stack:
+        with contextlib.ExitStack() as stack:
             stores = {name: stack.enter_context(_writing(path, model=name))
                       for name, path in sorted(models.items())}
             report = load(args.artifact, stores, root)

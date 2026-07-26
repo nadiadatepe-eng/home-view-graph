@@ -245,7 +245,7 @@ MUTATIONS = [
     # -- the command line the user actually walks -------------------------
     ("a refused import leaves its half-made store behind",
      "homegraph/cli.py",
-     "    for path in paths:\n        with _ctx.suppress(OSError):\n            os.remove(path)",
+     "    for path in paths:\n        with contextlib.suppress(OSError):\n            os.remove(path)",
      "    pass  # mutated: an empty store is left looking built",
      "a refused import leaves no store looking built"),
 
