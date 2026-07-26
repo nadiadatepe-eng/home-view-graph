@@ -11,11 +11,30 @@ To ting dette *ikke* kan være, og begge er bærende:
     `results` på modulnivå her ville blandet tellingene deres, og én rød sjekk i `cp0`
     ville felt hver senere `main()` i samme kjøring. `reporter()` deler ut en fersk liste
     per kaller.
-  * **Ikke én fast bredde.** `mutate.py:run_suite` henter sjekkenavnet ut av en
-    `FAIL`-linje med `rsplit("  ", 1)`, altså på siste dobbeltmellomrom. Det virker bare
-    så lenge navnet er padet ut til bredden; et navn som er lengre får ett mellomrom, og
-    da leses hele «navn detalj» som navnet. Dommen for den mutasjonen endrer seg uten at
-    noe blir rødt. Hver fil beholder derfor bredden sin -- de spenner 34 til 62.
+  * **Ikke én fast bredde.** Bredden er ren kolonnejustering, tilpasset det lengste navnet
+    i hver fil -- de spenner 34 til 62. Den var *ikke* kosmetikk før `FAILED`-linja under
+    fantes; se neste avsnitt.
+
+## En rød sjekk melder seg maskinlesbart, i tillegg til i rapporten
+
+`mutate.py:run_suite` avgjør hvilken gate som sa nei ved å lese testfilas stdout. Fram til
+2026-07-26 gjorde den det ved å parse den formaterte rapportlinja:
+`line[4:].strip().rsplit("  ", 1)[0].strip()`, altså «alt før siste dobbeltmellomrom». Den
+heuristikken er feil på tre uavhengige måter, og alle tre var i bruk i dette repoet:
+
+  1. **Navn lengre enn bredden.** `%-*s` pader ikke da, det står ett mellomrom igjen, og
+     hele «navn detalj» leses som navnet -- med tempdir-stier og pid-er i seg, så dommen
+     blir ulik mellom to sveip av identisk kode. Traff bl.a. `cp0`, `cp7`, `cp8`.
+  2. **Detalj med dobbeltmellomrom**, f.eks. `cp10` sin `"1 row(s)  complete"`. Da faller
+     splittet inni detaljen, uansett hvor kort navnet er.
+  3. **Navn med dobbeltmellomrom.** Åtte finnes: `cp9` justerer metodenavn i en kolonne
+     (`"method basename     is produced by a build"`), `test_review_findings` det samme.
+     Å splitte på *første* dobbeltmellomrom i stedet ville kuttet disse på midten.
+
+Ingen splitting på tomrom kan være riktig samtidig for alle tre. Så rapportlinja er til
+mennesker, og en rød sjekk skriver **i tillegg** én tabulert linje `FAILED\\t<navn>` som
+`run_suite` leser ordrett. Den koster ingenting i grønne kjøringer, og fjerner hele klassen
+-- inkludert de navnene som ennå ikke er skrevet.
 
 `check` returnerer alltid `ok`, også for de filene som ikke gjorde det før. Det er en
 utvidelse, ikke en endring: ingen kaller kan se en returverdi den ikke ba om.
@@ -30,6 +49,10 @@ def reporter(width: int = 52):
     def check(name: str, ok: bool, detail: str = "") -> bool:
         results.append((name, ok, detail))
         print("%s  %-*s %s" % ("PASS" if ok else "FAIL", width, name, detail))
+        if not ok:
+            # For `mutate.py:run_suite`. Linja over er formatert for lesing og lar seg
+            # ikke parse tilbake -- se modulens docstring. Denne er ordrett navnet.
+            print("FAILED\t%s" % name)
         return ok
 
     return results, check

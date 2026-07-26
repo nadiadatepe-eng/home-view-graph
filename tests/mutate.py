@@ -47,6 +47,16 @@ def run_suite(tree, test_file, timeout):
     `<timeout>` og `<crash> ...` er med i samme sett med vilje: kalleren skiller dem fra
     ekte gate-avslag på prefikset, og den skillelinjen er hele poenget med harnesset.
     En krasj er ikke en gate som sa nei.
+
+    **Navnet leses fra `report.py` sin `FAILED\\t<navn>`-linje, ikke fra rapporten.** Fram
+    til 2026-07-26 sto det `line[4:].strip().rsplit("  ", 1)[0].strip()` her -- «alt før siste
+    dobbeltmellomrom» i den formaterte `FAIL`-linja. Det er feil på tre måter som alle
+    fantes i repoet: navn lengre enn kolonnebredden mister padingen og sluker detaljen
+    (`cp0`, `cp7`, `cp8` -- med tempdir-stier i seg, altså ulik dom mellom to sveip av
+    identisk kode); detaljer som selv har dobbeltmellomrom flytter splittet inn i detaljen
+    (`cp10`); og åtte navn har dobbeltmellomrom i seg fordi de justerer en kolonne (`cp9`,
+    `test_review_findings`), så «første dobbeltmellomrom» er like galt. Ingen splitting på
+    tomrom kan være riktig for alle tre. Se `report.py` for garantien denne hviler på.
     """
     try:
         proc = subprocess.run(
@@ -56,8 +66,8 @@ def run_suite(tree, test_file, timeout):
         return {"<timeout>"}
     red = set()
     for line in proc.stdout.splitlines():
-        if line.startswith("FAIL"):
-            red.add(line[4:].strip().rsplit("  ", 1)[0].strip())
+        if line.startswith("FAILED\t"):
+            red.add(line[len("FAILED\t"):])
     if proc.returncode != 0 and not red:
         red.add("<crash> %s" % (proc.stderr.strip().splitlines() or [""])[-1])
     return red
