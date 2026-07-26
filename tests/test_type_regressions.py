@@ -36,17 +36,14 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from homegraph.mcp_server import Server                      # noqa: E402
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    print("%s  %-58s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(58)
 
 
 # Each guard case runs in its own interpreter. `no_open_guard` says so itself:

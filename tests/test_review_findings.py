@@ -31,18 +31,15 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from homegraph.mcp_server import Server                      # noqa: E402
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, bool(ok), detail))
-    print("%s  %-58s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(58)
 
 
 # --- no_open_guard ---------------------------------------------------------

@@ -37,6 +37,23 @@ Every checkpoint also runs standalone with no test runner:
 fresh clone — the material it proves is unpublished is gitignored and therefore
 absent, so the gate refuses to pass rather than report a clean scan of nothing.
 
+### Why every checkpoint file ends in a `test_checkpoint_*` adapter
+
+The checks are written as a script: `t_*` helpers driven by `main()`, which
+prints a readable report via `check()` from `tests/report.py` and returns an
+exit code. pytest collects `test_*` functions, so without an adapter it
+collected the file, found nothing, and reported success — a runner that
+verifies nothing while looking green.
+
+The adapter is **one test per checkpoint, not one per check**, because the
+phases share built state: the corpus is built once and then queried repeatedly,
+and splitting that across independent tests would rebuild it each time.
+
+This paragraph stood as a ten-line comment in `test_cp0.py` through
+`test_cp6.py`, byte for byte in all seven. Those seven now carry a one-line
+`# -- pytest adapter` marker pointing here; the other nineteen never had the
+comment, only the adapter function.
+
 ## House rules
 
 These are not style preferences. Each one is a mistake this codebase has

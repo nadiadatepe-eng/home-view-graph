@@ -53,6 +53,8 @@ import sys
 import tempfile
 import threading
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import providers                                     # noqa: E402
@@ -61,12 +63,7 @@ from homegraph.providers import ollama                              # noqa: E402
 from homegraph.search import hybrid_search, vector_search           # noqa: E402
 from homegraph.store import Store                                   # noqa: E402
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    print("%s  %-58s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(58)
 
 
 def _tmp() -> str:

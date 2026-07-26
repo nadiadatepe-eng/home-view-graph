@@ -40,6 +40,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from report import reporter
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,13 +73,7 @@ GOLD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 FIELDS = ("date", "kind", "indices", "resolution", "dpi", "copy", "variant")
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-42s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(42)
 
 
 # -- the two corpora -------------------------------------------------------
@@ -470,16 +466,7 @@ def main():
     return 1 if failed else 0
 
 
-# -- pytest adapter --------------------------------------------------------
-#
-# The checks above are written as a script: `t_*` helpers driven by `main()`,
-# which prints a readable report and returns an exit code. pytest collects
-# `test_*` functions, so without this it collected the file, found nothing, and
-# reported success -- a runner that verifies nothing while looking green.
-#
-# One test per checkpoint rather than one per check, because the phases share
-# built state: the corpus is built once and then queried repeatedly, and
-# splitting that across independent tests would rebuild it each time.
+# -- pytest adapter (why one test per checkpoint: CONTRIBUTING.md) ----------
 
 def test_checkpoint_cp4():
     assert main() == 0, "see the printed report above for which check failed"

@@ -33,6 +33,8 @@ import threading
 import time
 import types
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import watch as w                               # noqa: E402
@@ -43,13 +45,7 @@ EV = ("/corpus/file.md", w.IN_CLOSE_WRITE)          # a real corpus change
 DB = ("/store/m3.db", w.IN_MODIFY)                  # a store write we caused
 WAL = ("/store/m3.db-wal", w.IN_MODIFY)             # its SQLite sibling
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-52s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(52)
 
 
 class Scripted(w.Source):

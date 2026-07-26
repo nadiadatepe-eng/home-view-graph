@@ -37,6 +37,8 @@ import sqlite3
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import cli                                          # noqa: E402
@@ -46,13 +48,7 @@ from homegraph.store import (EDGE_METHODS, MIGRATIONS, Store,      # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-56s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(56)
 
 
 def edges(db, rel=None):

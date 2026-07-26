@@ -36,18 +36,15 @@ import shutil
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import obsidian                                      # noqa: E402
 from homegraph.export import ExportError                            # noqa: E402
 from homegraph.store import Store                                   # noqa: E402
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    print("%s  %-62s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(62)
 
 
 def _tmp() -> str:

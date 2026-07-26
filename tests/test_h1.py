@@ -18,17 +18,14 @@ from __future__ import annotations
 import os
 import sys
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.eval.scoreboard import (                            # noqa: E402
     evaluate, recall_at_k, reciprocal_rank)
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    print("%s  %-52s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(52)
 
 
 # -- recall_at_k, by hand ---------------------------------------------------

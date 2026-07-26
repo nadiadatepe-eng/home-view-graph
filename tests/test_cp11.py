@@ -42,6 +42,8 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph.lock import HAVE_PROC, Locked, StoreLock, _start_time  # noqa: E402
@@ -49,13 +51,7 @@ from homegraph.store import Store                                     # noqa: E4
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-54s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(54)
 
 
 # A second interpreter that takes the lock and holds it until told to stop.

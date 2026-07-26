@@ -37,6 +37,8 @@ import shutil
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import cli                                        # noqa: E402
@@ -75,13 +77,7 @@ GRAPH_EDGES = [
     ("/w/notes/alpha.md", "/w/docs/paper.pdf",    "MENTIONS_PATH", "mention",     "2026-01-01", "2026-03-01"),
 ]
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-52s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(52)
 
 
 def build(db):
