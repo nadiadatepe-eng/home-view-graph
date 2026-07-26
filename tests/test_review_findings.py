@@ -228,12 +228,81 @@ def t_tool_error_is_not_argument_error() -> None:
           code == -32602, "code=%r" % (code,))
 
 
+def t_every_model_parser_refuses_a_pathless_spec() -> None:
+    """`--model m3` uten sti skal avvises av HVER kommando, ikke bare `mcp`.
+
+    `parse_model_specs` ble skrevet for nettopp dette, og var i 2026-07-26 den ene av åtte
+    `spec.partition("=")` i `cli.py` som avviste. Målt, ikke antatt: `visualize` skrev en
+    18 644 byte stor tegning av en tom graf og returnerte **0**, og `watch` la `cwd` i
+    mengden av stier den ignorerer endringer i -- den stilleste av de to, siden ingenting
+    blir skrevet og ingenting blir sagt.
+
+    Sjekkene er på OPPFØRSEL, ikke på kildetekst, av samme grunn som
+    `t_model_spec_needs_path` over: en tidligere utgave av den lette etter `partition("=")`
+    i kilden og slo ut på kommentaren som forklarte fiksen. En sjekk som leser kildekode
+    går rød når kommentaren endres og grønn når koden gjør det.
+    """
+    from homegraph import cli
+
+    # `_models_from` er den delte parseren de tre inlinede kopiene nå kaller.
+    for spec in ("m3", "m3=", "=/tmp/x.db", ""):
+        try:
+            got = cli._models_from([spec])
+            check("spec: `_models_from([%r])` avvises" % spec, False,
+                  "slapp gjennom som %r" % (got,))
+        except SystemExit as exc:
+            check("spec: `_models_from([%r])` avvises" % spec, exc.code == 2,
+                  "SystemExit(%r)" % (exc.code,))
+        except Exception as exc:                             # noqa: BLE001
+            check("spec: `_models_from([%r])` avvises" % spec, False,
+                  "%s: %s" % (type(exc).__name__, exc))
+
+    # Positiv kontroll. Uten den passerer alt over på en parser som avviser ALT.
+    try:
+        got = cli._models_from(["m3=/tmp/x.db", "m1=/tmp/y.db"])
+        check("spec: en gyldig spec slipper fortsatt gjennom",
+              got == {"m3": "/tmp/x.db", "m1": "/tmp/y.db"}, repr(got))
+    except Exception as exc:                                 # noqa: BLE001
+        check("spec: en gyldig spec slipper fortsatt gjennom", False,
+              "%s: %s" % (type(exc).__name__, exc))
+
+    # `visualize` er den som meldte suksess. Den skal nå refuse FØR den skriver noe --
+    # rekkefølgen er poenget: en fil på disk pluss en returkode 2 er fortsatt en tegning
+    # ingen ba om.
+    target = os.path.join(tempfile.mkdtemp(prefix="rev-"), "graf.html")
+
+    class _Vis:
+        model = ["m3"]
+        out = target
+        limit = 10
+        min_degree = 0
+        title = None
+        mesh_db = None
+        embeddings = None
+        root = None
+        as_of = None
+
+    try:
+        rc = cli.cmd_visualize(_Vis())
+        wrote = os.path.exists(target)
+        check("spec: `visualize` avviser `m3` og skriver ingenting",
+              rc == 2 and not wrote, "rc=%r, fil skrevet=%s" % (rc, wrote))
+    except SystemExit as exc:
+        check("spec: `visualize` avviser `m3` og skriver ingenting",
+              exc.code == 2 and not os.path.exists(target),
+              "SystemExit(%r), fil skrevet=%s" % (exc.code, os.path.exists(target)))
+    except Exception as exc:                                 # noqa: BLE001
+        check("spec: `visualize` avviser `m3` og skriver ingenting", False,
+              "%s: %s" % (type(exc).__name__, exc))
+
+
 def main() -> int:
     t_guard_boundary()
     t_copy_markers()
     t_non_object_request()
     t_model_spec_needs_path()
     t_tool_error_is_not_argument_error()
+    t_every_model_parser_refuses_a_pathless_spec()
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
