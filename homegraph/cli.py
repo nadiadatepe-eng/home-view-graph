@@ -43,6 +43,7 @@ import collections
 import contextlib
 import os
 import sys
+from typing import cast
 
 # Running this file directly -- an editor's Run button, or `python cli.py` --
 # gives it no package context, and the relative imports below fail with
@@ -251,14 +252,22 @@ def cmd_query(args):
 
 
 def cmd_status(args):
-    from .store import Store
+    from .store import CoverageRow, Store
     with Store(args.db) as s:
         st = s.status()
+        # `status()` is dict[str, object] on purpose -- it carries counts,
+        # strings and a list side by side. Only this one value gets iterated,
+        # so it is named here with the type `embedding_coverage()` returns
+        # rather than loosening the return type of `status()` for everyone.
+        # `cast` rather than `# type: ignore`: mypy accepts the plain assignment
+        # and reports the ignore as unused, pyright rejects it without one. A
+        # cast is the one spelling both read the same way.
+        coverage = cast("list[CoverageRow]", st["embeddings_coverage"])
         for key in ("path", "model", "schema_version", "nodes", "edges",
                     "observations", "observations_monthly", "fts_rows",
                     "fts_stale", "embeddings", "embeddings_enabled"):
             print("%-22s %s" % (key, st[key]))
-        for ns in st["embeddings_coverage"]:
+        for ns in coverage:
             pct = 100.0 * ns["embedded"] / ns["of"] if ns["of"] else 0.0
             print("%-22s %s:%s:%d  %d/%d nodes with text (%.0f%%)%s"
                   % ("embeddings_ns", ns["provider"], ns["model"], ns["dim"],
@@ -271,7 +280,7 @@ def cmd_status(args):
         # long as embeddings have existed. An incomplete namespace does not make
         # the vector path refuse -- it makes it run over part of the corpus and
         # report `hybrid`, which reads as a whole answer.
-        for ns in st["embeddings_coverage"]:
+        for ns in coverage:
             if ns["stale"]:
                 print("\nWARNING: %d of %d node(s) with text have no vector "
                       "under %s:%s:%d. Semantic search will run and quietly "
@@ -303,7 +312,13 @@ def cmd_search(args):
         except providers.PROVIDER_ERRORS as exc:
             print("%s" % exc, file=sys.stderr)
             return 2
-        embeddings = {"provider": embedder.provider, "model": embedder.model}
+        # Read off `namespace`, not `.provider`/`.model`: those are attributes of
+        # the concrete static_embed.Embedder, while `from_locator` is annotated
+        # with the search.Embedder Protocol, which promises only `namespace` and
+        # `embed`. A network provider would satisfy the Protocol and not
+        # necessarily have the attributes.
+        provider_name, model_name, _dim = embedder.namespace
+        embeddings = {"provider": provider_name, "model": model_name}
 
     mode = getattr(args, "mode", "auto")
     if mode == "vector" and embedder is None:

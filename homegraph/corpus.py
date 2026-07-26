@@ -83,7 +83,10 @@ class ExclusionReport:
     how one of them ends up always saying no.
     """
 
-    def __init__(self, root: str, cap: int = TOP_DIRS) -> None:
+    # `cap=None` means no cap -- what `census --all` passes to see the tail.
+    # The three uses below all test `is not None` first, so None was always
+    # supported; only the annotation said otherwise.
+    def __init__(self, root: str, cap: int | None = TOP_DIRS) -> None:
         self.root = root
         self.cap = cap
         self.count = 0
@@ -135,7 +138,10 @@ class ExclusionReport:
         layers = ", ".join("%s %d" % (k, v)
                            for k, v in sorted(self.by_layer.items())) or "none"
         tail = ""
-        if self.truncated:
+        # Tested against `self.cap` rather than `self.truncated`, which says the
+        # same thing but through a property -- neither checker can carry the
+        # None-ness back through it, and the `%d` below needs an int.
+        if self.cap is not None and len(self.dirs) > self.cap:
             tail = " (naming %d of %d directories)" % (self.cap, len(self.dirs))
         return "%d of %d excluded by [%s]%s" % (self.count, self.seen,
                                                 layers, tail)

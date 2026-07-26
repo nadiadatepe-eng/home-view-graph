@@ -208,8 +208,9 @@ def _ooxml_core(zf):
                      (DCTERMS + "created", "created"),
                      (DCTERMS + "modified", "modified")):
         el = root.find(tag)
-        if el is not None and (el.text or "").strip():
-            meta[key] = el.text.strip()
+        text = (el.text or "").strip() if el is not None else ""
+        if text:
+            meta[key] = text
     return meta
 
 
@@ -350,8 +351,9 @@ def _odf_meta(zf):
                      (DC + "date", "modified"),
                      (ODF_META + "initial-creator", "initial_author")):
         el = root.find(".//" + tag)
-        if el is not None and (el.text or "").strip():
-            meta[key] = el.text.strip()
+        text = (el.text or "").strip() if el is not None else ""
+        if text:
+            meta[key] = text
     # Page count is an ATTRIBUTE on meta:document-statistic, not element text.
     stat = root.find(".//" + ODF_META + "document-statistic")
     if stat is not None:

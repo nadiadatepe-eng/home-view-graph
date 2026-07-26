@@ -233,11 +233,14 @@ class Server:
         elif method == "tools/call":
             name = params.get("name")
             args = params.get("arguments") or {}
+            # A caller can send anything as `name`, including nothing. Non-str
+            # falls through to the same -32601 as an unknown name, which is what
+            # the protocol asks for either way.
             fn = {"mesh_search": self.mesh_search,
                   "query": self.query,
                   "mesh_neighbors": self.mesh_neighbors,
                   "mesh_path": self.mesh_path,
-                  "mesh_explain": self.mesh_explain}.get(name)
+                  "mesh_explain": self.mesh_explain}.get(name) if isinstance(name, str) else None
             if fn is None:
                 return self._error(rid, -32601, "unknown tool %r" % name)
             try:

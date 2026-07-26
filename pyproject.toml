@@ -80,6 +80,39 @@ warn_return_any = true
 no_implicit_reexport = true
 strict_equality = true
 
+# Pyright is here as a second opinion on the modules mypy deliberately does not
+# press, and it disagreed on the first run. Measured 2026-07-26 with pyright
+# 1.1.411 against an unchanged tree:
+#
+#   uvx mypy homegraph/   Success: no issues found in 34 source files
+#   pyright homegraph/    14 errors, 0 warnings
+#
+# The 14 land almost entirely in the files the mypy comment above exempts:
+# cli.py (5), update.py (5), models/m1_extractors.py (2), mcp_server.py (1),
+# models/m2_build.py (1). That comment argues those errors would be loud -- "an
+# extractor that mishandles a type raises, and a checkpoint goes red". That is a
+# prediction, and these 14 are the part of it that had not been tested: mypy
+# does not check bodies of untyped functions, so it was not looking. Both tools
+# stay. mypy owns the strict contract on the seven load-bearing modules; pyright
+# covers the rest, where nothing was checking types at all.
+#
+# Same pinning discipline as [tool.ruff.lint] below, for the same reason.
+# `typeCheckingMode` is written down rather than inherited: pyright's default has
+# moved between releases, and a mode change would silently re-scope the gate
+# while every reported number stayed green. The five rules are the ones that
+# actually fire today, listed so a version bump cannot quietly downgrade one to a
+# warning. Rules NOT listed keep whatever "standard" gives them -- that is a
+# deliberate looser edge, not an oversight; tighten by naming a rule here.
+[tool.pyright]
+pythonVersion = "3.12"
+include = ["homegraph"]
+typeCheckingMode = "standard"
+reportArgumentType = "error"
+reportGeneralTypeIssues = "error"
+reportAttributeAccessIssue = "error"
+reportOptionalMemberAccess = "error"
+reportCallIssue = "error"
+
 [tool.ruff]
 line-length = 88
 target-version = "py312"

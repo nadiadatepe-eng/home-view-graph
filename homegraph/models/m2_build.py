@@ -80,17 +80,21 @@ def no_open_guard(roots=None):
         roots = image_roots()
     if isinstance(roots, (str, bytes, os.PathLike)):
         roots = [roots]
-    watched = [os.path.abspath(os.fspath(r)) for r in roots]
-    opened = []
+    # os.fspath/abspath are bytes-in-bytes-out, so both the watch list and the
+    # hook's path have to come back to str before they can be compared. Doing it
+    # in one helper keeps the two sides using the same decoding.
+    def _text(p: str | bytes) -> str:
+        return p.decode("utf-8", "replace") if isinstance(p, bytes) else p
+
+    watched = [_text(os.path.abspath(os.fspath(r))) for r in roots]
+    opened: list[str] = []
 
     def hook(event, args):
         if event != "open":
             return
         target = args[0]
         if isinstance(target, (str, bytes, os.PathLike)):
-            path = os.fspath(target)
-            if isinstance(path, bytes):
-                path = path.decode("utf-8", "replace")
+            path = _text(os.fspath(target))
             full = os.path.abspath(path)
             if any(full.startswith(r) for r in watched):
                 opened.append(path)

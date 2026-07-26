@@ -250,8 +250,12 @@ class UpdateReport:
     # the window correctly produces.
     retention: dict = field(default_factory=dict)
 
-    def summary(self):
-        d = {"model": self.model}
+    def summary(self) -> dict[str, object]:
+        # Annotated because the values are genuinely mixed: counts are int,
+        # "nodes"/"edges" are pre-formatted "%d -> %d" strings. Inferred from
+        # the first entry alone this is dict[str, str], and every later update()
+        # is then a type error. Consumers only print or compare these.
+        d: dict[str, object] = {"model": self.model}
         d.update(self.changes)
         d.update({"rebuilt": self.rebuilt, "neighbours": self.neighbours,
                   "forgotten": self.forgotten,

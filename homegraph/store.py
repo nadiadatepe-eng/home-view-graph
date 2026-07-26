@@ -34,7 +34,21 @@ from array import array
 from collections.abc import Iterable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+
+# One row of `embedding_coverage`. A TypedDict rather than dict[str, object]
+# because the caller divides `embedded` by `of` to print a percentage, and with
+# the values erased to `object` that arithmetic is unchecked -- which is how it
+# stayed unchecked until pyright was pinned in 2026-07. The keys are the SELECT
+# below; changing one means changing both.
+class CoverageRow(TypedDict):
+    provider: str
+    model: str
+    dim: int
+    embedded: int
+    of: int
+    stale: bool
 
 # How an edge was derived, and how much weight that derivation carries.
 #
@@ -621,7 +635,7 @@ class Store:
             "embeddings_coverage": self.embedding_coverage(),
         }
 
-    def embedding_coverage(self) -> list[dict[str, object]]:
+    def embedding_coverage(self) -> list[CoverageRow]:
         """Per namespace: how many nodes with text have a vector, and how many.
 
         `fts_stale` has existed since the beginning and answers the same

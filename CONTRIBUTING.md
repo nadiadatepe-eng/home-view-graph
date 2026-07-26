@@ -76,12 +76,24 @@ already made at least once, written down so it is not made again.
    repo drifted between measurements. After touching a checkpoint, re-run the
    harness rather than carrying a number forward.
 
-`ruff` and `mypy` are expected to stay clean:
+`ruff`, `mypy` and `pyright` are expected to stay clean:
 
 ```sh
 uvx ruff check homegraph/ tests/
 uvx mypy homegraph/
+pyright
 ```
+
+Two type checkers, because they disagreed. On 2026-07-26 mypy reported
+`Success: no issues found in 34 source files` while pyright reported 14 errors
+on the same unchanged tree — almost all of them in the modules
+`[tool.mypy.overrides]` deliberately exempts, where mypy does not check the
+bodies of untyped functions and so was not looking. Both stay: mypy owns the
+strict contract on the seven load-bearing modules, pyright covers the rest.
+Their settings are pinned in `pyproject.toml` for the same reason ruff's are.
+
+`pyright` reads its configuration from `pyproject.toml`, so run it without
+arguments — passing a path overrides `include` and silently changes the scope.
 
 ## Opening a pull request
 
