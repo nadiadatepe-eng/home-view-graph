@@ -155,4 +155,4 @@ testpaths = ["tests"]
 # green while `pytest tests/` never collected either. Visibility that depends
 # on someone comparing two lists is not a mechanism, so the claim now has one:
 # `test_suite_is_complete.py` fails if any `tests/test_*.py` is missing here.
-python_files = ["test_cp*.py", "test_no_real_paths.py", "test_h1.py", "test_h2.py", "test_h3.py", "test_h3_graph.py", "test_i1.py", "test_i2.py", "test_i3.py", "test_i4.py", "test_suite_is_complete.py", "test_type_regressions.py"]
+python_files = ["test_cp*.py", "test_no_real_paths.py", "test_h1.py", "test_h2.py", "test_h3.py", "test_h3_graph.py", "test_i1.py", "test_i2.py", "test_i3.py", "test_i4.py", "test_suite_is_complete.py", "test_type_regressions.py", "test_review_findings.py"]

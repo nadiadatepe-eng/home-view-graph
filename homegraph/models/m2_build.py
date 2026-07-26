@@ -40,6 +40,7 @@ import collections
 import contextlib
 import functools
 import os
+import re
 import sys
 import tomllib
 
@@ -96,7 +97,15 @@ def no_open_guard(roots=None):
         if isinstance(target, (str, bytes, os.PathLike)):
             path = _text(os.fspath(target))
             full = os.path.abspath(path)
-            if any(full.startswith(r) for r in watched):
+            # Uten skilletegnet er dette et rent prefiks-treff, og en vakt over
+            # `.../Pictures` fyrte på `.../Pictures2`. En falsk positiv i en snubletråd
+            # stopper et bygg som ikke gjorde noe galt.
+            #
+            # `os.path.join(r, "")` framfor `r.rstrip("/") + os.sep`, som `collection_of`
+            # bruker: den formen gjør `C:\` til `C:\\` på Windows og slutter da å fange
+            # noe som helst under stasjonsroten. `join` legger på skilletegnet bare når
+            # det mangler, på begge plattformer.
+            if any(full == r or full.startswith(os.path.join(r, "")) for r in watched):
                 opened.append(path)
                 raise ImageOpened("M2 opened %s -- the one thing it must "
                                   "never do" % path)
@@ -262,6 +271,30 @@ def build(store, paths, as_of, parser=None, report=None, roots=None):
     return report
 
 
+# Lengste markør først. Rekkefølgen er halve funksjonen: da dette var en inline-løkke sto
+# `"_copy2"` SIST, og `"_copy"` hadde allerede spist prefikset sitt -- `photo_copy2` ble
+# `photo2`, ikke `photo`, så en `_copy2`-fil aldri fant originalen sin. Sortert her, så en ny
+# markør ikke kan legges inn i feil rekkefølge ved uhell.
+COPY_MARKERS = tuple(sorted(("_copy", "-copy", "_kopi", " copy", "_copy2"),
+                            key=len, reverse=True))
+_COPY_RE = re.compile("|".join(re.escape(m) for m in COPY_MARKERS))
+
+
+def strip_copy_markers(stem):
+    """Filstammen uten kopi-markører, eller uendret hvis den ikke har noen.
+
+    Gjentar til strengen står stille, ikke ett pass. Å fjerne én markør kan gjenskape en
+    annen: `_copy` ut av `photo_co_copypy2` etterlater `photo_copy2`. Verken lengste-først
+    eller ett `re.sub` fanger det -- `re.sub` skanner ikke sitt eget resultat. Egenskapen som
+    holdes er ikke hvilken streng som kommer ut, men at ingen markør blir liggende igjen.
+    """
+    while True:
+        after = _COPY_RE.sub("", stem)
+        if after == stem:
+            return after.strip()
+        stem = after
+
+
 def _link_copies(store, infos, as_of, report):
     """LIKELY_COPY, from names alone.
 
@@ -283,10 +316,7 @@ def _link_copies(store, infos, as_of, report):
     by_stripped = collections.defaultdict(list)
     for info, _ in infos:
         if info.copy:
-            stripped = info.stem
-            for marker in ("_copy", "-copy", "_kopi", " copy", "_copy2"):
-                stripped = stripped.replace(marker, "")
-            by_stripped[stripped.strip()].append(info.path)
+            by_stripped[strip_copy_markers(info.stem)].append(info.path)
     for info, _ in infos:
         if not info.copy and info.stem.strip() in by_stripped:
             for other in by_stripped[info.stem.strip()]:

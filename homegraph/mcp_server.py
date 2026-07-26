@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import sys
 
@@ -220,6 +221,11 @@ class Server:
     # -- protocol ---------------------------------------------------------
 
     def handle(self, request):
+        # Gyldig JSON er ikke nødvendigvis et objekt. `serve()` kaller dette i `else`-grenen
+        # til en try som bare dekker `json.loads`, så `[]`, `"x"`, `3` eller `null` ga
+        # `AttributeError` ut av løkka og drepte serveren -- fire tegn fra en klient.
+        if not isinstance(request, dict):
+            return self._error(None, -32600, "invalid request: expected an object")
         method = request.get("method")
         rid = request.get("id")
         params = request.get("params") or {}
@@ -243,10 +249,16 @@ class Server:
                   "mesh_explain": self.mesh_explain}.get(name) if isinstance(name, str) else None
             if fn is None:
                 return self._error(rid, -32601, "unknown tool %r" % name)
+            # Bindingen prøves for seg. Da `except TypeError` lå rundt selve kallet, dekket
+            # den hele verktøykroppen: en TypeError dypt inne i et verktøy ble rapportert som
+            # -32602 «bad arguments», altså en protokollfeil som klandrer klienten for en
+            # serverfeil. Nå kan bare en ekte signaturmismatch gi -32602.
             try:
-                result = _text(fn(**args))
+                inspect.signature(fn).bind(**args)
             except TypeError as exc:
                 return self._error(rid, -32602, "bad arguments: %s" % exc)
+            try:
+                result = _text(fn(**args))
             except Exception as exc:                            # noqa: BLE001
                 # Reported as a tool error, not a protocol error: the client
                 # should see what failed rather than lose the connection.
@@ -285,16 +297,32 @@ class Server:
                 stdout.flush()
 
 
+def parse_model_specs(specs):
+    """`["m3=/path/m3.db"]` -> `{"m3": "/path/m3.db"}`.
+
+    Refuses a spec without `=`. `"m3".partition("=")` yields an empty path, so `--model m3`
+    used to register the model against `""` and the failure surfaced far away as an unrelated
+    store error. A bad flag should fail at the flag.
+    """
+    models = {}
+    for spec in specs:
+        name, sep, path = spec.partition("=")
+        if not sep or not name.strip() or not path.strip():
+            raise ValueError("--model needs NAME=PATH, got %r" % spec)
+        models[name.strip()] = path.strip()
+    return models
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="homegraph.mcp_server")
     ap.add_argument("--model", action="append", required=True,
                     metavar="NAME=PATH")
     ap.add_argument("--mesh-db", dest="mesh_db", default=None)
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
-    models = {}
-    for spec in args.model:
-        name, _, path = spec.partition("=")
-        models[name] = path
+    try:
+        models = parse_model_specs(args.model)
+    except ValueError as exc:
+        ap.error(str(exc))
     Server(models, args.mesh_db).serve()
     return 0
 

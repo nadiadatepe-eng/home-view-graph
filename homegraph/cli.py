@@ -395,11 +395,16 @@ def cmd_visualize(args):
 
 
 def cmd_mcp(args):
-    from .mcp_server import Server
-    models = {}
-    for spec in args.model:
-        name, _, path = spec.partition("=")
-        models[name] = path
+    # Samme parsing som `python3 -m homegraph.mcp_server`. Dette er den dokumenterte
+    # kommandoen, og den hadde sin egen kopi av `spec.partition("=")` -- så `--model m3`
+    # uten sti registrerte modellen mot `""` her selv etter at modulveien var rettet.
+    # To innganger, én validering.
+    from .mcp_server import Server, parse_model_specs
+    try:
+        models = parse_model_specs(args.model)
+    except ValueError as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
     Server(models, args.mesh_db).serve()
     return 0
 
