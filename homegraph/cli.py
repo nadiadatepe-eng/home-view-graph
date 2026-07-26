@@ -395,10 +395,11 @@ def cmd_visualize(args):
 
 
 def cmd_mcp(args):
-    # Samme parsing som `python3 -m homegraph.mcp_server`. Dette er den dokumenterte
-    # kommandoen, og den hadde sin egen kopi av `spec.partition("=")` -- så `--model m3`
-    # uten sti registrerte modellen mot `""` her selv etter at modulveien var rettet.
-    # To innganger, én validering.
+    # Den eneste inngangen. Fram til 2026-07-26 fantes `python3 -m homegraph.mcp_server`
+    # ved siden av, med sin egen argparse -- og denne hadde sin egen kopi av
+    # `spec.partition("=")`, så `--model m3` uten sti registrerte modellen mot `""` her
+    # selv etter at modulveien var rettet. Modulveien er borte; valideringen bor i
+    # `parse_model_specs`, og det finnes én kopi av den.
     from .mcp_server import Server, parse_model_specs
     try:
         models = parse_model_specs(args.model)

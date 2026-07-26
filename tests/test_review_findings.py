@@ -177,10 +177,12 @@ def t_model_spec_needs_path() -> None:
         check("spec: `m3=/tmp/x.db` går gjennom", False,
               "%s: %s" % (type(exc).__name__, exc))
 
-    # `homegraph mcp` -- den dokumenterte kommandoen -- går gjennom `cli.cmd_mcp`, ikke
-    # gjennom `mcp_server.main`. Første fiks lukket bare den siste, og hadde blitt
-    # rapportert som ferdig. Sjekket er på OPPFØRSEL, ikke på kildetekst: første utgave
-    # lette etter `partition("=")` i kilden og slo ut på kommentaren som forklarte fiksen.
+    # `homegraph mcp` -- nå den eneste kommandoen -- går gjennom `cli.cmd_mcp`. Da dette
+    # ble skrevet fantes `mcp_server.main` ved siden av, og første fiks lukket bare den
+    # siste; det hadde blitt rapportert som ferdig. Modulveien er fjernet 2026-07-26, men
+    # sjekket blir stående: den holder den gjenværende døra lukket. Den er på OPPFØRSEL,
+    # ikke på kildetekst -- første utgave lette etter `partition("=")` i kilden og slo ut
+    # på kommentaren som forklarte fiksen.
     from homegraph import cli
 
     class _Args:
