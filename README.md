@@ -503,10 +503,20 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-two checkpoints plus a privacy check and a suite-completeness check.
-440 mutations, 0 survived, 0 detected only by a crash**, measured 2026-07-25
-after the Graphify export landed, by running every harness in one sweep rather
-than one at a time. The split of *how* they died is the fragile number and is
-timestamped for a reason: it has moved twice within an hour of measurement.
+442 mutations, 0 survived, 0 detected only by a crash, 3 killed by a gate other
+than the one named**, measured 2026-07-26 on `3b78560` by running every harness
+in one sweep rather than one at a time. The whole sweep takes **808 seconds**,
+and three harnesses are 70 % of it: `mutate_cp6` 215 s, `mutate_i1` 195 s,
+`mutate_cp13` 150 s.
+
+The three misattributed kills are `mutate_cp12`'s boundary-test-as-string-prefix
+and left-behind datelist anchor, and `mutate_cp6`'s tool implemented but never
+advertised. They died -- but the gate the mutation named stayed green, which is
+the distinction the harnesses exist to see, so it is reported rather than folded
+into the kill count.
+
+The split of *how* they died is the fragile number and is timestamped for a
+reason: it has moved twice within an hour of measurement.
 **0 survived is the load-bearing claim**; a mutation moving between *the named
 gate said no* and *the suite died* changes how much that kill is worth, so
 re-run the harnesses after touching a checkpoint rather than trusting the
