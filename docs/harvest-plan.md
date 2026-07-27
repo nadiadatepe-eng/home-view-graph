@@ -142,6 +142,30 @@ Byggetids-verktøyet `tools/distill_matrix.py` (model2vec via `uv`, IKKE en runt
 
 **Men verdien finnes, på spørringene den er FOR** (kvalitativ probe, ikke statistikk fordi parafrase-par ikke kan auto-merkes uten sirkularitet): parafrasen «how an agent remembers things between sessions» ga AND-FTS bare *Changelog*, mens vektor-topptreffet var **`living-memory-architecture`** — en blink AND-FTS bommet fullstendig på. NB-spørringer og trading-parafraser som AND-FTS returnerte *ingenting* på, ga vektor topikalt plausible treff. **Begrensning (bevisst):** OR-FTS-shortlisten kan ikke hente ved NULL leksikalsk overlapp (en ren-NB-spørring ga tomt) — prisen for aldri å skanne hele korpuset. Full-ANN ville løst det, men brøt `ingen-hel-korpus-skann`-invarianten.
 
+### Kryss-språk merket og målt — CP-X/CP-X2 (2026-07-27)
+
+Luken under er lukket for kryss-språk-halvdelen. Ti håndmerkede NB→EN-par mot samme
+ekte store, med begge egenskaper (null overlapp / nøyaktig ett anker) etterprøvd gjennom FTS-indeksen
+selv (som dekker tittel også) før scoring. Alle fire hentere pluss et **tak** (cosinus over hele
+korpuset, ikke shippet) er målt.
+
+| sett | AND-FTS | OR-BM25 | shippet | tak | takets rang av 602 |
+|---|---|---|---|---|---|
+| uten overlapp (n=8) | 0.000 | 0.000 | 0.000 | mrr 0.003 | 47, 358, 313, 53, 264, 60, 196, 477 |
+| ett anker (n=2) | 0.000 | mrr 0.042 | mrr 0.125 | mrr 0.100 | 5, 228 |
+| kun ord matrisa har (n=3) | 0.000 | 0.000 | 0.000 | mrr 0.028 | 68, 16, 45 |
+
+Tre prober, tre ulike årsaker til null, hver på sin målte styrke: **justeringen viser
+signal** (oversettelsespar i matrisa: cosinus 0.724 mot 0.021 for tilfeldige ord, 9 av 12
+par, 2 identiske), **dekningen er en stor skranke men ikke isolert** (49 % av spørreordene
+mangler fordi matrisa er destillert over korpusets 89 % engelske vokabular; spørringer
+bygget kun av ord matrisa har lander på rang 68/16/45 mot median ~230 — men det er andre
+spørringer, ikke de samme med OOV kontrollert), og **selv da nås ikke r@1**, uten at det er
+målt hvorfor. Den smale konklusjonen som holder: kortlista er ikke den bindende skranken på
+ekte data, siden taket som ignorerer den også feiler.
+**Neste steg, hvis tråden tas videre:** destillér over et vokabular som inkluderer
+spørrespråket. Én endring i `tools/distill_matrix.py`, deretter ny måling.
+
 **Konklusjon:** mekanismen er validert ende-til-ende på ekte data og ekte vektorer, og korrekt gated AV som standard. Den ekte matrisen bekrefter designvalget (opt-in), ikke at hybrid bør være default. Den ærlige gjenstående luken er et *merket* parafrase/kryss-språk-evalsett — samme lærdom som synteten ga. Lærer/dim kan byttes trivielt via `--model` i distill-verktøyet.
 
 ---

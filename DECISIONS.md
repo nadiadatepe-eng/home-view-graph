@@ -1470,6 +1470,44 @@ answers with the wrong file, or nothing, the vector path answers with the right
 one. A quantitative semantic verdict still needs a labelled paraphrase set — the
 same honest gap the synthetic gate had, recorded rather than papered over.
 
+**The cross-language half of that gap is now measured (CP-X, 2026-07-27), and it
+came out against the framing above.** Ten hand-labelled Norwegian→English pairs,
+each property re-checked through the FTS index itself before scoring — the tool
+refuses to report a number if a pair is not what it claims. On the eight
+no-overlap pairs every retriever returns recall 0.000 at k=1, 5 and 10 — and so
+does a whole-corpus cosine *ceiling* the package does not ship. The ceiling's mrr
+is 0.003 rather than exactly zero for one reason worth stating precisely: the
+retrievers are capped at `--limit` (50), one answer landed at rank 47 and
+contributed 1/47, and the other seven were outside the cap and contributed
+nothing. Reported separately and uncapped, those answers sit at ranks 47…477
+of 602. The two one-anchor pairs are not zero and are not a success either: OR-BM25
+mrr 0.042, the shipped path 0.125, the ceiling 0.100 — one answer at rank 5, the
+other at 228.
+
+Three probes separate three causes that all look like zero, and each is stated
+at the strength it was measured:
+
+- **Alignment shows signal on this probe.** Translation pairs present in the
+  matrix sit at mean cosine 0.724 against 0.021 for random pairs — 9 of 12 hand-
+  picked pairs, 2 of them identical tokens. That is evidence the model relates
+  the two languages, not a general claim about its multilingual quality.
+- **Vocabulary coverage is a large constraint, and is not isolated.** 49% of the
+  query words have no row: `distill_matrix.py` builds the vocabulary from the
+  corpus, and this corpus is 89% English. Queries restricted to words the matrix
+  carries land at ranks 68/16/45 instead of a median around 230 — but those are
+  *different queries*, not the same ones with the out-of-vocabulary terms
+  controlled, so this supports coverage as a major factor and not as the
+  primary cause.
+- **Even then, r@1 is not reached.** Whole-corpus cosine still fails to rank the
+  answer first. Which of document-level mean-pooling, labelling, or corpus
+  ambiguity dominates is *not* measured here, and is not claimed.
+
+The narrow conclusion is the one that holds: on these pairs, lifting `no
+whole-corpus scan` would not buy cross-language retrieval, because the ceiling
+that ignores the shortlist fails too. So the shortlist is not the binding
+constraint on real data, the promising lead is upstream in what the matrix is
+distilled over, and the stop rule is unchanged: embeddings stay opt-in.
+
 The graph page (`visualize --embeddings`) carries the same embedder as a
 DOM-free JS port plus an int8 title-word sub-matrix (~1 MB, self-contained), and
 the gate runs that port under node and compares it number-for-number to the

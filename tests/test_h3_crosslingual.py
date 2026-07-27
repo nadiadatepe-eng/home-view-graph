@@ -36,6 +36,14 @@ shortlist is a decision (`no whole-corpus scan`, DECISIONS §29), not a defect.
 Naming it with a number is this checkpoint's job; changing it is not, and is
 left as an explicit question rather than answered here.
 
+**Do not carry the ceiling out of this file.** It is 1.000 because the
+embedder here is perfect by construction, and CP-X2 measured what the real one
+does on the real corpus: the same ceiling is r@1 0.000 with the answers at ranks
+47…477 of 602, and at 68/16/45 once the query is restricted to words the
+distilled matrix actually carries (mrr 0.028). On real data the shortlist is
+not the binding constraint -- the vectors are -- and lifting the shortlist
+would not deliver cross-language retrieval. This fixture bounds the plumbing; it does not predict the model.
+
 `zero.md` in test_h3.py already gates the mechanism -- one document with cosine
 1.0 that is never shortlisted. This is not a second copy: that check asks
 whether a document can be missed, this one asks what a labelled eval scores,

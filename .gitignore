@@ -20,6 +20,9 @@ tests/gold/cp4-filenames.tsv
 # checkpoint refuses with a clear message when they are absent, and nothing in
 # the default synthetic path touches them.
 tests/gold/real_corpus.py
+# CP-X2's hand-labelled cross-language pairs: every row names a real
+# document, and the in-vocab probe names the words it was tuned on.
+tests/gold/crosslingual_pairs.py
 tests/gold/sample_gold.py
 tests/gold/sample_gold_round2.py
 tests/gold/sample_gold_round3.py
