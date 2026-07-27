@@ -1502,6 +1502,26 @@ at the strength it was measured:
   answer first. Which of document-level mean-pooling, labelling, or corpus
   ambiguity dominates is *not* measured here, and is not claimed.
 
+**Widening the vocabulary was tried and did not work (CP-X3, same day).**
+Distilling over every store with the frequency filter off doubled the matrix,
+23 159 → 44 017 words, and recovered **two** of the 27 missing query words;
+every score stayed 0.000. The reason is structural: 15 of the 26 unique missing
+words are productive Norwegian compounds -- `kryptohandel`, `kunnskapsgraf`,
+`tilstandsmodeller` -- that no word list contains and that a corpus written in
+English never spells. English writes the same concepts as separate words, each
+of which gets its own row. **A word-level lookup matrix can cover an English
+query language and cannot cover a Norwegian one**, and that is a property of the
+lookup design, not of the vocabulary source.
+
+What does move it is splitting compounds at lookup time against the vocabulary
+already present: greedy longest-first with an optional linking `-s-` splits 12
+of 24, and the ceiling rank of the answer goes 361→3, 263→5, 312→31, 190→35,
+448→129 -- a median of ~226 to ~35. Not built: it is a behaviour change in a
+module that is a pure lookup today, it would apply to every language, and it
+only fixes half the problem -- the split parts are Norwegian, the documents are
+English, so the OR shortlist is still empty and the shipped path still returns
+nothing. Cross-language retrieval needs both halves.
+
 The narrow conclusion is the one that holds: on these pairs, lifting `no
 whole-corpus scan` would not buy cross-language retrieval, because the ceiling
 that ignores the shortlist fails too. So the shortlist is not the binding

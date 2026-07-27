@@ -91,6 +91,10 @@ def main() -> int:
                     help="drop words rarer than this (default 2)")
     ap.add_argument("--max-vocab", type=int, default=60000,
                     help="cap the vocabulary size (default 60000)")
+    ap.add_argument("--batch", type=int, default=4000,
+                    help="words per encode call (default 4000); bounds peak "
+                         "memory so the vocabulary size does not decide "
+                         "whether the run survives")
     ap.add_argument("--round", type=int, default=6,
                     help="decimal places per component (default 6)")
     args = ap.parse_args()
@@ -111,8 +115,21 @@ def main() -> int:
           % (len(vocab), args.min_count, args.max_vocab), file=sys.stderr)
 
     model = StaticModel.from_pretrained(args.model)
-    vecs = model.encode(vocab, show_progress_bar=True)
-    dim = int(vecs.shape[1])
+    # Encoded in batches. One `encode` over the whole vocabulary died with
+    # `TerminatedWorkerError ... SIGABRT` at 23 188 words on a machine with 6 GB
+    # free -- the same size that had succeeded on 2026-07-24 -- so the ceiling
+    # is memory pressure at the moment of the run, not a fixed word count. A
+    # batched loop makes the peak independent of how big the vocabulary is,
+    # which is the difference between a tool that works and a tool that works
+    # on a quiet machine.
+    rows = []
+    for i in range(0, len(vocab), args.batch):
+        chunk = vocab[i:i + args.batch]
+        rows.extend(model.encode(chunk, show_progress_bar=False))
+        print("  encoded %d/%d" % (min(i + args.batch, len(vocab)), len(vocab)),
+              file=sys.stderr)
+    vecs = rows
+    dim = int(len(vecs[0]))
     name = args.name or args.model.rsplit("/", 1)[-1]
 
     matrix = [[round(float(x), args.round) for x in row] for row in vecs]
