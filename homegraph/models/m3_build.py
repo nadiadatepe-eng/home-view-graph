@@ -293,6 +293,47 @@ def broken_links(store):
         "ORDER BY title")]
 
 
+#: Relations that count as one note reaching another. `TAGGED` is deliberately
+#: absent -- two notes carrying the same tag are not linked to each other --
+#: but this list is NOT what keeps a tag out of the count. `m.kind = 'file'`
+#: below does, and a mutation adding `TAGGED` here proved it by leaving the
+#: suite green. Both guards stay: this one states the rule, that one enforces
+#: it. If a file-to-file relation is ever added to the schema, this list is
+#: the place the decision has to be made, and the kind filter will not make
+#: it for you.
+LINKING_RELS = ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH")
+
+
+def isolated_notes(store):
+    """File nodes with no link to or from another file node.
+
+    A note whose every wikilink points at a target that does not exist is the
+    case this reports, so an edge into a `broken` stub is not a connection --
+    `broken_links` already names those from the other end. The two together
+    are the whole gap: links that go nowhere, and notes nothing goes to.
+
+    Returns (paths, total) so the caller can print the share. 315 isolated
+    notes is a different corpus at 602 files than at 6 000, and the count on
+    its own cannot tell you which one you are looking at.
+    """
+    placeholders = ",".join("?" * len(LINKING_RELS))
+    # `path` is nullable in the schema. For M3 file nodes the key IS the path,
+    # so the fallback is not a guess -- but printing `None` for a row that has
+    # no path would name no file at all, and a report you cannot act on reads
+    # as damage you cannot find.
+    paths = [r["path"] for r in store.db.execute(
+        "SELECT COALESCE(n.path, n.node_key) path FROM nodes n "
+        "WHERE n.kind = 'file' AND NOT EXISTS ("
+        "  SELECT 1 FROM edges e JOIN nodes m"
+        "    ON m.id = CASE WHEN e.src = n.id THEN e.dst ELSE e.src END"
+        "  WHERE (e.src = n.id OR e.dst = n.id) AND e.rel IN (%s)"
+        "    AND m.kind = 'file' AND m.id <> n.id) "
+        "ORDER BY n.path" % placeholders, LINKING_RELS)]
+    total = store.db.execute(
+        "SELECT COUNT(*) c FROM nodes WHERE kind = 'file'").fetchone()["c"]
+    return paths, total
+
+
 def neighbours(store, node_key, seen=None, depth=2):
     """Breadth-limited traversal that survives cycles.
 

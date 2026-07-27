@@ -1131,6 +1131,28 @@ def cmd_md_broken(args):
     return 0
 
 
+def cmd_md_gaps(args):
+    from .models.m3_build import isolated_notes
+    from .store import Store
+    with Store(args.db) as s:
+        paths, total = isolated_notes(s)
+        # The share is the finding. A bare count cannot tell a corpus where a
+        # handful of notes stand alone from one where half of it does, and it
+        # was the share -- 52.3% -- that decided this command was worth having.
+        # "markdown file(s)", not "note(s)": the M3 store holds readme,
+        # generated and memory subtypes too, and a machine-written GRAPH_REPORT
+        # that links to nothing is not the same finding as a note you wrote and
+        # then orphaned. Calling them all notes would overstate what is wrong.
+        print("%d of %d markdown file(s) with no link to or from another%s"
+              % (len(paths), total,
+                 "  (%.1f%%)" % (100.0 * len(paths) / total) if total else ""))
+        for path in paths[:args.limit]:
+            print("  %s" % path)
+        if len(paths) > args.limit:
+            print("  ... %d more (raise --limit)" % (len(paths) - args.limit))
+    return 0
+
+
 def backlink_sources(store, name):
     from .models.m3_build import backlinks
     return backlinks(store, "wikilink:%s" % name)[0]
@@ -1381,6 +1403,10 @@ def main(argv=None):
     q.add_argument("db")
     q.add_argument("--limit", type=int, default=20)
     q.set_defaults(func=cmd_md_broken)
+    q = msub.add_parser("gaps")
+    q.add_argument("db")
+    q.add_argument("--limit", type=int, default=20)
+    q.set_defaults(func=cmd_md_gaps)
 
     p = sub.add_parser("mesh", help="M5 federation across models")
     xsub = p.add_subparsers(dest="meshcmd", required=True)
