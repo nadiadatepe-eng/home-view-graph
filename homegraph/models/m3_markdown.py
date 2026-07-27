@@ -277,9 +277,12 @@ class MarkdownExtractor:
 
 
 def _dedupe(items):
-    seen, out = set(), []
-    for item in items:
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
+    """First occurrence wins, empties dropped. Order is the point: it decides
+    which of two same-named wikilinks is reported first.
+
+    `items` are extractor strings, and that is load-bearing rather than
+    incidental: `dict.fromkeys` hashes before the filter runs, so an
+    unhashable falsy item -- `[]` -- would raise here where the previous
+    hand-rolled loop skipped it. All five call sites pass regex output.
+    """
+    return [item for item in dict.fromkeys(items) if item]

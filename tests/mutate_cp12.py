@@ -100,7 +100,13 @@ MUTATIONS = [
 
     ("the archive wrapper is not looked into",
      "homegraph/portable.py",
-     "    if key.startswith(ARCHIVE_PREFIX):\n        rest = key[len(ARCHIVE_PREFIX):]\n        inner, sep, entry = rest.partition(\"!\")\n        if inner.startswith(\"/\"):",
+     # Re-anchored when `_split_wrapper` and `_split_portable` became one
+     # `_split(key, marker)`: the old needle ended on `if inner.startswith("/")`,
+     # which was what told the two copies apart and no longer exists. Same
+     # mutation, same gate -- and it now reaches BOTH directions, which the
+     # old one could not: it replaced the first occurrence only, so the
+     # portable side was never mutated at all.
+     "    if key.startswith(ARCHIVE_PREFIX):\n        rest = key[len(ARCHIVE_PREFIX):]\n        inner, sep, entry = rest.partition(\"!\")\n        if inner.startswith(marker):",
      "    if key.startswith(ARCHIVE_PREFIX):\n        rest = key[len(ARCHIVE_PREFIX):]\n        inner, sep, entry = rest.partition(\"!\")\n        if False:  # mutated: archive keys keep the old root",
      "no structural field carries a root or an absolute path"),
 
