@@ -123,6 +123,62 @@ MUTATIONS = [
      "        return [x / norm for x in acc]",
      "        return acc  # mutated: skip L2 normalisation",
      "a two-token mean is L2-normalised to the hand value"),
+
+    # The count the vector path branches on stops being per-namespace, so
+    # another model's leftovers make it look like this one is embedded. The
+    # search then runs, finds no vector for any shortlisted node (read is
+    # still namespace-filtered), returns [] instead of None -- and the caller
+    # reports an ordinary fused answer with no warning. That is
+    # code-review-graph #757's failure, reproduced: the index queried under a
+    # different identity than it was built under, and nothing said so.
+    #
+    # It goes red in three places at once, and the `expected` gate below names
+    # the reported one on purpose -- that is the layer with no other check.
+    # An earlier version of this comment claimed the lower checks still passed;
+    # codex measured otherwise. They do not: the per-namespace count and the
+    # `None` from `vector_search` both fall to this same mutation.
+    ("the vector count stops being per-namespace",
+     "homegraph/store.py",
+     '            "SELECT COUNT(*) c FROM embeddings "\n'
+     '            "WHERE provider=? AND model=? AND dim=?",',
+     '            "SELECT COUNT(*) c FROM embeddings "\n'
+     '            "WHERE provider=? OR model=? OR dim=?",  # mutated',
+     "the mismatch reports out_mode 'fts', not 'hybrid'"),
+
+    # The warning loses the instruction while `out_mode` stays honest. Nothing
+    # above catches this: the mutation over the count fails the `out_mode`
+    # check first, so the two warning assertions were unmutated until now --
+    # and an unmutated assertion is a claim, not a gate. The failure it models
+    # is real and small: a report that names the problem and leaves the reader
+    # with no way to act is most of the distance back to a silent degradation.
+    ("the empty-namespace warning stops saying what to run",
+     "homegraph/search.py",
+     '                "embeddings are configured but nothing is embedded under the "\n'
+     '                "current model\'s namespace; the vector path did not run. Run "\n'
+     '                "`homegraph embed` (a model change invalidates old vectors).")',
+     '                "no semantic results.")  # mutated: names nothing, '
+     'instructs nothing',
+     "and says WHY and WHAT TO RUN, not just that it is empty"),
+
+    # Vector mode words its own warning, so the one above leaves it untouched
+    # and its assertion unmutated -- codex caught that the first version of
+    # this pair claimed otherwise. Two strings, two mutations. Vector mode is
+    # the worse place to lose the instruction: there is no lexical fallback,
+    # so the warning is the entire answer.
+    ("the vector-mode empty-namespace warning stops saying what to run",
+     "homegraph/search.py",
+     '                    "vector mode: nothing is embedded under the current model\'s "\n'
+     '                    "namespace; run `homegraph embed`.")',
+     '                    "no semantic results.")  # mutated: instructs nothing',
+     "vector mode returns nothing and says why"),
+
+    # Written and removed: `embedding_count` returning a constant 0, aimed at a
+    # positive control in t_namespace_invalidation. It came back MISATTRIBUTED
+    # -- "cosine reranking lifts the target to first" fails first and stops the
+    # suite before the control runs -- and the control itself was a duplicate of
+    # t_store_namespace's hybrid check, which that same mutation already kills.
+    # Two gates for one claim, and a mutation that could not be attributed to
+    # either. Both deleted rather than kept as standing noise in the sweep.
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))

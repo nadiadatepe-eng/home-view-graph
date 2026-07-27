@@ -378,6 +378,15 @@ def t_namespace_invalidation():
     the table, but under a different namespace, and the honest answer is "did not
     run -- re-embed", not those vectors served silently under the new name.
     (sim-auditor invariant.)
+
+    The second half asserts what a USER sees, not what `vector_search` returns.
+    Those are different layers and only the lower one was gated: `None` has to
+    survive `hybrid_search` as `out_mode == "fts"` plus a warning that names the
+    cause, or the mismatch reaches the terminal as an ordinary lexical answer
+    with nothing said. That is the shape code-review-graph #757 shipped -- its
+    benchmarks queried a different embedding identity than the index was built
+    under and reported `no_graph_results`, with no line saying why. Measured
+    here 2026-07-27 and found correct; this is the gate that keeps it correct.
     """
     d = _tmp()
     try:
@@ -390,6 +399,39 @@ def t_namespace_invalidation():
                   and s.embedding_count("static", "syn-b", _DIM) == 0)
             check("a model switch returns None (old vectors are NOT served)",
                   vector_search(s, _QUERY, embedder=emb_b) is None)
+
+            # Two facts, not the sentence: the wording may change, what it has
+            # to carry may not. "namespace" alone is too weak a bar -- it is
+            # satisfied by a warning that names the problem and leaves the
+            # reader with nothing to do, which is most of the distance between
+            # this and a silent degradation. The command is the actionable
+            # half, so it is asserted literally.
+            def says_why(warnings):
+                said = " ".join(warnings).lower()
+                return "namespace" in said and "homegraph embed" in said
+
+            auto = hybrid_search(s, _QUERY, embedder=emb_b, mode="auto")
+            check("the mismatch reports out_mode 'fts', not 'hybrid'",
+                  auto._out_mode == "fts", auto._out_mode)
+            check("and says WHY and WHAT TO RUN, not just that it is empty",
+                  says_why(auto.warnings),
+                  (auto.warnings or ["<none>"])[-1][:64])
+
+            # Vector mode has no lexical fallback, so the warning is the whole
+            # answer there. A silent [] would look identical to "searched, found
+            # nothing" -- the distinction this file exists to keep.
+            vec = hybrid_search(s, _QUERY, embedder=emb_b, mode="vector")
+            check("vector mode returns nothing and says why",
+                  vec.hits == [] and says_why(vec.warnings),
+                  "%d hit(s): %s" % (len(vec.hits),
+                                     (vec.warnings or ["<none>"])[-1][:48]))
+
+        # The positive control these three need -- a search that answered "fts"
+        # to everything would satisfy them -- is `t_store_namespace`'s
+        # "hybrid_search reports out_mode 'hybrid' when the vector ran", in this
+        # same file and running earlier. A second copy here was written and
+        # deleted: two checks with one claim between them means the next person
+        # to change the contract updates one of them.
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
