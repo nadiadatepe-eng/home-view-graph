@@ -34,6 +34,8 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.fixtures.synthetic import ROOT as SYNTH_ROOT       # noqa: E402
@@ -48,7 +50,7 @@ AS_OF = "2026-07-22"
 LATER = "2026-07-30"
 ROOTDIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-results = []
+results, check = reporter(52)
 
 
 def safe_load(*args, **kwargs):
@@ -63,12 +65,6 @@ def safe_load(*args, **kwargs):
         return load(*args, **kwargs), None
     except Exception as exc:                                    # noqa: BLE001
         return None, "raised:%s: %s" % (type(exc).__name__, exc)
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-52s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
 
 
 def nodes_of(db):

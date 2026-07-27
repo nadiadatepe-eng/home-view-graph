@@ -243,7 +243,7 @@ def load(path: str, stores: dict[str, Store], root: str) -> dict[str, Any]:
     counts = manifest.get("counts") or {}
     want = {"nodes": sum(c.get("nodes", 0) for c in counts.values()),
             "edges": sum(c.get("edges", 0) for c in counts.values())}
-    read = {"nodes": seen["nodes"] + sum(skipped_models.values()) * 0,
+    read = {"nodes": seen["nodes"],
             "edges": seen["edges"]}
     if counts and (read["nodes"], read["edges"]) != (want["nodes"],
                                                     want["edges"]):

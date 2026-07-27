@@ -37,6 +37,23 @@ Every checkpoint also runs standalone with no test runner:
 fresh clone — the material it proves is unpublished is gitignored and therefore
 absent, so the gate refuses to pass rather than report a clean scan of nothing.
 
+### Why every checkpoint file ends in a `test_checkpoint_*` adapter
+
+The checks are written as a script: `t_*` helpers driven by `main()`, which
+prints a readable report via `check()` from `tests/report.py` and returns an
+exit code. pytest collects `test_*` functions, so without an adapter it
+collected the file, found nothing, and reported success — a runner that
+verifies nothing while looking green.
+
+The adapter is **one test per checkpoint, not one per check**, because the
+phases share built state: the corpus is built once and then queried repeatedly,
+and splitting that across independent tests would rebuild it each time.
+
+This paragraph stood as a ten-line comment in `test_cp0.py` through
+`test_cp6.py`, byte for byte in all seven. Those seven now carry a one-line
+`# -- pytest adapter` marker pointing here; the other nineteen never had the
+comment, only the adapter function.
+
 ## House rules
 
 These are not style preferences. Each one is a mistake this codebase has
@@ -94,6 +111,28 @@ Their settings are pinned in `pyproject.toml` for the same reason ruff's are.
 
 `pyright` reads its configuration from `pyproject.toml`, so run it without
 arguments — passing a path overrides `include` and silently changes the scope.
+
+### Running the gate in a git worktree
+
+`test_no_real_paths.py` will fail in a fresh worktree with
+`the real-corpus material exists locally  0 of 8 present`. That is the guard
+working, not a regression: the material it proves is not published is gitignored,
+and **`git worktree add` does not copy ignored files**. The gate refuses to pass
+rather than report "nothing leaked" when there was nothing present to leak.
+
+Copy the fixtures across before running the suite on a branch:
+
+```sh
+cd /path/to/main/checkout
+for f in $(git ls-files --others --ignored --exclude-standard -- tests/gold); do
+    mkdir -p "$WORKTREE/$(dirname "$f")" && cp -n "$f" "$WORKTREE/$f"
+done
+```
+
+72 MB, and gitignored on the other side too, so it cannot be committed by
+accident. Without this the suite is red for a reason that has nothing to do with
+the branch — measured 2026-07-26 during the mutation-driver collapse, where it
+looked like a regression for several minutes.
 
 ## Opening a pull request
 

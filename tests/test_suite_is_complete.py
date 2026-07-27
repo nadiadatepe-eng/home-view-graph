@@ -28,6 +28,8 @@ import os
 import sys
 import tomllib
 
+from report import reporter
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
@@ -36,12 +38,7 @@ ROOT = os.path.dirname(HERE)
 # something to make.
 NOT_CHECKPOINTS: dict[str, str] = {}
 
-results: list[tuple[str, bool, str]] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    results.append((name, ok, detail))
-    print("%s  %-62s %s" % ("PASS" if ok else "FAIL", name, detail))
+results, check = reporter(62)
 
 
 def collectable_patterns() -> list[str]:

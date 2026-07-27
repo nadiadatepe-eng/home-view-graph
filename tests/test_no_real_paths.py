@@ -46,6 +46,8 @@ import subprocess
 import tempfile
 import sys
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,13 +126,7 @@ AUTHORSHIP = ("LICENSE",)
 TEXT_SUFFIXES = (".py", ".toml", ".md", ".txt", ".cfg", ".ini", ".tsv",
                  ".html", ".json", ".yml", ".yaml", "")
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-44s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(44)
 
 
 def publishable_files():

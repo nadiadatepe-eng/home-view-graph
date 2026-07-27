@@ -17,11 +17,18 @@ smaller corpus -- more so to an agent than to a person, since the agent never
 sees the model list.
 
 Usage:
-    python3 -m homegraph.mcp_server --model m3=/path/m3.db [--mesh-db /path]
+    homegraph mcp --model m3=/path/m3.db [--mesh-db /path]
+
+One door, on purpose. This module used to carry its own `main()` and argparse
+beside `homegraph mcp`, and the two validated `--model` separately: `cmd_mcp`
+kept its own copy of `spec.partition("=")`, so the fix that taught this module
+to refuse `--model m3` without a path left the CLI still registering the model
+against "". Two doors and one of them unlocked is worse than either alone.
+`cli.cmd_mcp` is the door now; `parse_model_specs` and `Server` are what it
+opens, and there is one copy of each.
 """
 from __future__ import annotations
 
-import argparse
 import inspect
 import json
 import sys
@@ -313,19 +320,13 @@ def parse_model_specs(specs):
     return models
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="homegraph.mcp_server")
-    ap.add_argument("--model", action="append", required=True,
-                    metavar="NAME=PATH")
-    ap.add_argument("--mesh-db", dest="mesh_db", default=None)
-    args = ap.parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        models = parse_model_specs(args.model)
-    except ValueError as exc:
-        ap.error(str(exc))
-    Server(models, args.mesh_db).serve()
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    # `python3 -m homegraph.mcp_server` was the second entry point until 2026-07-26.
+    # Removing `main()` without this leaves the module importable and silent: it exits 0,
+    # starts nothing, and a documented command becomes a no-op that reports success.
+    # A withdrawn interface has to say so.
+    raise SystemExit(
+        "`python3 -m homegraph.mcp_server` is gone. Use:\n"
+        "    homegraph mcp --model NAME=PATH [--mesh-db PATH]\n"
+        "One entry point, because two meant `--model m3` without a path was refused "
+        "by one of them and accepted by the other.")

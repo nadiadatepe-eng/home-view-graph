@@ -97,8 +97,13 @@ def path_to_local(portable: str, root: str) -> str:
     return local
 
 
-def _split_wrapper(key: str):
+def _split(key: str, marker: str):
     """(head, path_part, tail) -- the path inside a key, and what wraps it.
+
+    `marker` is what a path starts with on this side of the conversion: `/`
+    in a local key, `~` (MARKER) in a portable one. That was the only
+    difference between two copies of this function, and the copies were not
+    equally covered -- every mutation aimed at the local one.
 
     Returns `(None, None, None)` when the key carries no path at all.
 
@@ -111,10 +116,10 @@ def _split_wrapper(key: str):
     if key.startswith(ARCHIVE_PREFIX):
         rest = key[len(ARCHIVE_PREFIX):]
         inner, sep, entry = rest.partition("!")
-        if inner.startswith("/"):
+        if inner.startswith(marker):
             return ARCHIVE_PREFIX, inner, (sep + entry) if sep else ""
         return None, None, None
-    if key.startswith("/"):
+    if key.startswith(marker):
         return "", key, ""
     # `m3::/path`. **The branch ORDER is what protects a filename containing
     # `::`**, not a test here: `/root/proj/weird::name.py` starts with `/` and
@@ -123,7 +128,7 @@ def _split_wrapper(key: str):
     # about, added by the same hand that documents it. The invariant lives in
     # the ordering, in one place, where a mutation can reach it.
     head, sep, rest = key.partition(MODEL_SEP)
-    if sep and rest.startswith("/"):
+    if sep and rest.startswith(marker):
         return head + MODEL_SEP, rest, ""
     return None, None, None
 
@@ -137,7 +142,7 @@ def to_portable(key: str, root: str) -> str:
     (`ref:doi:10.1234/abcd`), which is why the decision is made by shape and
     not by looking for a slash.
     """
-    head, path, tail = _split_wrapper(key)
+    head, path, tail = _split(key, "/")
     if path is None:
         return key
     return "%s%s%s" % (head, path_to_portable(path, root), tail)
@@ -145,23 +150,7 @@ def to_portable(key: str, root: str) -> str:
 
 def to_local(key: str, root: str) -> str:
     """The inverse. `to_local(to_portable(k, r), r) == k` for every form."""
-    head, path, tail = _split_portable(key)
+    head, path, tail = _split(key, MARKER)
     if path is None:
         return key
     return "%s%s%s" % (head, path_to_local(path, root), tail)
-
-
-def _split_portable(key: str):
-    """`_split_wrapper` for the portable side, where paths start with `~`."""
-    if key.startswith(ARCHIVE_PREFIX):
-        rest = key[len(ARCHIVE_PREFIX):]
-        inner, sep, entry = rest.partition("!")
-        if inner.startswith(MARKER):
-            return ARCHIVE_PREFIX, inner, (sep + entry) if sep else ""
-        return None, None, None
-    if key.startswith(MARKER):
-        return "", key, ""
-    head, sep, rest = key.partition(MODEL_SEP)
-    if sep and rest.startswith(MARKER):
-        return head + MODEL_SEP, rest, ""
-    return None, None, None

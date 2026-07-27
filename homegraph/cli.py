@@ -378,9 +378,7 @@ def cmd_visualize(args):
     # was a traceback, while every sibling command exits 2 with the fix in it.
     # CP-I1 touched this function without closing that, which the audit named.
     try:
-        report = render({n: p for n, _, p in
-                         ((s.partition("=")[0], None, s.partition("=")[2])
-                          for s in args.model)},
+        report = render(_models_from(args.model),
                         args.out, limit_per_model=args.limit,
                         min_degree=args.min_degree, title=args.title,
                         mesh_db=getattr(args, "mesh_db", None),
@@ -395,10 +393,11 @@ def cmd_visualize(args):
 
 
 def cmd_mcp(args):
-    # Samme parsing som `python3 -m homegraph.mcp_server`. Dette er den dokumenterte
-    # kommandoen, og den hadde sin egen kopi av `spec.partition("=")` -- så `--model m3`
-    # uten sti registrerte modellen mot `""` her selv etter at modulveien var rettet.
-    # To innganger, én validering.
+    # Den eneste inngangen. Fram til 2026-07-26 fantes `python3 -m homegraph.mcp_server`
+    # ved siden av, med sin egen argparse -- og denne hadde sin egen kopi av
+    # `spec.partition("=")`, så `--model m3` uten sti registrerte modellen mot `""` her
+    # selv etter at modulveien var rettet. Modulveien er borte; valideringen bor i
+    # `parse_model_specs`, og det finnes én kopi av den.
     from .mcp_server import Server, parse_model_specs
     try:
         models = parse_model_specs(args.model)
@@ -525,10 +524,8 @@ def cmd_watch(args):
 
     # The stores an update writes, so their own writes never trigger another
     # update. Absolute, because `relevant` compares absolute paths.
-    ignore = set()
-    for spec in args.model:
-        _name, _, path = spec.partition("=")
-        ignore.add(os.path.abspath(os.path.expanduser(path)))
+    ignore = {os.path.abspath(os.path.expanduser(path))
+              for path in _models_from(args.model).values()}
     if args.mesh_db:
         ignore.add(os.path.abspath(os.path.expanduser(args.mesh_db)))
 
@@ -594,11 +591,32 @@ def cmd_watch(args):
 
 
 def _models_from(specs):
-    out = {}
-    for spec in specs:
-        name, _, path = spec.partition("=")
-        out[name] = path
-    return out
+    """`NAME=PATH`-par, med avvisningen fem kallesteder hadde og tre manglet.
+
+    `"m3".partition("=")` gir tom sti, så en uvalidert parsing registrerer modellen mot
+    `""`. Målt 2026-07-26 med `--model m3`: `update`, `export` og `mesh` avviste, men med
+    «no store at  » -- de navnga ingenting. `visualize` skrev en 18 644 byte stor tegning
+    av en tom graf og returnerte **0**. `watch` la `cwd` i mengden av stier den ignorerer
+    endringer i, helt lydløst.
+
+    Avviser gjennom `SystemExit` og ikke en returkode fordi fire av kallestedene er
+    argumenter til et annet kall -- `render`, `export`, `export_vault`, `export_graph` --
+    og der finnes det ingen returverdi å gi. 2 er koden `argparse.error()` selv bruker, og
+    den hver søskenkommando allerede returnerer.
+
+    **`parse_model_specs` klipper vekk omkringliggende tomrom i navn og sti.** Det er en
+    atferdsendring for `watch`, som før brukte stien rå: `--model "m3= /x.db"` ga
+    `abspath(" /x.db")` og gir nå `abspath("/x.db")`. Klippingen er den riktige, men
+    `cmd_build` og `cmd_embed` parser fortsatt rått, så en sti med tomrom foran ville
+    skrives ett sted og ignoreres et annet. Patologisk, men reelt -- og grunnen til at de
+    to siste parserne bør hit også. Se CP-E i `TODO.md`.
+    """
+    from .mcp_server import parse_model_specs
+    try:
+        return parse_model_specs(specs)
+    except ValueError as exc:
+        print("REFUSED  %s" % exc, file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def cmd_export(args):
@@ -726,16 +744,13 @@ def cmd_inspect(args):
 
 
 def _cleanup(paths):
-    import contextlib as _ctx
     for path in paths:
-        with _ctx.suppress(OSError):
+        with contextlib.suppress(OSError):
             os.remove(path)
 
 
 def cmd_import(args):
     """Read an artifact into stores, rooted wherever the reader says."""
-    import contextlib as _ctx
-
     from .importer import ImportError_, load
     from .store import Store
 
@@ -788,7 +803,7 @@ def cmd_import(args):
                   % (path, os.path.basename(backup)))
 
     try:
-        with _ctx.ExitStack() as stack:
+        with contextlib.ExitStack() as stack:
             stores = {name: stack.enter_context(_writing(path, model=name))
                       for name, path in sorted(models.items())}
             report = load(args.artifact, stores, root)

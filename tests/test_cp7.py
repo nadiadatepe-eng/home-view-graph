@@ -39,6 +39,8 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import cli, userconfig                          # noqa: E402
@@ -48,13 +50,7 @@ from homegraph.scan import scan                                # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-46s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(46)
 
 
 def _labels(root, config_path):

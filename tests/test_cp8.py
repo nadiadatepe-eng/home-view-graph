@@ -36,6 +36,8 @@ import subprocess
 import sys
 import tempfile
 
+from report import reporter
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from homegraph import update as up                             # noqa: E402
@@ -47,13 +49,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AS_OF_A = "2026-07-22"
 AS_OF_B = "2026-07-23"
 
-results = []
-
-
-def check(name, ok, detail=""):
-    results.append((name, ok, detail))
-    print("%s  %-50s %s" % ("PASS" if ok else "FAIL", name, detail))
-    return ok
+results, check = reporter(50)
 
 
 # Everything except history timestamps. `activity_datelist`/`datelist_int` are

@@ -15,16 +15,13 @@ from __future__ import annotations
 
 import collections
 import os
-from typing import Any, DefaultDict
+from typing import DefaultDict
 
 from ..config import home_root
 from ..corpus import known_extensions
 from ..incremental import hash_file
 from ..temporal import record_observation, refresh_datelist
 from .m1_extractors import extract, file_mentions
-
-# Type for extract return value
-ExtractResult: type[dict[str, Any]] = dict[str, Any]
 
 MAX_REFS_PER_DOC = 40
 MAX_FILE_REFS_PER_DOC = 40
