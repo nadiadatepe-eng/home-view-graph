@@ -548,17 +548,18 @@ def t_isolated(db, spec):
               0 < total == len(files) and len(isolated) <= total,
               "%d of %d file node(s)" % (len(isolated), total))
 
-        # A gold LINK row means src holds a wikilink that resolved to a real
-        # file, so src is connected by construction. If it shows up as
-        # isolated the query is over-reporting, and a report of damage that
-        # is not there gets acted on exactly like a real one.
-        # Both ends, not just the source. A resolved target is connected by
-        # the same edge, from the other side -- and the query reads the edge
-        # table in both directions, so checking one end would leave the other
-        # direction unasserted. The gold row names the target by wikilink
-        # name, so it is resolved here the way t_known_answers does it:
-        # through the edges out of src, dropping the `wikilink:` stubs, which
-        # are broken by definition and must NOT be excused from the list.
+        # Both ends of a gold LINK row, not just the source: the query reads
+        # the edge table in both directions, so checking one end leaves the
+        # other direction unasserted. The row names its target by wikilink
+        # name, so the target is resolved through the WIKILINKS_TO edges out
+        # of src, restricted to file nodes -- which drops the `wikilink:`
+        # stubs, broken by definition and NOT to be excused from the list.
+        #
+        # `neighbours(s, src, depth=1)` is right there and would be three
+        # lines shorter. It takes every outbound relation, so a same-stem
+        # file reached by LINKS_TO or EMBEDS would satisfy this check without
+        # the wikilink the gold row asserts. Equivalent on today's fixture,
+        # weaker as a rule, and the shorter form is not worth that.
         sources, targets = set(), set()
         for kind, src, target in spec["gold"]:
             if kind != "LINK":

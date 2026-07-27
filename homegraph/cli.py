@@ -1136,13 +1136,9 @@ def cmd_md_gaps(args):
     from .store import Store
     with Store(args.db) as s:
         paths, total = isolated_notes(s)
-        # The share is the finding. A bare count cannot tell a corpus where a
-        # handful of notes stand alone from one where half of it does, and it
-        # was the share -- 52.3% -- that decided this command was worth having.
-        # "markdown file(s)", not "note(s)": the M3 store holds readme,
-        # generated and memory subtypes too, and a machine-written GRAPH_REPORT
-        # that links to nothing is not the same finding as a note you wrote and
-        # then orphaned. Calling them all notes would overstate what is wrong.
+        # "markdown file(s)", not "note(s)": the store holds readme, generated
+        # and memory subtypes too, and a machine-written GRAPH_REPORT that
+        # links to nothing is not the same finding as a note you orphaned.
         print("%d of %d markdown file(s) with no link to or from another%s"
               % (len(paths), total,
                  "  (%.1f%%)" % (100.0 * len(paths) / total) if total else ""))
