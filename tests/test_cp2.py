@@ -45,7 +45,8 @@ from homegraph import cli                                        # noqa: E402
 from homegraph.corpus import Classifier                          # noqa: E402
 from homegraph.models.m3_build import (BuildReport,              # noqa: E402
                                        backlinks, broken_links,
-                                       build, neighbours)
+                                       build, isolated_notes,
+                                       neighbours)
 from homegraph.models.m3_markdown import MarkdownExtractor       # noqa: E402
 from homegraph.search import hybrid_search                       # noqa: E402
 from homegraph.store import Store                                # noqa: E402
@@ -516,6 +517,146 @@ def t_broken_are_nodes(db, spec):
               % (len(spec["artefacts"]), len(leaked), sorted(leaked)[:3]))
 
 
+def t_isolated(db, spec):
+    """Notes nothing links to and that link nowhere -- CP-G.
+
+    Two ways to be wrong look identical from the outside: naming a note that
+    does link somewhere, and missing one that links nowhere. The gold rows
+    catch the first, a second method computed from the other end catches the
+    second. Running the same SQL twice would catch neither.
+
+    The oracle's outbound half is deliberately WIDER than the claim: it counts
+    any file-to-file edge, whatever the relation. Today those are exactly the
+    three in LINKING_RELS, so the two agree. Add a fourth file-to-file relation
+    and this check goes red -- which is the point. Somebody then has to decide
+    whether the new relation connects two notes, instead of the question being
+    answered by whichever file was edited last.
+    """
+    with Store(db) as s:
+        try:
+            found, total = isolated_notes(s)
+        except Exception as exc:                                # noqa: BLE001
+            found, total = ["raised:%s" % type(exc).__name__], 0
+        isolated = set(found)
+        files = {r["node_key"] for r in
+                 s.db.execute("SELECT node_key FROM nodes WHERE kind='file'")}
+        check("isolated set is bounded by the corpus",
+              0 < total == len(files) and len(isolated) <= total,
+              "%d of %d file node(s)" % (len(isolated), total))
+
+        # Both ends of a gold LINK row, not just the source: the query reads
+        # the edge table in both directions, so checking one end leaves the
+        # other direction unasserted. The row names its target by wikilink
+        # name, so the target is resolved through the WIKILINKS_TO edges out
+        # of src, restricted to file nodes -- which drops the `wikilink:`
+        # stubs, broken by definition and NOT to be excused from the list.
+        #
+        # `neighbours(s, src, depth=1)` is right there and would be three
+        # lines shorter. It takes every outbound relation, so a same-stem
+        # file reached by LINKS_TO or EMBEDS would satisfy this check without
+        # the wikilink the gold row asserts. Equivalent on today's fixture,
+        # weaker as a rule, and the shorter form is not worth that.
+        sources, targets = set(), set()
+        for kind, src, target in spec["gold"]:
+            if kind != "LINK":
+                continue
+            sources.add(src)
+            targets |= {r["node_key"] for r in s.db.execute(
+                "SELECT d.node_key FROM edges e "
+                "JOIN nodes sN ON sN.id=e.src JOIN nodes d ON d.id=e.dst "
+                "WHERE sN.node_key=? AND e.rel='WIKILINKS_TO' "
+                "AND d.kind='file'", (src,))
+                if os.path.splitext(os.path.basename(r["node_key"]))[0]
+                == target}
+        # `sources and targets`, not `endpoints`: the sources are added
+        # unconditionally, so one non-empty set says nothing about the other.
+        # Delete the resolution above and a check guarded on the union still
+        # passes with the target half gone -- codex found exactly that.
+        wrong = sorted((sources | targets) & isolated)
+        check("no gold LINK endpoint is called isolated",
+              bool(sources) and bool(targets) and not wrong,
+              "%d source(s) + %d resolved target(s) from %d gold row(s), "
+              "%d wrongly isolated %s"
+              % (len(sources), len(targets),
+                 sum(1 for k, _, _ in spec["gold"] if k == "LINK"),
+                 len(wrong), [os.path.basename(p) for p in wrong[:3]]))
+
+        # The other end: reachability recomputed per file through backlinks()
+        # and neighbours(), which read the edge table by a different query.
+        by_hand = set()
+        for key in files:
+            out = {t for _, t in neighbours(s, key, depth=1)} & (files - {key})
+            if out:
+                continue
+            inbound = set()
+            # Spelled out, not imported from the module under test. Sharing
+            # the constant would let a wrong relation set be wrong in the
+            # oracle too, and the two would agree all the way to green.
+            for rel in ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH"):
+                inbound |= set(backlinks(s, key, rel=rel)[0])
+            if not (inbound & (files - {key})):
+                by_hand.add(key)
+        check("second method agrees on which notes are isolated",
+              by_hand == isolated,
+              "%d by SQL, %d by traversal, %d disagree %s"
+              % (len(isolated), len(by_hand), len(by_hand ^ isolated),
+                 [os.path.basename(p) for p in sorted(by_hand ^ isolated)[:3]]))
+
+        # A corpus where every note is isolated, or none is, would pass both
+        # checks above while telling the reader nothing. The fixture plants
+        # both kinds on purpose.
+        check("the fixture contains both kinds",
+              0 < len(isolated) < total,
+              "%d isolated, %d connected" % (len(isolated), total - len(isolated)))
+
+
+def t_isolated_rels(tmp):
+    """Which relation counts as a connection -- one hand-built known answer.
+
+    The synthetic corpus contains no `LINKS_TO` and no `MENTIONS_PATH` edge,
+    so narrowing `LINKING_RELS` to wikilinks alone passes every check against
+    it. That mutation survived until this store existed. Four files, four
+    relations, and the answer written next to each.
+    """
+    db = os.path.join(tmp, "rels.db")
+    with Store(db, model="m3") as s:
+        for key in ("/n/a.md", "/n/b.md", "/n/c.md", "/n/d.md", "/n/e.md",
+                    "/n/f.md", "/n/g.md", "/n/h.md", "/n/i.md"):
+            s.upsert_node(key, kind="file", subtype="note", path=key)
+        s.upsert_node("tag:x", kind="tag", subtype="tag")
+        s.upsert_node("wikilink:missing", kind="wikilink", subtype="broken")
+        s.upsert_edge("/n/a.md", "/n/b.md", "LINKS_TO", method="exact")
+        s.upsert_edge("/n/c.md", "tag:x", "TAGGED", method="exact")
+        s.upsert_edge("/n/d.md", "/n/e.md", "MENTIONS_PATH", method="mention")
+        s.upsert_edge("/n/f.md", "wikilink:missing", "WIKILINKS_TO",
+                      method="exact")
+        # A note whose own title is a wikilink in its own text. Real: the
+        # corpus has notes that name themselves. Without the self-exclusion
+        # the row joins to itself and the note reads as connected.
+        s.upsert_edge("/n/g.md", "/n/g.md", "WIKILINKS_TO", method="exact")
+        # A file-to-file relation that is NOT in LINKING_RELS. Without it the
+        # gold set contains no case where the relation filter is what decides
+        # the answer, so a query that counted every file-to-file edge passed
+        # -- codex found that hole in review. `EMBEDS` is the real one: the
+        # builder writes it for `![](other.md)` once the target is a node.
+        # Zero such edges exist in the measured corpus (real-m3.db, 2026-07-27:
+        # 556 WIKILINKS_TO, 387 LINKS_TO, 48 MENTIONS_PATH, 0 EMBEDS), so 315
+        # is the same number either way and NOTHING out there would catch the
+        # rule changing. That is the argument for pinning it here.
+        s.upsert_edge("/n/h.md", "/n/i.md", "EMBEDS", method="exact")
+        found, total = isolated_notes(s)
+
+    # a/b are linked by a markdown link, d/e by a path mention: connected.
+    # c carries a tag, f links into the void, g links only to itself, h/i are
+    # joined by an embed alone: all five alone, by the rule in LINKING_RELS'
+    # comment -- sharing a tag is not linking to each other, neither is naming
+    # yourself, and inlining a file is not following a link to it.
+    check("relation filter matches the known answer",
+          set(found) == {"/n/c.md", "/n/f.md", "/n/g.md",
+                         "/n/h.md", "/n/i.md"} and total == 9,
+          "isolated=%s total=%d" % (sorted(found), total))
+
+
 def main():
     (classified, paths), spec = corpus()
     print("corpus: %s  (%d markdown files classified, %d on disk)\n"
@@ -530,6 +671,8 @@ def main():
         t_subtype_gate(tmp)
         t_cycle(db, spec)
         t_broken_are_nodes(db, spec)
+        t_isolated(db, spec)
+        t_isolated_rels(tmp)
         print("\nbuild report: %s" % report.summary())
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

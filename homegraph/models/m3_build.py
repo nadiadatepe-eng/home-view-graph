@@ -293,6 +293,42 @@ def broken_links(store):
         "ORDER BY title")]
 
 
+#: Relations that count as one note reaching another. This list states the
+#: rule; `m.kind = 'file'` below is what enforces it -- `TAGGED` is absent
+#: here, but excluded there. Add a file-to-file relation and this list is
+#: where the decision has to be made; the kind filter will not make it.
+LINKING_RELS = ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH")
+
+
+def isolated_notes(store):
+    """File nodes with no link to or from another file node.
+
+    A note whose every wikilink points at a target that does not exist is the
+    case this reports, so an edge into a `broken` stub is not a connection --
+    `broken_links` already names those from the other end. The two together
+    are the whole gap: links that go nowhere, and notes nothing goes to.
+
+    Returns (paths, total) so the caller can print the share. 315 isolated
+    notes is a different corpus at 602 files than at 6 000, and the count on
+    its own cannot tell you which one you are looking at.
+    """
+    # `path` is nullable in the schema. For M3 file nodes the key IS the path,
+    # so the fallback is not a guess -- but printing `None` for a row that has
+    # no path would name no file at all, and a report you cannot act on reads
+    # as damage you cannot find.
+    paths = [r["path"] for r in store.db.execute(
+        "SELECT COALESCE(n.path, n.node_key) path FROM nodes n "
+        "WHERE n.kind = 'file' AND NOT EXISTS ("
+        "  SELECT 1 FROM edges e JOIN nodes m"
+        "    ON m.id = CASE WHEN e.src = n.id THEN e.dst ELSE e.src END"
+        "  WHERE (e.src = n.id OR e.dst = n.id) AND e.rel IN (%s)"
+        "    AND m.kind = 'file' AND m.id <> n.id) "
+        "ORDER BY n.path" % ",".join("?" * len(LINKING_RELS)), LINKING_RELS)]
+    total = store.db.execute(
+        "SELECT COUNT(*) c FROM nodes WHERE kind = 'file'").fetchone()["c"]
+    return paths, total
+
+
 def neighbours(store, node_key, seen=None, depth=2):
     """Breadth-limited traversal that survives cycles.
 

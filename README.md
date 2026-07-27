@@ -707,6 +707,13 @@ historical one.
 - Two of its **bugs, taken as design constraints**: a silently unbuilt vector
   index (issue #711) and a test suite that wrote into the home directory
   (#712). PR #710 was sent back upstream.
+- **`get_knowledge_gaps`**, which became `md gaps` (CP-G, 2026-07-27). The
+  idea is that a graph should be able to name what it does *not* connect, not
+  only what it does. Reimplemented against M3's edge table; the number it
+  produced -- 315 of 602 markdown files (52.3%) with no link to or from
+  another -- is the only measured argument for borrowing it, and it is the
+  reason this one was taken while four other candidates from the same
+  comparison were not.
 
 ### `Graphify`
 

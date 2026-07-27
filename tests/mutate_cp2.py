@@ -205,6 +205,74 @@ MUTATIONS = [
      "            if key in seen:\n                continue\n            seen.add(key)",
      "            seen.add(key)  # mutated: revisits nodes, cycles re-expand",
      "traversal terminates through the cycle"),
+
+    # -- CP-G: which edge counts as one note reaching another --------------
+    #
+    # Every one of these four is a decision the query makes silently. The
+    # count comes out plausible under all of them -- 52.3% is not a number
+    # anyone can eyeball -- so the only thing standing between a wrong rule
+    # and a published figure is a gate that names the answer in advance.
+    # Adding "TAGGED" to LINKING_RELS was the fourth mutation here and it
+    # SURVIVED, green. Not a hole in the gate: `m.kind = 'file'` already
+    # excludes every tag node, so the mutation is equivalent -- it cannot
+    # change an answer. Removed rather than kept as a permanent red mark,
+    # and the finding written into the constant's comment instead: the
+    # relation list documents the rule, the kind filter enforces it. A
+    # mutation nothing can observe is not evidence about a check.
+
+    # Only outbound edges count. A note nothing links FROM but that several
+    # notes link TO reads as isolated -- over-reporting, which sends a reader
+    # to fix a note that is fine. The endpoint half of the gold check exists
+    # for this one: with only the sources checked it survived.
+    # The gold check's own guard, mutated. Resolution yields nothing, the
+    # target half of the check is silently empty, and a gate that no longer
+    # looks at targets must still say no. This one mutates the TEST, not the
+    # code: `bool(targets)` is the only thing standing between "checked both
+    # ends" and "checked one and reported both".
+    ("gold LINK targets stop resolving",
+     "tests/test_cp2.py",
+     '                "WHERE sN.node_key=? AND e.rel=\'WIKILINKS_TO\' "\n'
+     '                "AND d.kind=\'file\'", (src,))',
+     '                "WHERE sN.node_key=? AND e.rel=\'NOSUCHREL\' "\n'
+     '                "AND d.kind=\'file\'", (src,))  # mutated',
+     "no gold LINK endpoint is called isolated"),
+
+    ("being linked to does not count, only linking out",
+     "homegraph/models/m3_build.py",
+     '        "  WHERE (e.src = n.id OR e.dst = n.id) AND e.rel IN (%s)"',
+     '        "  WHERE e.src = n.id AND e.rel IN (%s)"  # mutated: one way',
+     "no gold LINK endpoint is called isolated"),
+
+    ("every file-to-file edge counts, whatever the relation",
+     "homegraph/models/m3_build.py",
+     'LINKING_RELS = ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH")',
+     'LINKING_RELS = ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH", "EMBEDS")'
+     "  # mutated: an embed connects",
+     "relation filter matches the known answer"),
+
+    # The mutation t_isolated_rels was written for. The real corpus has no
+    # LINKS_TO and no MENTIONS_PATH edge, so this one is invisible to every
+    # check that runs against it -- it needs the hand-built store.
+    ("only wikilinks count, markdown links and path mentions do not",
+     "homegraph/models/m3_build.py",
+     'LINKING_RELS = ("WIKILINKS_TO", "LINKS_TO", "MENTIONS_PATH")',
+     'LINKING_RELS = ("WIKILINKS_TO",)  # mutated: two relations ignored',
+     "relation filter matches the known answer"),
+
+    # Dropping the kind filter lets an edge into a `broken` wikilink stub
+    # read as a connection -- which is exactly the note this command exists
+    # to find, reported as healthy.
+    ("a link into the void counts as a connection",
+     "homegraph/models/m3_build.py",
+     '        "    AND m.kind = \'file\' AND m.id <> n.id) "',
+     '        "    AND m.id <> n.id) "  # mutated: broken stubs connect',
+     "relation filter matches the known answer"),
+
+    ("a note that names itself counts as connected",
+     "homegraph/models/m3_build.py",
+     '        "    AND m.kind = \'file\' AND m.id <> n.id) "',
+     '        "    AND m.kind = \'file\') "  # mutated: self-link connects',
+     "relation filter matches the known answer"),
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
