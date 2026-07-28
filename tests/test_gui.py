@@ -681,6 +681,266 @@ def t_graph_route_preserves_missing_and_truncated(m3_db):
           "missing=%r truncated=%r" % (body.get("missing"), body.get("truncated")))
 
 
+def t_positions_are_deterministic(m3_db):
+    """The same corpus draws the same picture twice.
+
+    The reason the layout is computed in Python at all: `visualize._layout` is
+    seeded (20260722) and reads no clock, so this week's screenshot can be laid
+    beside last week's. A layout re-run in the browser would lose that, and so
+    would one that reached for `random.random()` here -- which is exactly what
+    would turn this check red. Compared as an ordered list of pairs rather than
+    as a set, so a reordering of the nodes fails too: the page indexes edges by
+    position in `nodes`, and a stable set of coordinates attached to shuffled
+    nodes draws different lines.
+    """
+    first = [(n["key"], n["x"], n["y"]) for n in gui.graph_payload({"m3": m3_db})["nodes"]]
+    second = [(n["key"], n["x"], n["y"]) for n in gui.graph_payload({"m3": m3_db})["nodes"]]
+    spread = len({(x, y) for _, x, y in first})
+    check("two builds of the same corpus place every node identically",
+          first == second and spread == len(first),
+          "%d node(s), %d distinct position(s)" % (len(first), spread))
+
+
+def t_isolated_nodes_are_banded_not_simulated(m3_db):
+    """An isolated node has no information in its position, so it does not get
+    one from the simulation.
+
+    The force layout runs over the connected subgraph only; the rest land in a
+    sorted band beneath it. The check is positional and can go red both ways:
+    an implementation that fed every node to `_layout` would scatter
+    `isolated.md` among the connected pair rather than below it, and one that
+    banded the connected nodes too would collapse the pair onto the same row.
+    The synthetic corpus is built for this -- `linked-a.md` WIKILINKS_TO
+    `linked-b.md`, and `isolated.md` has no file-to-file edge at all.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    isolated = set(payload["isolated"])
+    band_y = [n["y"] for n in payload["nodes"] if n["key"] in isolated]
+    linked_y = [n["y"] for n in payload["nodes"] if n["key"] not in isolated]
+    if not band_y or not linked_y:
+        check("the band sits below every connected node", False,
+              "band=%d linked=%d -- fixture has no contrast to measure"
+              % (len(band_y), len(linked_y)))
+        return
+    check("the band sits below every connected node",
+          min(band_y) > max(linked_y),
+          "band from %.1f, cloud ends at %.1f" % (min(band_y), max(linked_y)))
+
+
+def t_band_states_its_count_and_share(m3_db):
+    """The caption is a measurement, and it is measured in Python.
+
+    `isolated_count` and `isolated_share` travel in the payload so the browser
+    never divides two numbers and calls the result a fact. One of three files
+    is isolated here, so the share is 33.3 -- neither 0 nor 100, which a
+    fixture with nothing isolated (or nothing linked) could not distinguish
+    from a field that was never filled in.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    expected = round(100.0 * len(payload["isolated"]) / len(payload["nodes"]), 1)
+    check("the payload carries the band's own count and share",
+          payload["isolated_count"] == len(payload["isolated"])
+          and payload["isolated_share"] == expected
+          and 0.0 < payload["isolated_share"] < 100.0,
+          "%d of %d, %.1f %%" % (payload["isolated_count"],
+                                 len(payload["nodes"]),
+                                 payload["isolated_share"]))
+
+
+def t_band_matches_the_real_corpus(real_db):
+    """315 of 602, 52.3 % -- the figure the design quotes, from the payload.
+
+    Same SKIPPED pattern as the other real-corpus checks: measured on the real
+    store, so it names itself rather than vanishing when the store is absent.
+    """
+    if real_db is None:
+        check("the real corpus's band is 315 of 602 (52.3 %)", True,
+              "SKIPPED -- ~/.homegraph/real-m3.db not present on this machine")
+        return
+    payload = gui.graph_payload({"m3": real_db})
+    check("the real corpus's band is 315 of 602 (52.3 %)",
+          payload["isolated_count"] == 315 and len(payload["nodes"]) == 602
+          and payload["isolated_share"] == 52.3,
+          "%d of %d, %s %%" % (payload["isolated_count"],
+                               len(payload["nodes"]),
+                               payload["isolated_share"]))
+
+
+def t_page_is_shipped_and_self_contained(m3_db, mesh_db):
+    """No CDN, no external fetch. The page must work with the network down."""
+    import re
+    import urllib.request
+    page = os.path.join(os.path.dirname(gui.__file__), "assets", "gui.html")
+    check("assets/gui.html ships with the package", os.path.exists(page),
+          os.path.basename(page))
+    if not os.path.exists(page):
+        return
+    text = open(page, encoding="utf-8").read()
+    external = re.findall(r"""(?:src|href)\s*=\s*["']https?://[^"']+""", text)
+    check("the page references no external host",
+          not external, "%d external reference(s)" % len(external))
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/" % port, timeout=10) as resp:
+            served = resp.read().decode("utf-8")
+    check("GET / serves that same page", served == text,
+          "%d byte(s) served, %d on disk" % (len(served), len(text)))
+
+
+# The one piece of the page that is a decision tree rather than a drawing:
+# the schematic has TWO conditions, and with one satisfied it must name which
+# of them is missing instead of going blank. Exercised by running the page's
+# own `<script>` under `node` against a fake payload and a fake DOM -- nothing
+# is installed, nothing is imported into the page, and the check degrades to a
+# named SKIPPED line on a machine without `node`, the same way the real-corpus
+# checks do. `boot()` is stripped so the harness drives the functions itself
+# rather than fetching.
+_PAGE_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");  // argv[1] is this file
+const mk = () => ({innerHTML: "", textContent: "", className: "", value: "",
+  hidden: false, style: {}, dataset: {}, closest: () => null,
+  addEventListener() {}, getContext: () => new Proxy({}, {get: () => () => {}}),
+  getBoundingClientRect: () => ({width: 600, height: 300, left: 0, top: 0})});
+const els = {};
+global.document = {getElementById: (id) => els[id] || (els[id] = mk()),
+  createElement: () => ({textContent: "", get innerHTML() {
+    return String(this.textContent).replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;").replace(/>/g, "&gt;"); }})};
+global.window = {devicePixelRatio: 1, addEventListener() {}};
+const payload = {
+  nodes: [{key: "m3::/a.md", title: "A", model: "m3", path: "/a.md", x: 0, y: 0},
+          {key: "m3::/b.md", title: "B", model: "m3", path: "/b.md", x: 10, y: 5},
+          {key: "m3::/c.md", title: "C", model: "m3", path: "/c.md", x: 0, y: 200}],
+  edges: [[0, 1, "WIKILINKS_TO", null, null]], isolated: ["m3::/c.md"],
+  isolated_count: 1, isolated_share: 33.3, models: ["m3"], counts: {m3: 3},
+  missing: ["m9"], truncated: ["m3"]};
+global.fetch = async () => ({json: async () => payload, status: 200});
+const api = new Function(src.replace(/\nboot\(\);\s*$/, "\n") +
+  "\nreturn {boot, renderSchematic, state};")();
+const hits = (n) => ({status: "complete", warnings: [], models_missing: [],
+  hits: [{model: "m3", node_key: "/a.md", title: "A", path: "/a.md"},
+         {model: "m3", node_key: "/b.md", title: "B", path: "/b.md"}].slice(0, n)});
+const v2 = () => document.getElementById("v2").innerHTML;
+api.boot().then(() => {
+  const out = {status: document.getElementById("status").textContent};
+  api.renderSchematic();                       out.neither = v2();
+  api.state.search = hits(2);
+  api.renderSchematic();                       out.search_only = v2();
+  api.state.search = null; api.state.selection = "m3::/a.md";
+  api.renderSchematic();                       out.selection_only = v2();
+  api.state.search = hits(2);
+  api.renderSchematic({src: "m3::/a.md", max_depth: 4, cap: 20, truncated: true,
+    bridges: [{dst: "m3::/b.md", path: ["m3::/a.md", "m3::/b.md"]}],
+    unreachable: ["m3::/gone.md"]});
+  out.both = v2();
+  console.log(JSON.stringify(out));
+}).catch((e) => { console.error(String(e && e.stack || e)); process.exit(1); });
+"""
+
+
+def t_page_names_which_condition_is_missing():
+    """The schematic's two conditions, driven through the page's own script.
+
+    A search with hits AND a selected node. With one of the two satisfied the
+    pane must say which one is absent -- "nothing to draw" and "you have done
+    half of it" are different states, and a blank pane says neither. Also
+    proves an `unreachable` destination is drawn rather than omitted, and that
+    a truncated bridge set says so.
+
+    Every assertion here can go red: three distinct texts are required for the
+    three incomplete states, so a page that fell back to one generic message
+    fails, and one that drew only the bridges it found fails on `ingen sti`.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    page = os.path.join(os.path.dirname(gui.__file__), "assets", "gui.html")
+    if node is None or not os.path.exists(page):
+        check("the schematic names which of its two conditions is missing",
+              True, "SKIPPED -- no `node` on this machine to run the page's "
+                    "own script under")
+        return
+    import re
+    script = re.search(r"<script>(.*)</script>",
+                       open(page, encoding="utf-8").read(), re.S).group(1)
+    with tempfile.TemporaryDirectory(prefix="gui-page-") as tmp:
+        js = os.path.join(tmp, "page.js")
+        harness = os.path.join(tmp, "harness.js")
+        with open(js, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        with open(harness, "w", encoding="utf-8") as fh:
+            fh.write(_PAGE_HARNESS)
+        proc = subprocess.run([node, harness, js], capture_output=True,
+                              text=True, timeout=60)
+    if proc.returncode != 0:
+        check("the schematic names which of its two conditions is missing",
+              False, "the page's script threw: %s"
+                     % (proc.stderr.strip().splitlines() or [""])[0][:90])
+        return
+    out = json.loads(proc.stdout)
+    states = [out["neither"], out["search_only"], out["selection_only"]]
+    check("the schematic names which of its two conditions is missing",
+          len(set(states)) == 3
+          and "mangler: en valgt node" in out["search_only"]
+          and "mangler: et søk" in out["selection_only"]
+          and "ingen sti" in out["both"] and "avkortet" in out["both"]
+          and "delvis" in out["status"],
+          "; ".join(re.sub(r"<[^>]+>", "", s)[:34] for s in states))
+
+
+def t_gui_subcommand_exists_without_a_host_flag(m3_db):
+    """`homegraph gui` is reachable from the CLI, and there is no flag that
+    could publish it.
+
+    `t_binds_loopback_only` proves `serve()` takes no host argument; this
+    proves the CLI grew no `--host` that would only fail deeper down. Driven
+    through `cli.main`, the real parser -- it is built inline, so there is no
+    parser object to borrow.
+
+    `gui.serve` is replaced by a recorder for the duration (restored in
+    `finally`, so nothing else in this file is affected) for a reason found
+    the hard way: an earlier version of this check ran the `--host` call
+    against the real `serve`, and under the mutation it was written to catch
+    -- a `--host` added to the subparser -- argparse accepted the flag,
+    `cmd_gui` ran, and the check hung in `serve_forever` instead of going red.
+    A check that hangs on the defect it targets has not failed, it has
+    stopped. With the recorder in place both calls return: the first records
+    the arguments `cmd_gui` forwarded, the second exits 2 at the parser.
+    """
+    import contextlib
+    import io
+
+    from homegraph import cli, gui as gui_mod
+
+    seen = {}
+
+    def _record(model_paths, mesh_db=None, port=0, open_browser=True):
+        seen.update(model_paths=model_paths, mesh_db=mesh_db, port=port,
+                    open_browser=open_browser)
+
+    original, gui_mod.serve = gui_mod.serve, _record
+    try:
+        rc = cli.main(["gui", "--model", "m3=%s" % m3_db, "--no-browser"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                cli.main(["gui", "--model", "m3=%s" % m3_db,
+                          "--host", "127.0.0.1"])
+                rejected = False
+            except SystemExit as exc:
+                rejected = exc.code == 2
+    finally:
+        gui_mod.serve = original
+    check("the gui subcommand forwards its arguments and refuses --host",
+          rc == 0 and rejected and seen.get("model_paths") == {"m3": m3_db}
+          and seen.get("mesh_db") is None and seen.get("port") == 0
+          and seen.get("open_browser") is False,
+          "rc=%r forwarded=%r --host rejected=%s" % (rc, seen, rejected))
+
+
 def t_isolated_matches_md_gaps(m3_db):
     """The cross-check against the real corpus. 315 of 602, if it is here.
 
@@ -756,6 +1016,7 @@ def t_path_route_answers_over_the_real_corpus(real_m3_db, real_mesh_db):
 def main():
     t_file_kinds_are_the_measured_four()
     t_binds_loopback_only()
+    t_page_names_which_condition_is_missing()
 
     with tempfile.TemporaryDirectory(prefix="gui-cp-") as tmp:
         synthetic_db = _build_synthetic_m3(tmp)
@@ -763,6 +1024,10 @@ def main():
         t_capped_read_names_the_model_it_capped(synthetic_db)
         t_payload_drops_non_file_kinds(synthetic_db)
         t_isolated_computation(synthetic_db)
+        t_positions_are_deterministic(synthetic_db)
+        t_isolated_nodes_are_banded_not_simulated(synthetic_db)
+        t_band_states_its_count_and_share(synthetic_db)
+        t_gui_subcommand_exists_without_a_host_flag(synthetic_db)
         t_graph_route_serves_the_payload(synthetic_db)
         t_graph_route_preserves_missing_and_truncated(synthetic_db)
         t_search_route_returns_hits(synthetic_db)
@@ -785,9 +1050,11 @@ def main():
         t_path_cap_is_reported(path_db, mesh_db)
         t_neighbors_route_returns_edges(path_db, mesh_db)
         t_neighbors_route_without_mesh_answers_rather_than_resets(path_db)
+        t_page_is_shipped_and_self_contained(path_db, mesh_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())
+    t_band_matches_the_real_corpus(real_m3())
     t_path_route_answers_over_the_real_corpus(real_m3(), real_mesh())
 
     failed = [n for n, ok, _ in results if not ok]

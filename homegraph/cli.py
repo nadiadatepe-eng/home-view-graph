@@ -392,6 +392,24 @@ def cmd_visualize(args):
     return 0
 
 
+def cmd_gui(args):
+    """Serve the browser interface in the foreground until Ctrl-C.
+
+    `_models_from` rather than a second `spec.partition("=")` here, same as
+    every neighbouring command: there is one model-spec parser, and it refuses
+    `--model m3` without a path instead of registering the model against `""`.
+
+    There is deliberately no `--host`: `serve()` takes no such argument, and
+    this publishes a whole home directory's corpus. Reach it from elsewhere
+    with `ssh -L`.
+    """
+    from .gui import serve
+
+    serve(_models_from(args.model), mesh_db=args.mesh_db,
+          port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_mcp(args):
     # Den eneste inngangen. Fram til 2026-07-26 fantes `python3 -m homegraph.mcp_server`
     # ved siden av, med sin egen argparse -- og denne hadde sin egen kopi av
@@ -1470,6 +1488,18 @@ def main(argv=None):
                         "title search and click-a-node-for-similar. Only the "
                         "on-screen titles' words are inlined (well under 1 MB).")
     p.set_defaults(func=cmd_visualize)
+
+    p = sub.add_parser("gui", help="explore the corpus in a browser; "
+                                   "foreground, stops on Ctrl-C")
+    p.add_argument("--model", action="append", required=True,
+                   metavar="NAME=PATH")
+    p.add_argument("--mesh-db", dest="mesh_db", default=None,
+                   help="also load the code inventory and cross-model edges")
+    p.add_argument("--port", type=int, default=0,
+                   help="0 picks a free one and prints it")
+    p.add_argument("--no-browser", dest="no_browser", action="store_true",
+                   help="print the URL instead of opening it")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("mcp", help="run the MCP server on stdio")
     p.add_argument("--model", action="append", required=True,

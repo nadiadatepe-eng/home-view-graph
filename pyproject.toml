@@ -27,7 +27,7 @@ build-backend = "setuptools.build_meta"
 include = ["homegraph*"]
 
 [tool.setuptools.package-data]
-homegraph = ["rules/*.toml"]
+homegraph = ["rules/*.toml", "assets/*.html"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<title>homegraph</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, sans-serif;
+               color: #222; background: #fff; }
+  #app { display: grid; height: 100%;
+         grid-template-columns: 20% 60% 20%;
+         grid-template-areas: "h1 mid h3"; }
+  #h1 { grid-area: h1; overflow: auto; border-right: 1px solid #ccc;
+        padding: 8px; box-sizing: border-box; }
+  #mid { grid-area: mid; display: grid; grid-template-rows: 50% 50%; }
+  #h3 { grid-area: h3; overflow: auto; border-left: 1px solid #ccc;
+        padding: 8px; box-sizing: border-box; }
+  #v1, #v2 { position: relative; overflow: hidden; }
+  #v2 { border-top: 1px solid #ccc; }
+  .waiting { display: grid; place-items: center; height: 100%; color: #888;
+             text-align: center; padding: 0 16px; }
+  .partial { background: #fff3cd; padding: 4px 8px; }
+  #q { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+  #mode, #model { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+  #model[hidden] { display: none; }
+  #summary { color: #555; }
+  #summary dt { font-weight: 600; margin-top: 6px; }
+  #summary dd { margin: 0; }
+  #graph { display: block; cursor: pointer; }
+  #hits { margin: 6px 0 0 0; padding-left: 20px; }
+  #hits li { margin-bottom: 4px; cursor: pointer; word-break: break-all; }
+  #hits li.sel { background: #e8f0fe; font-weight: 600; }
+  #hits li.off { color: #999; }
+  #rows { border-collapse: collapse; width: 100%; }
+  #rows th, #rows td { border: 1px solid #ddd; padding: 2px 4px;
+                       text-align: left; word-break: break-all; }
+  #schematic { width: 100%; height: 100%; }
+  .lead { color: #555; margin: 0 0 4px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="h1">
+    <input id="q" placeholder="søk">
+    <select id="mode"><option value="search">hybrid</option>
+                      <option value="query">lukket språk</option></select>
+    <select id="model" hidden></select>
+    <div id="summary"></div>
+  </div>
+  <div id="mid">
+    <div id="v1"><canvas id="graph"></canvas></div>
+    <div id="v2"><div class="waiting">kjør et søk først</div></div>
+  </div>
+  <div id="h3"><div id="status"></div><ol id="hits"></ol></div>
+</div>
+<script>
+const state = { filter: null, search: null, selection: null };
+// The page draws. Every decision -- which nodes are files, which are isolated,
+// which path won, what was truncated -- arrived already made from Python.
+//
+// Including the positions. `payload.nodes[i].x/y` come out of
+// `visualize._layout`, seeded, so the same corpus draws the same picture on
+// every load; the isolated band's coordinates, count and share are computed
+// there too. Nothing below runs a simulation, and nothing below re-lays-out on
+// search or on click: a highlight moves colour, never a node.
+
+let payload = null;      // the /graph answer, fetched once
+let view = null;         // payload space -> canvas space, computed once
+let bandTop = null;      // y of the first band row, in payload space
+let graphKeys = null;    // every key that has a dot to colour
+let hitKeys = new Set(); // node keys the current search matched
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("graph");
+const ctx = canvas.getContext("2d");
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s === null || s === undefined ? "" : String(s);
+  return d.innerHTML;
+}
+
+// -- once, on load ---------------------------------------------------------
+
+async function boot() {
+  const resp = await fetch("/graph");
+  payload = await resp.json();
+  graphKeys = new Set(payload.nodes.map((n) => n.key));
+  renderStatus();
+  renderSummary();
+  renderModels();
+  fit();
+  draw();
+}
+
+function renderStatus() {
+  // `missing` and `truncated` are the payload's account of its own
+  // completeness. A capped or partial read that looked like a whole one is the
+  // failure this whole package is built against, so it is stated before
+  // anything is drawn.
+  const parts = [];
+  if (payload.missing.length)
+    parts.push("ingen lager for " + payload.missing.join(", "));
+  if (payload.truncated.length)
+    parts.push("avkortet lesing av " + payload.truncated.join(", "));
+  const el = $("status");
+  el.className = parts.length ? "partial" : "";
+  el.textContent = parts.length ? "delvis: " + parts.join("; ") : "";
+}
+
+function renderSummary() {
+  const per = Object.keys(payload.counts).sort()
+    .map((m) => "<dt>" + esc(m) + "</dt><dd>" + payload.counts[m] + " filer</dd>")
+    .join("");
+  $("summary").innerHTML =
+    "<dl><dt>noder</dt><dd>" + payload.nodes.length + "</dd>" +
+    "<dt>kanter</dt><dd>" + payload.edges.length + "</dd>" +
+    "<dt>uten kant</dt><dd>" + payload.isolated_count + " av " +
+    payload.nodes.length + " (" + payload.isolated_share + " %)</dd>" +
+    per + "</dl>";
+}
+
+function renderModels() {
+  // `payload.models` is Python's ordering, so which model `/query` runs
+  // against by default is not something this file picked.
+  $("model").innerHTML = payload.models
+    .map((m) => "<option value='" + esc(m) + "'>" + esc(m) + "</option>").join("");
+  syncMode();
+}
+
+function syncMode() {
+  $("model").hidden = $("mode").value !== "query";
+}
+
+// -- the graph pane --------------------------------------------------------
+
+function fit() {
+  // The one transform, computed once from the positions Python sent. Resizing
+  // the window recomputes the scale, never the layout.
+  const rect = $("v1").getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  canvas.style.width = rect.width + "px";
+  canvas.style.height = rect.height + "px";
+
+  const xs = payload.nodes.map((n) => n.x);
+  const ys = payload.nodes.map((n) => n.y);
+  const x0 = xs.length ? Math.min.apply(null, xs) : 0;
+  const x1 = xs.length ? Math.max.apply(null, xs) : 1;
+  const y0 = ys.length ? Math.min.apply(null, ys) : 0;
+  const y1 = ys.length ? Math.max.apply(null, ys) : 1;
+  const pad = 24 * dpr;
+  const scale = Math.min((canvas.width - 2 * pad) / ((x1 - x0) || 1),
+                         (canvas.height - 2 * pad) / ((y1 - y0) || 1));
+  view = { scale: scale, dpr: dpr,
+           ox: pad - x0 * scale, oy: pad - y0 * scale };
+
+  // Where the band starts, read off the nodes Python placed there rather than
+  // guessed at: the isolated keys are known, so the lowest y among the
+  // connected ones is the boundary.
+  const iso = new Set(payload.isolated);
+  const linkedYs = payload.nodes.filter((n) => !iso.has(n.key)).map((n) => n.y);
+  bandTop = linkedYs.length ? Math.max.apply(null, linkedYs) : null;
+}
+
+const sx = (x) => x * view.scale + view.ox;
+const sy = (y) => y * view.scale + view.oy;
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const dpr = view.dpr;
+  const dim = state.search !== null;
+
+  ctx.lineWidth = dpr;
+  ctx.strokeStyle = dim ? "#eee" : "#cfd6de";
+  ctx.beginPath();
+  for (const e of payload.edges) {
+    const a = payload.nodes[e[0]], b = payload.nodes[e[1]];
+    ctx.moveTo(sx(a.x), sy(a.y));
+    ctx.lineTo(sx(b.x), sy(b.y));
+  }
+  ctx.stroke();
+
+  if (bandTop !== null && payload.isolated_count) {
+    const y = sy(bandTop + 70);         // half the gap Python left above them
+    ctx.save();
+    ctx.strokeStyle = "#ddd";
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = "#888";
+    ctx.font = (11 * dpr) + "px system-ui, sans-serif";
+    ctx.fillText("uten kant: " + payload.isolated_count + " av " +
+                 payload.nodes.length + " (" + payload.isolated_share + " %)",
+                 4 * dpr, y - 4 * dpr);
+  }
+
+  const r = 3 * dpr;
+  for (const n of payload.nodes) {
+    ctx.beginPath();
+    ctx.arc(sx(n.x), sy(n.y), n.key === state.selection ? r * 2 : r, 0, 6.2832);
+    ctx.fillStyle = n.key === state.selection ? "#1a73e8"
+                  : hitKeys.has(n.key) ? "#d64545"
+                  : dim ? "#dde3ea" : "#8899aa";
+    ctx.fill();
+  }
+}
+
+function nodeAt(ev) {
+  const rect = canvas.getBoundingClientRect();
+  const px = (ev.clientX - rect.left) * view.dpr;
+  const py = (ev.clientY - rect.top) * view.dpr;
+  let best = null, bestD = 10 * view.dpr;
+  for (const n of payload.nodes) {
+    const d = Math.hypot(sx(n.x) - px, sy(n.y) - py);
+    if (d <= bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+// -- searching -------------------------------------------------------------
+
+async function post(route, body) {
+  const resp = await fetch(route, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: resp.status, body: await resp.json() };
+}
+
+async function runSearch() {
+  const text = $("q").value.trim();
+  if (!text) return;
+  if ($("mode").value === "query") {
+    const out = await post("/query", { model: $("model").value, query: text });
+    renderRows(out.body);
+    return;
+  }
+  const out = await post("/search", { query: text, limit: 20 });
+  state.search = out.body;
+  state.selection = null;
+  // Hits are keyed `<model>::<node_key>` in the graph and handed back as a
+  // bare `node_key` plus a separate `model` (Mesh._resolve_key's docstring
+  // states the two forms); joining them is not a judgement about which hits
+  // count -- every hit is kept, matched or not.
+  hitKeys = new Set((state.search.hits || []).map((h) => h.model + "::" + h.node_key));
+  renderHits();
+  draw();
+  renderSchematic();
+}
+
+function renderHits() {
+  const hits = (state.search && state.search.hits) || [];
+  const warn = (state.search && state.search.warnings) || [];
+  const missing = (state.search && state.search.models_missing) || [];
+  const el = $("status");
+  const parts = [];
+  if (payload.missing.length)
+    parts.push("ingen lager for " + payload.missing.join(", "));
+  if (payload.truncated.length)
+    parts.push("avkortet lesing av " + payload.truncated.join(", "));
+  if (missing.length) parts.push("søket nådde ikke " + missing.join(", "));
+  for (const w of warn) parts.push(w);
+  el.className = parts.length ? "partial" : "";
+  el.textContent = (state.search ? state.search.status + ": " : "") +
+                   (parts.length ? parts.join("; ") : hits.length + " treff");
+
+  // Greyed when the hit has no dot in the graph above. Measured on the real
+  // corpus 2026-07-28: a 20-hit search returned 1 to 15 file-level hits, the
+  // rest being sections -- the graph is file-level by `FILE_KINDS`. Without
+  // the mark, a click that highlights nothing looks broken rather than like a
+  // hit on something the picture does not draw. This is a lookup in the key
+  // set Python sent, not a rule about which hits count: every hit is listed,
+  // and every one is still a valid `/path` destination.
+  $("hits").innerHTML = hits.map((h) => {
+    const key = h.model + "::" + h.node_key;
+    const cls = key === state.selection ? "sel" : graphKeys.has(key) ? "" : "off";
+    return "<li class='" + cls + "' data-key='" + esc(key) + "'>" +
+           esc(h.title || h.node_key) + "<br><small>" + esc(h.model) + " · " +
+           esc(h.path || h.node_key) +
+           (graphKeys.has(key) ? "" : " · ikke tegnet") + "</small></li>";
+  }).join("");
+}
+
+function renderRows(out) {
+  // The closed language answers with columns and rows, not with node keys, so
+  // there is nothing here to colour a graph node by. Drawn as the table it is
+  // rather than guessed into hits.
+  if (out.status === "error" || out.status === "refused") {
+    $("status").className = "partial";
+    $("status").textContent = out.status + ": " + (out.error || "");
+    $("hits").innerHTML = "";
+    return;
+  }
+  $("status").className = (out.warnings && out.warnings.length) ? "partial" : "";
+  $("status").textContent = out.status + ": " + out.rows.length + " rad(er)" +
+    ((out.warnings && out.warnings.length) ? " — " + out.warnings.join("; ") : "");
+  $("hits").innerHTML = "<table id='rows'><tr>" +
+    out.columns.map((c) => "<th>" + esc(c) + "</th>").join("") + "</tr>" +
+    out.rows.map((r) => "<tr>" + r.map((v) => "<td>" + esc(v) + "</td>").join("") +
+                        "</tr>").join("") + "</table>";
+}
+
+// -- the schematic ---------------------------------------------------------
+
+function renderSchematic(bridgeOut) {
+  const pane = $("v2");
+  // Two conditions, not one, and the pane names which of the two is missing
+  // rather than going blank: "nothing here" and "you have not done the second
+  // half yet" are different states.
+  const noSearch = !state.search || !(state.search.hits || []).length;
+  const noSel = !state.selection;
+  if (noSearch || noSel) {
+    const what = noSearch && noSel ? "kjør et søk, og velg så en node"
+               : noSearch ? "mangler: et søk med treff (en node er valgt)"
+               : "mangler: en valgt node (søket har treff)";
+    pane.innerHTML = "<div class='waiting'>" + esc(what) + "</div>";
+    return;
+  }
+  if (!bridgeOut) {
+    pane.innerHTML = "<div class='waiting'>henter broer …</div>";
+    return;
+  }
+  if (bridgeOut.error) {
+    pane.innerHTML = "<div class='waiting partial'>" + esc(bridgeOut.error) +
+                     "</div>";
+    return;
+  }
+
+  const rows = [];
+  for (const b of bridgeOut.bridges) rows.push({ path: b.path, dst: b.dst });
+  if (!bridgeOut.bridges.length && !bridgeOut.unreachable.length) {
+    pane.innerHTML = "<div class='waiting'>" +
+      esc("ingen andre treff å bygge bro til") + "</div>";
+    return;
+  }
+  // Every unreachable destination is drawn, as a detached node with no line
+  // into it. Omitting them would let four bridges out of five look complete,
+  // and "no path within depth N" is an answer.
+  for (const d of bridgeOut.unreachable) rows.push({ path: null, dst: d });
+
+  const H = 34, W = 150;
+  const width = Math.max(...rows.map((r) => (r.path ? r.path.length : 2))) * W + 40;
+  let svg = "";
+  rows.forEach((r, i) => {
+    const y = 20 + i * H;
+    if (r.path) {
+      r.path.forEach((k, j) => {
+        const x = 20 + j * W;
+        if (j) svg += "<line x1='" + (x - W + 6) + "' y1='" + y + "' x2='" +
+                      (x - 6) + "' y2='" + y + "' stroke='#8899aa'/>";
+        svg += "<circle cx='" + x + "' cy='" + y + "' r='5' fill='" +
+               (j === 0 ? "#1a73e8" : j === r.path.length - 1 ? "#d64545"
+                                    : "#8899aa") + "'/>" +
+               "<title>" + esc(k) + "</title>" +
+               "<text x='" + x + "' y='" + (y + 16) + "' font-size='9' " +
+               "text-anchor='middle'>" + esc(k.split("/").pop().slice(0, 22)) +
+               "</text>";
+      });
+    } else {
+      svg += "<circle cx='20' cy='" + y + "' r='5' fill='#1a73e8'/>" +
+             "<circle cx='" + (20 + W) + "' cy='" + y + "' r='5' " +
+             "fill='none' stroke='#d64545' stroke-dasharray='3 2'/>" +
+             "<text x='" + (20 + W) + "' y='" + (y + 16) + "' font-size='9' " +
+             "text-anchor='middle' fill='#a00'>" +
+             esc(r.dst.split("/").pop().slice(0, 22)) + " (ingen sti)</text>";
+    }
+  });
+
+  const lead = bridgeOut.bridges.length + " bro(er), " +
+    bridgeOut.unreachable.length + " uten sti innen dybde " +
+    bridgeOut.max_depth +
+    (bridgeOut.truncated ? " — avkortet ved " + bridgeOut.cap + " mål" : "");
+  pane.innerHTML = "<p class='lead" + (bridgeOut.truncated ? " partial" : "") +
+    "'>" + esc(lead) + "</p>" +
+    "<div style='overflow:auto;height:calc(100% - 24px)'>" +
+    "<svg id='schematic' viewBox='0 0 " + width + " " + (20 + rows.length * H) +
+    "' width='" + width + "' height='" + (20 + rows.length * H) + "'>" +
+    svg + "</svg></div>";
+}
+
+async function select(key) {
+  state.selection = key;
+  draw();
+  if (!state.search || !(state.search.hits || []).length) {
+    // A node clicked before any search: selection is real, the schematic's
+    // other condition is not, and the pane says which one is missing rather
+    // than this function inventing a destination list out of nothing.
+    renderSchematic();
+    return;
+  }
+  renderHits();
+  renderSchematic();                    // the "henter broer …" state
+  const dsts = [];
+  for (const h of (state.search.hits || [])) {
+    const k = h.model + "::" + h.node_key;
+    if (k !== key) dsts.push(k);
+  }
+  const out = await post("/path", { src: key, dsts: dsts });
+  if (state.selection !== key) return;  // a later click already won
+  renderSchematic(out.body);
+}
+
+// -- wiring ----------------------------------------------------------------
+
+$("q").addEventListener("keydown", (ev) => { if (ev.key === "Enter") runSearch(); });
+$("mode").addEventListener("change", syncMode);
+canvas.addEventListener("click", (ev) => {
+  const n = nodeAt(ev);
+  if (n) select(n.key);
+});
+$("hits").addEventListener("click", (ev) => {
+  const li = ev.target.closest("li[data-key]");
+  if (li) select(li.dataset.key);
+});
+window.addEventListener("resize", () => { if (payload) { fit(); draw(); } });
+
+boot();
+</script>
+</body>
+</html>

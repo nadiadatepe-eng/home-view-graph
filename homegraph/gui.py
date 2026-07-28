@@ -16,11 +16,13 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import math
+import os
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .visualize import collect
+from .visualize import _layout, collect
 
 # The kinds that stand for something on disk. Named, not derived: M1's
 # `reference` (180 of them) and M4's `archive_entry` (69) are about files
@@ -43,6 +45,66 @@ NO_LIMIT = 10 ** 9
 DEFAULT_MAX_DEPTH = 4
 DEFAULT_CAP = 20
 
+# Band geometry, expressed in the coordinate space `_layout` returns rather
+# than in pixels: the page scales that space onto whatever canvas it has, and
+# a constant in pixels here would be this module deciding how big a window is.
+BAND_GAP = 140.0
+BAND_WIDTH = 1600.0                       # `_layout`'s own default `width`
+
+
+def _positions(out_nodes, out_edges, linked):
+    """`(x, y)` per node: a force layout for the connected, a band for the rest.
+
+    Computed in Python, and shipped in the payload, for two reasons. The first
+    is this module's whole premise -- the page draws, it does not decide. The
+    second is `_layout`'s own: it is seeded (20260722) and reads no clock, so
+    the same corpus produces the same picture twice, and this week's screenshot
+    can be laid beside last week's. A simulation re-run in JavaScript on every
+    load would give that up, and the GUI already chose to highlight in place
+    rather than re-lay-out precisely to keep it.
+
+    The simulation runs over the CONNECTED subgraph only. An isolated node has
+    no information in its position: dropped into the same simulation it would
+    be shoved somewhere by pure repulsion and land next to files it has no
+    relation to, which draws noise that looks like data. Isolated nodes get a
+    sorted band along the bottom instead, where the position says only "this
+    one has no edge" -- which is the entire fact about it.
+
+    `_layout` is private to `visualize`, and is called rather than copied: a
+    second force implementation here would be a second opinion about what the
+    same graph looks like, and the two would drift.
+    """
+    order = sorted(linked)
+    slot = {old: new for new, old in enumerate(order)}
+    laid = _layout([out_nodes[i] for i in order],
+                   [(slot[a], slot[b]) for a, b, *_ in out_edges])
+
+    pos = [(0.0, 0.0)] * len(out_nodes)
+    for new, old in enumerate(order):
+        pos[old] = laid[new]
+
+    # Sorted by path, with the key breaking ties: two models can hold the same
+    # path, and an ordering that depended on which one `collect` read first
+    # would move nodes between runs -- the exact property this function exists
+    # to preserve.
+    band = sorted((i for i in range(len(out_nodes)) if i not in linked),
+                  key=lambda i: (out_nodes[i]["path"], out_nodes[i]["key"]))
+    if laid:
+        x0 = min(x for x, _ in laid)
+        span = (max(x for x, _ in laid) - x0) or BAND_WIDTH
+        top = max(y for _, y in laid) + BAND_GAP
+    else:
+        # Every node isolated -- the band is the whole picture, and there is no
+        # cloud above it to sit under.
+        x0, span, top = -BAND_WIDTH / 2, BAND_WIDTH, 0.0
+    cols = max(1, math.ceil(math.sqrt(len(band)) * 2))
+    step = span / cols
+    row_height = max(step, BAND_GAP / 4)
+    for k, i in enumerate(band):
+        pos[i] = (round(x0 + (k % cols) * step, 1),
+                  round(top + (k // cols) * row_height, 1))
+    return pos
+
 
 class BadArgument(Exception):
     """A route body's own complaint about its arguments -- distinct from
@@ -61,6 +123,10 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
     `truncated` names any model that came back at exactly the cap. It is
     normally empty; a caller that passes a real limit gets told which model it
     cut rather than a picture that looks like a smaller corpus.
+
+    Every node also carries `x`/`y`. See `_positions` for why the layout is
+    computed here and not in the browser, and why the isolated nodes are not
+    part of the simulation that placed the rest.
     """
     nodes, edges, missing = collect(model_paths, limit_per_model,
                                     mesh_db=mesh_db)
@@ -93,7 +159,18 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
 
     isolated = [n["key"] for i, n in enumerate(out_nodes) if i not in linked]
 
+    for n, (x, y) in zip(out_nodes, _positions(out_nodes, out_edges, linked)):
+        n["x"] = x
+        n["y"] = y
+
+    # The band's own caption, as numbers rather than as a sentence the page
+    # assembles from `nodes.length`: "315 of 602, 52.3%" is a measurement, and
+    # a measurement recomputed in the browser is a second one.
+    share = round(100.0 * len(isolated) / len(out_nodes), 1) if out_nodes else 0.0
+
     return {"nodes": out_nodes, "edges": out_edges, "isolated": isolated,
+            "isolated_count": len(isolated), "isolated_share": share,
+            "models": sorted(counts),
             "missing": missing, "counts": counts, "truncated": truncated}
 
 
@@ -174,6 +251,19 @@ def build_handler(server, payload):
         def do_GET(self):
             if self.path == "/graph":
                 self._send(payload)
+            elif self.path in ("/", "/index.html"):
+                # Read per request rather than cached at import: the file is
+                # the interface, and editing it while the server runs should
+                # show up on reload the way editing any other page does.
+                page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "assets", "gui.html")
+                with open(page, "rb") as fh:
+                    body = fh.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self._send({"error": "no route %r" % self.path}, 404)
 
