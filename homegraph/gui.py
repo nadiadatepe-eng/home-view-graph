@@ -13,8 +13,10 @@ what Python decides is under test.
 """
 from __future__ import annotations
 
+import functools
 import inspect
 import json
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -88,7 +90,7 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
             "missing": missing, "counts": counts, "truncated": truncated}
 
 
-def bridges(server, args):
+def bridges(server, src, dsts=None, max_depth=None, cap=None):
     """Every path from one node to the other hits, capped and honest about it.
 
     The loop lives here rather than in the page for the same reason every
@@ -96,11 +98,23 @@ def bridges(server, args):
     returns null outside `max_depth`, and that null becomes a named entry in
     `unreachable` -- a hit with no bridge is a finding, and dropping it would
     let the schematic draw four of five and look complete.
+
+    A real signature (`src` required, the rest keyword-optional) rather than
+    a single `args` dict: `do_POST` binds every route's arguments against its
+    function's own signature *before* calling it, the same way
+    `mcp_server.py`'s `tools/call` does, and a missing `src` used to reach
+    this function at all and raise `KeyError` -- a client mistake answered
+    as a 500, the exact blame inversion `a9b8022` fixed for the other routes.
     """
-    src = args["src"]
-    dsts = list(args.get("dsts") or [])
-    depth = int(args.get("max_depth") or DEFAULT_MAX_DEPTH)
-    cap = int(args.get("cap") or DEFAULT_CAP)
+    dsts = list(dsts or [])
+    try:
+        depth = int(max_depth) if max_depth else DEFAULT_MAX_DEPTH
+        cap = int(cap) if cap else DEFAULT_CAP
+    except (TypeError, ValueError) as exc:
+        # Re-raised as `TypeError`, not left as `ValueError`: that is the one
+        # exception `do_POST`'s `_run` reads as "the caller's fault" rather
+        # than an internal failure, at binding time and now at call time too.
+        raise TypeError("max_depth and cap must be integers: %s" % exc) from exc
     truncated = len(dsts) > cap
     dsts = dsts[:cap]
 
@@ -151,17 +165,10 @@ def build_handler(server, payload):
             return json.loads(self.rfile.read(length).decode("utf-8"))
 
         def do_POST(self):
-            if self.path == "/path":
-                try:
-                    args = self._read_json()
-                except ValueError as exc:
-                    self._send({"error": "bad JSON: %s" % exc}, 400)
-                    return
-                self._run(lambda: bridges(server, args))
-                return
             routes = {"/search": server.mesh_search,
                       "/query": server.query,
-                      "/neighbors": server.mesh_neighbors}
+                      "/neighbors": server.mesh_neighbors,
+                      "/path": functools.partial(bridges, server)}
             fn = routes.get(self.path)
             if fn is None:
                 self._send({"error": "no route %r" % self.path}, 404)
@@ -196,10 +203,24 @@ def build_handler(server, payload):
             reply. Mirrors the tool-body `try/except Exception` already in
             `mcp_server.py`'s `tools/call` (not touched here): the client
             should see what failed rather than lose the connection.
+
+            `TypeError` is caught separately, as a 400, for the same reason
+            the pre-call binding check above is: it is this codebase's one
+            signal for "the caller's fault", whether it surfaces at binding
+            (a missing or unknown argument) or, as `bridges` now does for
+            `max_depth`/`cap`, from inside the body. Every other exception is
+            a 500 -- and `log_message` above is a no-op, so without printing
+            here an internal failure would leave nothing at all in the
+            process's own output, not even the traceback a plain escaping
+            exception used to get for free from `BaseHTTPRequestHandler`.
             """
             try:
                 result = call()
+            except TypeError as exc:
+                self._send({"error": "bad arguments: %s" % exc}, 400)
+                return
             except Exception as exc:                            # noqa: BLE001
+                traceback.print_exc()
                 self._send({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
                 return
             # Returned verbatim. `status`, `warnings` and `models_missing`

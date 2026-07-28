@@ -448,6 +448,42 @@ def t_path_cap_is_reported(m3_db, mesh_db):
                                            out.get("truncated")))
 
 
+def t_path_route_rejects_missing_src(m3_db):
+    """A missing `src` is the caller's mistake, not the answer layer's.
+
+    Before this fix round, `/path` returned before the same
+    `inspect.signature(...).bind` step every other route goes through, so
+    `bridges` read `args["src"]` directly and a missing key surfaced as
+    `KeyError` -- reported as a 500, the exact blame inversion `a9b8022`
+    removed for `/search` and `/query` one route earlier. No `mesh_db`
+    needed: binding fails before `bridges`'s body, let alone `mesh_path`,
+    ever runs.
+    """
+    with _running({"m3": m3_db}) as port:
+        status, out = _post(port, "/path", {"dsts": ["m3::/x.md"]})
+    check("a /path call missing src is a 400, not a 500",
+          status == 400 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
+
+
+def t_path_route_rejects_malformed_max_depth(m3_db):
+    """A `max_depth` that is not an integer is also the caller's mistake,
+    not the answer layer's.
+
+    `int("deep")` raises `ValueError` inside `bridges`, past the binding
+    step (`max_depth` is a real, bindable keyword) -- re-raised there as
+    `TypeError` so `do_POST`'s `_run` reads it the same way it reads a
+    binding failure: a 400, not a 500. No `mesh_db` needed: the conversion
+    runs before the `dsts` loop ever reaches `mesh_path`.
+    """
+    with _running({"m3": m3_db}) as port:
+        status, out = _post(port, "/path",
+                            {"src": "m3::/x.md", "max_depth": "deep"})
+    check("a /path call with a non-integer max_depth is a 400, not a 500",
+          status == 400 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
+
+
 def t_neighbors_route_returns_edges(m3_db, mesh_db):
     """POST /neighbors, routed since Task 3 but never exercised until now.
 
@@ -666,6 +702,8 @@ def main():
         t_search_route_matches_server_verbatim(synthetic_db)
         t_search_route_rejects_malformed_json(synthetic_db)
         t_search_route_rejects_bad_argument_name(synthetic_db)
+        t_path_route_rejects_missing_src(synthetic_db)
+        t_path_route_rejects_malformed_max_depth(synthetic_db)
 
     with tempfile.TemporaryDirectory(prefix="gui-path-cp-") as tmp:
         path_db = _build_synthetic_m3_for_path(tmp)
