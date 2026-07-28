@@ -777,12 +777,18 @@ class Mesh:
             for _ in range(depth):
                 nxt = []
                 for key in frontier:
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                    # Resolved BEFORE the seen-check, not after: `key` starts
+                    # bare (a caller's node_key) and every later frontier
+                    # entry is already qualified (pulled from `edges`), so
+                    # memoising the unresolved form let the origin re-enter
+                    # under its qualified spelling at the next depth and get
+                    # expanded a second time -- measured on a three-node
+                    # chain, bare and qualified starts agreed at depth 1-2
+                    # and diverged (5 vs 4 edges) at depth 3.
                     resolved = self._resolve_key(mesh, key)
-                    if resolved is None:
+                    if resolved is None or resolved in seen:
                         continue
+                    seen.add(resolved)
                     nid = mesh.node_id(resolved)
                     for row in mesh.db.execute(
                             "SELECT d.node_key k, e.rel, e.method, "

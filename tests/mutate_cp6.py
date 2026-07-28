@@ -271,8 +271,8 @@ MUTATIONS = [
      "        return candidates[0] if candidates else None",
      "        return key if mesh.node_id(key) is not None else None"
      "  # mutated: no <model>:: fallback",
-     "mesh_neighbors composes the same whether the key is bare or "
-     "<model>::-qualified"),
+     "mesh_neighbors composes the same for bare and qualified keys at "
+     "depth 1"),
 
     ("the ambiguity branch is resolved to the first candidate",
      "homegraph/mesh.py",
@@ -293,8 +293,27 @@ MUTATIONS = [
      "        prefixes = [row[0] for row in mesh.db.execute(",
      "        prefixes = [row[0] for row in mesh.db.execute("
      "  # mutated: exact match no longer wins first",
-     "mesh_neighbors composes the same whether the key is bare or "
-     "<model>::-qualified"),
+     "mesh_neighbors composes the same for bare and qualified keys at "
+     "depth 1"),
+
+    ("seen memoises the key before it is resolved, so a bare start "
+     "re-expands under its qualified spelling",
+     "homegraph/mesh.py",
+     "                    resolved = self._resolve_key(mesh, key)\n"
+     "                    if resolved is None or resolved in seen:\n"
+     "                        continue\n"
+     "                    seen.add(resolved)\n"
+     "                    nid = mesh.node_id(resolved)",
+     "                    if key in seen:  # mutated: seen keys on the "
+     "unresolved spelling again\n"
+     "                        continue\n"
+     "                    seen.add(key)\n"
+     "                    resolved = self._resolve_key(mesh, key)\n"
+     "                    if resolved is None:\n"
+     "                        continue\n"
+     "                    nid = mesh.node_id(resolved)",
+     "mesh_neighbors composes the same for bare and qualified keys at "
+     "depth 3"),
 
     # -- the federation ---------------------------------------------------
     # The difference between "this model is not here" and "this model found

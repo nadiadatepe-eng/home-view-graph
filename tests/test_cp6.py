@@ -123,6 +123,11 @@ def corpus():
         # and a query nobody can answer makes "the rest still answered" true
         # for the wrong reason.
         "query": "trails", "query2": "report",
+        # A term that lands on a node with a real edge in t_mcp's own
+        # mesh.db (FIGURE_FOR only, no --code-root -- "trails"/"report"
+        # never do). True in both corpora: FIGURE_FOR exists to link art
+        # notes to the images they discuss.
+        "edged_query": "art",
         "figure_for": {(os.path.join(root, note), os.path.join(root, img))
                        for note, img in syn.FIGURE_FOR_PAIRS},
         "min_figure_for": len(syn.FIGURE_FOR_PAIRS),
@@ -954,18 +959,19 @@ def t_mcp(tmp, paths, spec):
     # -- and on the <model>::-qualified form gave count=3, status=partial.
     # `spec["query"]` (the earlier mesh_search call, above) never lands on a
     # node with an edge in THIS test's mesh.db, which build_edges here fills
-    # with FIGURE_FOR only (no --code-root), so this asks separately for
-    # "art" --
-    # true in both corpora, since FIGURE_FOR exists to link art notes to the
-    # images they discuss -- and walks the hits for the first with a real
-    # neighbour. An equivalence between two zeroes would pass while the
-    # defect stands, which is why count > 0 is asserted too.
-    art = handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                 "params": {"name": "mesh_search",
-                            "arguments": {"query": "art", "limit": 20}}})
-    art_hits = json.loads(art["result"]["content"][0]["text"])["hits"]
+    # with FIGURE_FOR only (no --code-root), so this goes through
+    # `spec["edged_query"]` instead -- a corpus-parameterized term, like
+    # every other query in this function, so HOMEGRAPH_REAL_CORPUS=1 is not
+    # left depending on "art" existing by luck. An equivalence between two
+    # zeroes would pass while the defect stands, which is why count > 0 is
+    # asserted too.
+    edged = handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                    "params": {"name": "mesh_search",
+                               "arguments": {"query": spec["edged_query"],
+                                             "limit": 20}}})
+    edged_hits = json.loads(edged["result"]["content"][0]["text"])["hits"]
     bare_body = qualified_body = None
-    for h in art_hits:
+    for h in edged_hits:
         b = handle({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
                     "params": {"name": "mesh_neighbors",
                                "arguments": {"node": h["node_key"]}}})
@@ -978,17 +984,54 @@ def t_mcp(tmp, paths, spec):
                                                    h["node_key"])}}})
             bare_body = bb
             qualified_body = json.loads(q["result"]["content"][0]["text"])
+            hit = h
             break
-    check("mesh_neighbors composes the same whether the key is bare or "
-          "<model>::-qualified",
+    check("mesh_neighbors composes the same for bare and qualified keys at "
+          "depth 1",
           bare_body is not None and bare_body["count"] > 0
           and bare_body["count"] == qualified_body["count"]
           and bare_body["status"] == qualified_body["status"],
-          "bare: count=%s status=%s; qualified: count=%s status=%s"
-          % (bare_body and bare_body["count"], bare_body and bare_body["status"],
-             qualified_body and qualified_body["count"],
-             qualified_body and qualified_body["status"])
-          if bare_body is not None else "no 'art' hit had any neighbours")
+          ("bare: count=%s status=%s; qualified: count=%s status=%s"
+           % (bare_body and bare_body["count"], bare_body and bare_body["status"],
+              qualified_body and qualified_body["count"],
+              qualified_body and qualified_body["status"]))
+          if bare_body is not None
+          else "no %r hit had any neighbours" % spec["edged_query"])
+
+    # The same node, walked to depth 3 instead of 1 -- the depth the review
+    # measured `seen` diverging at (bare=5, qualified=4 on a three-node
+    # chain), because `seen` used to memoise the key BEFORE it was resolved:
+    # the origin was recorded under its bare spelling, and the frontier's
+    # later re-encounter of it under its qualified spelling was not in
+    # `seen`, so it was expanded a second time. `mesh_neighbors` is only
+    # ever called at depth 1 above, so that check could not have caught it
+    # -- `depth` is a public MCP parameter and a CLI flag, not an internal
+    # detail.
+    if bare_body is not None:
+        d3b = handle({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                      "params": {"name": "mesh_neighbors",
+                                 "arguments": {"node": hit["node_key"],
+                                               "depth": 3}}})
+        d3b_body = json.loads(d3b["result"]["content"][0]["text"])
+        d3q = handle({"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                      "params": {"name": "mesh_neighbors",
+                                 "arguments": {"node": "%s::%s"
+                                               % (hit["model"],
+                                                  hit["node_key"]),
+                                               "depth": 3}}})
+        d3q_body = json.loads(d3q["result"]["content"][0]["text"])
+        check("mesh_neighbors composes the same for bare and qualified keys "
+              "at depth 3",
+              d3b_body["count"] > bare_body["count"]
+              and d3b_body["count"] == d3q_body["count"]
+              and d3b_body["status"] == d3q_body["status"],
+              "depth 3 bare: count=%d status=%s; qualified: count=%d status=%s"
+              % (d3b_body["count"], d3b_body["status"],
+                 d3q_body["count"], d3q_body["status"]))
+    else:
+        check("mesh_neighbors composes the same for bare and qualified keys "
+              "at depth 3", False,
+              "no %r hit had any neighbours" % spec["edged_query"])
 
     # No collision exists on the real corpus to trip this branch (0 of
     # 9 125 real-mesh.db paths appear under more than one model prefix,
