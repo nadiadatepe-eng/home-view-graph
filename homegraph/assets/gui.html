@@ -33,7 +33,15 @@
   #rows { border-collapse: collapse; width: 100%; }
   #rows th, #rows td { border: 1px solid #ddd; padding: 2px 4px;
                        text-align: left; word-break: break-all; }
-  #schematic { width: 100%; height: 100%; }
+  /* No rule for #schematic. It carries its own width/height attributes sized
+     from the row count, and an ID selector (1,0,0) beats an SVG geometry
+     presentation attribute (which enters the cascade at 0). With a viewBox and
+     the default preserveAspectRatio the CSS did not clip -- worse, it scaled
+     the whole schematic down to fit, so the overflow:auto wrapper could never
+     overflow and never scrolled. Rows are 34 units apart and DEFAULT_CAP is
+     20, so ~700 units had to fit a pane near 280 px: scale ~0.4, the
+     font-size='9' labels near 3.6 px and the r='5' circles near 2 px, from the
+     first click with more than about eight hits. */
   .lead { color: #555; margin: 0 0 4px 0; }
 </style>
 </head>
@@ -89,7 +97,23 @@ function esc(s) {
 
 async function boot() {
   const resp = await fetch("/graph");
-  payload = await resp.json();
+  const body = await resp.json();
+  if (resp.status !== 200) {
+    // Its own message, not `renderError`: that one redraws the canvas and the
+    // schematic, both of which assume `payload` and `view` already exist. A
+    // 500 here is reachable -- `/graph` is served from a prebuilt payload, and
+    // anything that goes wrong writing it lands in the same handler as every
+    // other route -- and without this the next line read `.nodes` off
+    // `undefined` and left a blank page that said nothing at all.
+    $("status").className = "partial";
+    $("status").textContent =
+      "HTTP " + resp.status + ": " + ((body && body.error) || "ukjent feil") +
+      " — grafen ble ikke lastet";
+    $("v1").innerHTML = "<div class='waiting'>ingen graf å tegne</div>";
+    $("v2").innerHTML = "<div class='waiting'>ingen graf å tegne</div>";
+    return;
+  }
+  payload = body;
   graphKeys = new Set(payload.nodes.map((n) => n.key));
   renderStatus();
   renderSummary();

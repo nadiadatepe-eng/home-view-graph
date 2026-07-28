@@ -823,6 +823,17 @@ def t_page_is_shipped_and_self_contained(m3_db, mesh_db):
     external = [m for m in re.findall(r"https?://[^\s\"'<>)]+", text)]
     check("the page references no external host",
           not external, "%d external URL(s): %s" % (len(external), external[:2]))
+    # A source check, and the only one available: nothing in this suite renders
+    # CSS, so reinstating this rule is otherwise undetectable. `#schematic` is
+    # an ID selector (1,0,0) and an SVG geometry presentation attribute enters
+    # the cascade at 0, so a sizing rule here beats the width/height the page
+    # computes from the row count. With a viewBox it does not clip -- it scales
+    # the whole schematic down to fit, so the `overflow:auto` wrapper can never
+    # overflow and never scrolls. At DEFAULT_CAP = 20 rows 34 units apart, ~700
+    # units are squeezed into a pane near 280 px: the labels land near 3.6 px.
+    sized = re.search(r"#schematic\s*\{[^}]*(width|height)\s*:", text)
+    check("no CSS rule overrides the schematic's own size",
+          sized is None, "found: %s" % (sized.group(0) if sized else "none"))
     with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/" % port, timeout=10) as resp:
@@ -874,12 +885,13 @@ const asHit = (n) => ({model: n.model, node_key: n.key.slice(n.model.length + 2)
 const searchOK = {status: "complete", hits: [asHit(apo), asHit(other)],
                   warnings: ["EN ADVARSEL"], models_missing: ["m9"]};
 
+let graphStatus = 200, graphBody = payload;
 let searchStatus = 200, searchBody = searchOK;
 let queryStatus = 200, queryBody = null;
 const calls = [];
 global.fetch = async (url, opts) => {
   calls.push({url: url, body: opts && opts.body ? JSON.parse(opts.body) : null});
-  if (url === "/graph")  return {status: 200, json: async () => payload};
+  if (url === "/graph")  return {status: graphStatus, json: async () => graphBody};
   if (url === "/search") return {status: searchStatus, json: async () => searchBody};
   if (url === "/query")  return {status: queryStatus, json: async () => queryBody};
   if (url === "/path")   return {status: 200, json: async () => ({
@@ -896,7 +908,16 @@ const v2 = () => document.getElementById("v2").innerHTML;
 const status = () => document.getElementById("status").textContent;
 const out = {};
 
+// A 500 from /graph FIRST, on a page that has booted nothing yet: `payload`
+// and `view` are still null, so `renderError` cannot be reused here and the
+// next line used to read `.nodes` off `undefined` -- a blank page saying
+// nothing. Re-booted normally straight after, which every check below needs.
+graphStatus = 500; graphBody = {error: "simulated internal bug"};
 api.boot().then(async () => {
+  out.graph_error_status = status();
+  out.graph_error_v1 = document.getElementById("v1").innerHTML;
+  graphStatus = 200; graphBody = payload;
+  await api.boot();
   out.boot_status = status();
 
   // -- the schematic's two conditions ------------------------------------
@@ -1033,7 +1054,8 @@ def t_page_behaviour(m3_db):
              "an apostrophe in a filename survives into data-key",
              "a non-200 answer is an error, not an empty result set",
              "warnings, models_missing and the payload's own limit are used",
-             "a click asks for bridges to the OTHER hits, and only those"]
+             "a click asks for bridges to the OTHER hits, and only those",
+             "a /graph that fails says so instead of drawing nothing"]
     out = _run_page(m3_db)
     if isinstance(out, str):
         for name in names:
@@ -1088,6 +1110,17 @@ def t_page_behaviour(m3_db):
           and out["hit_test"] is not None and out["hit_test_miss"] is None,
           "src excluded from %d dst(s), hit_test=%s"
           % (len(dsts), (out["hit_test"] or "")[-18:]))
+
+    # `boot()` was the one fetch with no status check left. A 500 from /graph
+    # is reachable -- the payload is prebuilt, but it is served through the
+    # same handler as every other route -- and it used to read `.nodes` off
+    # `undefined`, leaving a page that was blank and silent about why.
+    check(names[5],
+          out["graph_error_status"].startswith("HTTP 500")
+          and "undefined" not in out["graph_error_status"]
+          and "ingen graf" in out["graph_error_v1"],
+          "status=%r v1=%r" % (out["graph_error_status"][:44],
+                               re.sub(r"<[^>]+>", "", out["graph_error_v1"])[:24]))
 
 
 def t_gui_subcommand_exists_without_a_host_flag(m3_db):
