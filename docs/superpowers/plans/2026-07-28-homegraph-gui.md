@@ -123,6 +123,11 @@ Whichever branch applies, the cap is reported in the `/path` response (Task 4) s
 
 - [ ] **Step 4: Record it in TODO.md with the measured number**
 
+`TODO.md` is **gitignored** (`.gitignore:59`) and has never been tracked — it carries real
+paths and the account name, which `tests/test_no_real_paths.py` exists to keep out of git.
+So it is never committed, never force-added, and the copy that matters is the one in the
+main checkout at `/home/nadi/homegraph/TODO.md`, not the worktree's. Edit that file.
+
 Add a new section:
 
 ```markdown
@@ -138,15 +143,10 @@ Plan: `docs/superpowers/plans/2026-07-28-homegraph-gui.md`.
       `graph_payload` uten tak; `visualize.py` er urørt.
 ```
 
-- [ ] **Step 5: Commit the TODO.md change only**
+- [ ] **Step 5: Nothing to commit**
 
-```bash
-git add TODO.md
-git commit -m "Measure what a schematic click costs before building it
-
-20 hits means 19 path searches per click and the cost was unknown. Now it
-is <C> ms at max_depth 4, so the default is <D>."
-```
+This task produces a measurement and a note in a gitignored file. There is no commit.
+Do not `git add -f TODO.md` to manufacture one.
 
 ---
 
@@ -1110,12 +1110,12 @@ Expected: no `RED:` lines except `test_no_real_paths.py` when the unpublished ma
 
 - [ ] **Step 4: Record the result in TODO.md**
 
-Fill in the CP-GUI section from Task 0 with the outcome — checks passed, mutations killed, suites green — with the numbers, not a tick.
+Fill in the CP-GUI section from Task 0 — in `/home/nadi/homegraph/TODO.md`, which is gitignored and not committed — with the outcome: checks passed, mutations killed, suites green. Numbers, not a tick.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/mutate_gui.py TODO.md
+git add tests/mutate_gui.py
 git commit -m "Gate the GUI against the defect class it could introduce
 
 Seven mutations, five of them aimed at a transport quietly improving the
