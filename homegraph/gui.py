@@ -32,6 +32,15 @@ FILE_KINDS = frozenset({"file", "document", "image", "code"})
 # there is nothing to buy by capping.
 NO_LIMIT = 10 ** 9
 
+# Both set by the Task 0 measurement, not by taste. `DEFAULT_CAP` bounds how
+# many bridges one click pays for; `truncated` in the response is what stops a
+# capped view from reading as a complete one. Measured 2026-07-28 on the real
+# corpus after a lookup defect was fixed: 6 path calls cost 38/46/54 ms at
+# depth 2/3/4, finding 3/3/5 paths; scaled to the 19 calls a full 20-hit set
+# implies, ~171 ms at depth 4 -- under the 300 ms boundary set in advance.
+DEFAULT_MAX_DEPTH = 4
+DEFAULT_CAP = 20
+
 
 def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
     """File-level nodes, the edges among them, and which stand alone.
@@ -79,6 +88,33 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
             "missing": missing, "counts": counts, "truncated": truncated}
 
 
+def bridges(server, args):
+    """Every path from one node to the other hits, capped and honest about it.
+
+    The loop lives here rather than in the page for the same reason every
+    other decision does: what Python decides is under test. `mesh_path`
+    returns null outside `max_depth`, and that null becomes a named entry in
+    `unreachable` -- a hit with no bridge is a finding, and dropping it would
+    let the schematic draw four of five and look complete.
+    """
+    src = args["src"]
+    dsts = list(args.get("dsts") or [])
+    depth = int(args.get("max_depth") or DEFAULT_MAX_DEPTH)
+    cap = int(args.get("cap") or DEFAULT_CAP)
+    truncated = len(dsts) > cap
+    dsts = dsts[:cap]
+
+    found, unreachable = [], []
+    for dst in dsts:
+        out = server.mesh_path(src=src, dst=dst, max_depth=depth)
+        if out.get("path"):
+            found.append({"dst": dst, "path": out["path"]})
+        else:
+            unreachable.append(dst)
+    return {"src": src, "bridges": found, "unreachable": unreachable,
+            "max_depth": depth, "cap": cap, "truncated": truncated}
+
+
 def build_handler(server, payload):
     """A request handler bound to one Server and one prebuilt graph payload.
 
@@ -86,7 +122,8 @@ def build_handler(server, payload):
     otherwise share whichever stores were configured last, and the tests run
     several handlers in the same interpreter.
 
-    `server` backs `do_POST`'s `/search`, `/query` and `/neighbors` routes.
+    `server` backs `do_POST`'s `/search`, `/query`, `/neighbors` and `/path`
+    routes.
     """
 
     class _Handler(BaseHTTPRequestHandler):
@@ -114,6 +151,14 @@ def build_handler(server, payload):
             return json.loads(self.rfile.read(length).decode("utf-8"))
 
         def do_POST(self):
+            if self.path == "/path":
+                try:
+                    args = self._read_json()
+                except ValueError as exc:
+                    self._send({"error": "bad JSON: %s" % exc}, 400)
+                    return
+                self._run(lambda: bridges(server, args))
+                return
             routes = {"/search": server.mesh_search,
                       "/query": server.query,
                       "/neighbors": server.mesh_neighbors}
@@ -136,10 +181,31 @@ def build_handler(server, payload):
             except TypeError as exc:
                 self._send({"error": "bad arguments: %s" % exc}, 400)
                 return
+            self._run(lambda: fn(**args))
+
+        def _run(self, call):
+            """Run a route body and answer even when it raises.
+
+            `/neighbors` (Task 3) and `/path` both reach `Mesh`, which raises
+            `ModelUnavailable` -- not a `TypeError` -- when a server has no
+            mesh configured (`Mesh._read_mesh` refuses rather than silently
+            answering `count: 0`). Nothing used to sit around that call: the
+            exception escaped `do_POST` entirely, past
+            `BaseHTTPRequestHandler`'s own handling, so the client saw the
+            connection reset with no body at all -- worse than any error
+            reply. Mirrors the tool-body `try/except Exception` already in
+            `mcp_server.py`'s `tools/call` (not touched here): the client
+            should see what failed rather than lose the connection.
+            """
+            try:
+                result = call()
+            except Exception as exc:                            # noqa: BLE001
+                self._send({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
+                return
             # Returned verbatim. `status`, `warnings` and `models_missing`
             # are the answer's own account of how complete it is, and a
             # transport that summarised them would be deciding something.
-            self._send(fn(**args))
+            self._send(result)
 
     return _Handler
 

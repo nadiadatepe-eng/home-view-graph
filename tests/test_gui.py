@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from report import reporter                                       # noqa: E402
 
 from homegraph import gui                                          # noqa: E402
+from homegraph.mesh import Mesh                                    # noqa: E402
 from homegraph.models.m3_build import build, isolated_notes        # noqa: E402
 from homegraph.store import Store                                  # noqa: E402
 
@@ -119,6 +120,84 @@ def _build_synthetic_m3(root):
         # would otherwise skip, leaving `mesh_search` matching nothing.
         store.rebuild_fts()
     return db
+
+
+def _build_synthetic_m3_for_path(root):
+    """A bigger M3 store, for the `/path` checks: a linked pair, one file
+    truly isolated (no edge in either direction), a note that names an image
+    file (for `_build_synthetic_m2_for_path`'s FIGURE_FOR edge below), and
+    enough filler that a `/path` call actually has more than `DEFAULT_CAP`
+    destinations to slice.
+
+    Not a second version of `_build_synthetic_m3`'s tiny corpus: that one's
+    three files are enough for every check above, but `t_path_cap_is_reported`
+    needs `DEFAULT_CAP + 5` node keys to exist before it can even ask whether
+    the 21st onward got dropped -- with three files, a capped response and an
+    uncapped one would look identical, and the check could never go red.
+    """
+    def write(name, text):
+        path = os.path.join(root, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    paths = [
+        write("linked-a.md",
+              "---\ntags: [demo]\n---\n# A\n\n## Sub\n\n[[linked-b]]\n"),
+        write("linked-b.md", "# B\n\nSome text.\n"),
+        write("isolated.md", "# Isolated\n\nNothing links here.\n"),
+        # WIKILINKS_TO (linked-a/linked-b above) lives inside m3's own store;
+        # `Mesh.build_edges` mirrors NODES from each model but computes only
+        # NEW cross-model edges (FIGURE_FOR, MENTIONS_FILE, CITES_CODE,
+        # TEMPORAL_COHORT) -- "a cohort inside one model is not a mesh fact",
+        # in that method's own docstring. So a mesh built over m3 alone has
+        # zero edges, and `/neighbors` needs a note that names an image file,
+        # matched against the m2 store `_build_synthetic_m2_for_path` builds.
+        write("figures.md", "# Figures\n\nSee synthetic-figure.png for detail.\n"),
+    ]
+    paths += [write("filler-%03d.md" % i, "# Filler %d\n\nBody text %d.\n" % (i, i))
+              for i in range(gui.DEFAULT_CAP + 10)]
+    db = os.path.join(root, "synthetic-m3-path.db")
+    with Store(db, model="m3") as store:
+        build(store, paths, date(2026, 7, 22))
+        store.rebuild_fts()
+    return db
+
+
+def _build_synthetic_m2_for_path(root):
+    """One image, matched by `figures.md`'s body above -- the FIGURE_FOR
+    edge is the cross-model fact `/neighbors` and `/path` need to find
+    anything at all (see the note in `_build_synthetic_m3_for_path`).
+    """
+    from homegraph.models import m2_build
+
+    imgdir = os.path.join(root, "img")
+    os.makedirs(imgdir, exist_ok=True)
+    imgpath = os.path.join(imgdir, "synthetic-figure.png")
+    with open(imgpath, "wb") as fh:
+        fh.write(b"\x89PNG" + b"\0" * 32)
+    db = os.path.join(root, "synthetic-m2-path.db")
+    with Store(db, model="m2") as store:
+        m2_build.build(store, [imgpath], date(2026, 7, 22))
+        store.rebuild_fts()
+    return db
+
+
+def _build_synthetic_mesh(root, model_paths):
+    """A mesh over `model_paths`, built the way `tests/test_cp6.py` builds
+    one: mirror every model node into `mesh.db`, then compute cross-model
+    edges over the mirror.
+
+    Needed because `Mesh._read_mesh` refuses outright without a mesh --
+    deliberately, so a read against an absent mesh cannot leave an empty
+    database behind and answer `count: 0` -- and `mesh_path` / `mesh_neighbors`
+    both go through it. Built fresh in a tempdir rather than reused from a
+    machine-local corpus, so the `/path` and `/neighbors` checks always run.
+    """
+    meshdb = os.path.join(root, "synthetic-mesh.db")
+    with Mesh(model_paths, mesh_db=meshdb) as mesh:
+        mesh.build_edges(date(2026, 7, 22).isoformat())
+    return meshdb
 
 
 def t_file_kinds_are_the_measured_four():
@@ -300,6 +379,123 @@ def t_search_route_rejects_bad_argument_name(m3_db):
           "status_code=%d body=%r" % (status, out))
 
 
+def t_path_reports_unreachable_rather_than_omitting(m3_db, mesh_db):
+    """Absence of a path is an answer, not a shorter list.
+
+    A hit with no bridge must come back named in `unreachable`. Dropping it
+    would let the schematic draw four of five hits and look complete.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    isolated = set(payload["isolated"])
+    linked = [n["key"] for n in payload["nodes"] if n["key"] not in isolated][:2]
+    lonely = payload["isolated"][:1]
+    if len(linked) < 2 or not lonely:
+        check("corpus has both a linked pair and an isolated note", False,
+              "linked=%d isolated=%d" % (len(linked), len(isolated)))
+        return
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        _, out = _post(port, "/path",
+                       {"src": linked[0], "dsts": [linked[1]] + lonely})
+    total = len(out.get("bridges", [])) + len(out.get("unreachable", []))
+    check("an unreachable hit is named, not dropped",
+          lonely[0] in out.get("unreachable", []) and total == 2,
+          "unreachable=%s of %d dst(s)" % (len(out.get("unreachable", [])),
+                                           total))
+
+
+def t_path_finds_a_real_bridge(m3_db, m2_db, mesh_db):
+    """The found case, not only the absent one.
+
+    `t_path_reports_unreachable_rather_than_omitting` above passes even if
+    `bridges()` finds nothing at all: its `linked-a.md`/`linked-b.md` pair is
+    an in-model WIKILINKS_TO, invisible to a mesh that only computes
+    cross-model edges (see `_build_synthetic_m3_for_path`), so both of its
+    destinations land in `unreachable` and the check cannot distinguish that
+    from a `bridges()` that always answers "no path". This one uses the one
+    edge in this fixture the mesh actually has -- `figures.md`'s FIGURE_FOR
+    to the image it names -- and requires it to come back as a bridge with
+    an actual path, not merely absent from `unreachable`.
+    """
+    m3_payload = gui.graph_payload({"m3": m3_db})
+    figure_note = next((n["key"] for n in m3_payload["nodes"]
+                        if n["path"].endswith("figures.md")), None)
+    m2_payload = gui.graph_payload({"m2": m2_db})
+    image_key = m2_payload["nodes"][0]["key"] if m2_payload["nodes"] else None
+    if figure_note is None or image_key is None:
+        check("corpus has a note+image pair joined by a real mesh edge",
+              False, "figure_note=%r image_key=%r" % (figure_note, image_key))
+        return
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        _, out = _post(port, "/path", {"src": figure_note, "dsts": [image_key]})
+    bridge = out.get("bridges", [{}])[0] if out.get("bridges") else {}
+    check("a real cross-model edge comes back as a bridge with a path",
+          bridge.get("dst") == image_key and bool(bridge.get("path"))
+          and not out.get("unreachable"),
+          "bridges=%r unreachable=%r" % (out.get("bridges"),
+                                         out.get("unreachable")))
+
+
+def t_path_cap_is_reported(m3_db, mesh_db):
+    """A truncated view must say it was truncated."""
+    payload = gui.graph_payload({"m3": m3_db})
+    keys = [n["key"] for n in payload["nodes"]][:gui.DEFAULT_CAP + 5]
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        _, out = _post(port, "/path", {"src": keys[0], "dsts": keys[1:]})
+    total = len(out.get("bridges", [])) + len(out.get("unreachable", []))
+    check("over the cap, the response says truncated and how many it took",
+          out.get("truncated") is True and total == gui.DEFAULT_CAP,
+          "cap=%s took=%d truncated=%s" % (out.get("cap"), total,
+                                           out.get("truncated")))
+
+
+def t_neighbors_route_returns_edges(m3_db, mesh_db):
+    """POST /neighbors, routed since Task 3 but never exercised until now.
+
+    Needs a mesh for the same reason `/path` does: `mesh_neighbors` ->
+    `Mesh.neighbours` -> `Mesh._read_mesh`, which refuses without one. And it
+    needs a genuine CROSS-model edge, not `linked-a.md`'s in-model
+    WIKILINKS_TO to `linked-b.md`: `mesh.db` mirrors nodes but computes only
+    new cross-model edges, so a mesh built over m3 alone never sees that
+    wikilink at all (see `_build_synthetic_m3_for_path`). `figures.md` names
+    an image `_build_synthetic_m2_for_path` actually built, which
+    `Mesh.build_edges`'s FIGURE_FOR pass turns into a real mesh edge -- a
+    check against a node guaranteed to have none could never fail.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    figure_note = next((n["key"] for n in payload["nodes"]
+                        if n["path"].endswith("figures.md")), None)
+    if figure_note is None:
+        check("corpus has a note that mentions an image, to probe /neighbors with",
+              False, "no figures.md in corpus")
+        return
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        status, out = _post(port, "/neighbors", {"node": figure_note})
+    check("POST /neighbors returns edges for a node that has them",
+          status == 200 and out.get("count", 0) > 0,
+          "status_code=%d count=%s" % (status, out.get("count")))
+
+
+def t_neighbors_route_without_mesh_answers_rather_than_resets(m3_db):
+    """The Task 3 review's warning, acted on: `mesh_neighbors` raises
+    `ModelUnavailable` -- not a `TypeError` -- when the server has no mesh
+    configured, and that exception used to have nothing around it in
+    `do_POST`. It escaped the handler entirely, past
+    `BaseHTTPRequestHandler`'s own handling, so the client saw the
+    connection reset with no body at all. Runs with no `mesh_db` on
+    purpose -- the one `/neighbors` check in this file that deliberately
+    withholds the mesh -- to prove the exception now comes back as a 500
+    with a body instead of a dropped socket, which `urlopen` would raise
+    through rather than let this check observe.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    node = payload["nodes"][0]["key"]
+    with _running({"m3": m3_db}) as port:                 # no mesh_db
+        status, out = _post(port, "/neighbors", {"node": node})
+    check("a route that raises without a mesh answers instead of resetting",
+          status == 500 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
+
+
 def t_binds_loopback_only():
     """The address is not configurable, and that is the point."""
     import inspect
@@ -414,6 +610,44 @@ def real_m3():
     return m3 if os.path.exists(m3) else None
 
 
+def real_mesh():
+    """Path to the real mesh store, or None. Same decoupling as `real_m3()`:
+    the structural `/path` and `/neighbors` checks build their own synthetic
+    mesh in a tempdir and must run whether or not this file exists on the
+    machine.
+    """
+    mesh = os.path.expanduser("~/.homegraph/real-mesh.db")
+    return mesh if os.path.exists(mesh) else None
+
+
+def t_path_route_answers_over_the_real_corpus(real_m3_db, real_mesh_db):
+    """`/path` against the real corpus and its real mesh, at the depth
+    `DEFAULT_MAX_DEPTH` was measured at (2026-07-28: 6 calls, 38/46/54 ms at
+    depth 2/3/4). Not a timing assertion -- machine load varies too much for
+    a hard budget in a checkpoint -- just proof the two constants were
+    picked against a real answer and not only the three-file synthetic
+    corpus above. Same SKIPPED pattern as `t_graph_route_matches_real_corpus`
+    when the real stores are not on this machine.
+    """
+    if real_m3_db is None or real_mesh_db is None:
+        check("POST /path answers over the real corpus", True,
+              "SKIPPED -- ~/.homegraph/real-m3.db or real-mesh.db not present "
+              "on this machine")
+        return
+    payload = gui.graph_payload({"m3": real_m3_db})
+    keys = [n["key"] for n in payload["nodes"]][:6]
+    if len(keys) < 2:
+        check("POST /path answers over the real corpus", False,
+              "fewer than 2 nodes in the real corpus")
+        return
+    with _running({"m3": real_m3_db}, mesh_db=real_mesh_db) as port:
+        status, out = _post(port, "/path", {"src": keys[0], "dsts": keys[1:]})
+    total = len(out.get("bridges", [])) + len(out.get("unreachable", []))
+    check("POST /path answers over the real corpus",
+          status == 200 and total == len(keys) - 1,
+          "status_code=%d took=%d of %d" % (status, total, len(keys) - 1))
+
+
 def main():
     t_file_kinds_are_the_measured_four()
     t_binds_loopback_only()
@@ -433,8 +667,19 @@ def main():
         t_search_route_rejects_malformed_json(synthetic_db)
         t_search_route_rejects_bad_argument_name(synthetic_db)
 
+    with tempfile.TemporaryDirectory(prefix="gui-path-cp-") as tmp:
+        path_db = _build_synthetic_m3_for_path(tmp)
+        path_m2_db = _build_synthetic_m2_for_path(tmp)
+        mesh_db = _build_synthetic_mesh(tmp, {"m3": path_db, "m2": path_m2_db})
+        t_path_reports_unreachable_rather_than_omitting(path_db, mesh_db)
+        t_path_finds_a_real_bridge(path_db, path_m2_db, mesh_db)
+        t_path_cap_is_reported(path_db, mesh_db)
+        t_neighbors_route_returns_edges(path_db, mesh_db)
+        t_neighbors_route_without_mesh_answers_rather_than_resets(path_db)
+
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())
+    t_path_route_answers_over_the_real_corpus(real_m3(), real_mesh())
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
