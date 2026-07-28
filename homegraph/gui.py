@@ -44,6 +44,13 @@ DEFAULT_MAX_DEPTH = 4
 DEFAULT_CAP = 20
 
 
+class BadArgument(Exception):
+    """A route body's own complaint about its arguments -- distinct from
+    `TypeError`, which `a9b8022` established means "a genuine bug in the
+    answer layer" once binding has already passed (see `_run`, below).
+    """
+
+
 def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
     """File-level nodes, the edges among them, and which stand alone.
 
@@ -105,16 +112,28 @@ def bridges(server, src, dsts=None, max_depth=None, cap=None):
     `mcp_server.py`'s `tools/call` does, and a missing `src` used to reach
     this function at all and raise `KeyError` -- a client mistake answered
     as a 500, the exact blame inversion `a9b8022` fixed for the other routes.
+
+    `max_depth`/`cap`/`dsts` that bind fine but are the wrong shape (a
+    string that will not parse as an int, a `dsts` that is not a list) raise
+    `BadArgument`, not `TypeError`: a `TypeError` past this point is a bug in
+    `bridges` or `mesh_path`, and `_run` needs to tell that apart from a
+    caller's malformed request rather than reporting both as 400.
     """
-    dsts = list(dsts or [])
+    if dsts is None:
+        dsts = []
+    elif not isinstance(dsts, list):
+        # `list("abc")` silently becomes three one-character destinations
+        # instead of refusing a caller who meant one; `list(5)` raises
+        # `TypeError`, which past this point reads as an internal bug, not a
+        # caller mistake. Both are wrong shapes, checked explicitly instead
+        # of relying on either accident.
+        raise BadArgument("dsts must be a list of node keys, got %s"
+                          % type(dsts).__name__)
     try:
         depth = int(max_depth) if max_depth else DEFAULT_MAX_DEPTH
         cap = int(cap) if cap else DEFAULT_CAP
     except (TypeError, ValueError) as exc:
-        # Re-raised as `TypeError`, not left as `ValueError`: that is the one
-        # exception `do_POST`'s `_run` reads as "the caller's fault" rather
-        # than an internal failure, at binding time and now at call time too.
-        raise TypeError("max_depth and cap must be integers: %s" % exc) from exc
+        raise BadArgument("max_depth and cap must be integers: %s" % exc) from exc
     truncated = len(dsts) > cap
     dsts = dsts[:cap]
 
@@ -204,19 +223,24 @@ def build_handler(server, payload):
             `mcp_server.py`'s `tools/call` (not touched here): the client
             should see what failed rather than lose the connection.
 
-            `TypeError` is caught separately, as a 400, for the same reason
-            the pre-call binding check above is: it is this codebase's one
-            signal for "the caller's fault", whether it surfaces at binding
-            (a missing or unknown argument) or, as `bridges` now does for
-            `max_depth`/`cap`, from inside the body. Every other exception is
-            a 500 -- and `log_message` above is a no-op, so without printing
-            here an internal failure would leave nothing at all in the
-            process's own output, not even the traceback a plain escaping
-            exception used to get for free from `BaseHTTPRequestHandler`.
+            `BadArgument` is caught separately, as a 400 -- a route body's
+            own complaint about a value that bound fine but was the wrong
+            shape (`bridges`'s `max_depth`/`cap`/`dsts`). A `TypeError`
+            raised from *inside* a route body, past the pre-call binding
+            check above, is `a9b8022`'s original case: a genuine bug in
+            `mesh_search`, `query`, `mesh_neighbors` or `bridges` itself, not
+            a malformed request, and reporting it as "bad arguments" is the
+            exact blame inversion that commit exists to prevent. It falls
+            through to `except Exception` below, same as any other internal
+            failure. `log_message` above is a no-op, so without
+            `traceback.print_exc()` here a 500 would leave nothing at all in
+            the process's own output -- not even the traceback a plain
+            escaping exception used to get for free from
+            `BaseHTTPRequestHandler`.
             """
             try:
                 result = call()
-            except TypeError as exc:
+            except BadArgument as exc:
                 self._send({"error": "bad arguments: %s" % exc}, 400)
                 return
             except Exception as exc:                            # noqa: BLE001

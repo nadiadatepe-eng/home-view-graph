@@ -471,10 +471,14 @@ def t_path_route_rejects_malformed_max_depth(m3_db):
     not the answer layer's.
 
     `int("deep")` raises `ValueError` inside `bridges`, past the binding
-    step (`max_depth` is a real, bindable keyword) -- re-raised there as
-    `TypeError` so `do_POST`'s `_run` reads it the same way it reads a
-    binding failure: a 400, not a 500. No `mesh_db` needed: the conversion
-    runs before the `dsts` loop ever reaches `mesh_path`.
+    step (`max_depth` is a real, bindable keyword) -- caught there and
+    re-raised as `gui.BadArgument`, the exception `do_POST`'s `_run` reads
+    as a 400. Not `TypeError`: round 2 found that catching `TypeError` here
+    made a *real* `TypeError` from inside a route body -- a genuine bug --
+    also read as "bad arguments", reopening `a9b8022` for all four routes
+    (see `t_internal_type_error_is_500_not_400` below, which proves the
+    distinction the other way). No `mesh_db` needed: the conversion runs
+    before the `dsts` loop ever reaches `mesh_path`.
     """
     with _running({"m3": m3_db}) as port:
         status, out = _post(port, "/path",
@@ -482,6 +486,71 @@ def t_path_route_rejects_malformed_max_depth(m3_db):
     check("a /path call with a non-integer max_depth is a 400, not a 500",
           status == 400 and "error" in out and "status" not in out,
           "status_code=%d body=%r" % (status, out))
+
+
+def t_path_route_rejects_non_list_dsts(m3_db):
+    """A `dsts` that is not a list is the caller's mistake too, checked
+    explicitly rather than left to whatever `list(...)` happens to do with
+    it.
+
+    `dsts: 5` used to be a 400 only by accident, through the same
+    overloaded `except TypeError` `t_path_route_rejects_malformed_max_depth`
+    documents being removed -- without an explicit check it would have
+    become a 500 instead. `dsts: "a string"` was never an error at all:
+    `list("abc")` silently turns one string into three one-character
+    destinations. Both are refused now, by an `isinstance` check ahead of
+    the `mesh_path` loop.
+    """
+    with _running({"m3": m3_db}) as port:
+        status, out = _post(port, "/path", {"src": "m3::/x.md", "dsts": 5})
+    check("a /path call with a non-list dsts is a 400, not a 500",
+          status == 400 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
+
+
+def t_internal_type_error_is_500_not_400(m3_db):
+    """The round 2 finding, proved directly: a `TypeError` raised from
+    *inside* a route body -- past `bind()`, so arguments were already valid
+    and this is a bug in the answer layer, not a malformed request -- must
+    be a 500 with a traceback printed to stderr, not a 400.
+
+    Without this check, the suite could not fail on `_run` catching
+    `TypeError` instead of `gui.BadArgument`: every check above sends a
+    request that is either entirely valid or invalid in a way `bridges`
+    itself turns into `BadArgument`, so 26/26 was not evidence against the
+    overload round 2 found. Monkeypatches `Server.mesh_search` on the class
+    (restored in `finally`, so no other check in this file is affected) to
+    raise `TypeError` unconditionally, then sends a request that binds fine
+    (`query` is present) so the only way to reach 400 would be the bug this
+    check exists to catch. `contextlib.redirect_stderr` captures the
+    handler thread's `traceback.print_exc()` output -- `sys.stderr` is a
+    single process-global object, so this works across threads, and
+    `_post`'s blocking `urlopen` guarantees the print already happened by
+    the time the response returns.
+    """
+    import contextlib
+    import io
+
+    from homegraph.mcp_server import Server
+
+    def _boom(self, query, limit=20, as_of=None, include_all=False):
+        raise TypeError("simulated internal bug, not a bad request")
+
+    original = Server.mesh_search
+    Server.mesh_search = _boom
+    captured = io.StringIO()
+    try:
+        with _running({"m3": m3_db}) as port:
+            with contextlib.redirect_stderr(captured):
+                status, out = _post(port, "/search", {"query": "isolated"})
+    finally:
+        Server.mesh_search = original
+    check("a TypeError from inside a route body is a 500 with a traceback, "
+          "not a 400",
+          status == 500 and "TypeError" in out.get("error", "")
+          and "Traceback" in captured.getvalue(),
+          "status_code=%d body=%r traceback_printed=%s"
+          % (status, out, "Traceback" in captured.getvalue()))
 
 
 def t_neighbors_route_returns_edges(m3_db, mesh_db):
@@ -704,6 +773,8 @@ def main():
         t_search_route_rejects_bad_argument_name(synthetic_db)
         t_path_route_rejects_missing_src(synthetic_db)
         t_path_route_rejects_malformed_max_depth(synthetic_db)
+        t_path_route_rejects_non_list_dsts(synthetic_db)
+        t_internal_type_error_is_500_not_400(synthetic_db)
 
     with tempfile.TemporaryDirectory(prefix="gui-path-cp-") as tmp:
         path_db = _build_synthetic_m3_for_path(tmp)
