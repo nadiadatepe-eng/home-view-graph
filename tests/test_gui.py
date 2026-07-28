@@ -34,8 +34,13 @@ from homegraph.store import Store                                  # noqa: E402
 results, check = reporter(50)
 
 
-def _running(model_paths, mesh_db=None):
-    """Context manager yielding a live port on a real socket. No mocking."""
+def _running(model_paths, mesh_db=None, limit_per_model=None):
+    """Context manager yielding a live port on a real socket. No mocking.
+
+    `limit_per_model` defaults to `graph_payload`'s own default (uncapped);
+    passed through only by the check that needs a forced cap to put
+    something non-empty in `truncated`.
+    """
     import contextlib
     import threading
     from http.server import HTTPServer
@@ -44,7 +49,8 @@ def _running(model_paths, mesh_db=None):
 
     @contextlib.contextmanager
     def cm():
-        payload = gui.graph_payload(model_paths, mesh_db=mesh_db)
+        kwargs = {} if limit_per_model is None else {"limit_per_model": limit_per_model}
+        payload = gui.graph_payload(model_paths, mesh_db=mesh_db, **kwargs)
         httpd = HTTPServer(("127.0.0.1", 0),
                            gui.build_handler(Server(model_paths,
                                                     mesh_db=mesh_db), payload))
@@ -168,25 +174,32 @@ def t_binds_loopback_only():
 
 def t_graph_route_serves_the_payload(m3_db):
     """GET /graph over a real socket -- a live port, a real HTTP request, no
-    mocking of `HTTPServer` or the handler. Runs against the synthetic store
-    so it always executes; `t_graph_route_matches_real_corpus` below is the
-    additional check that ties the same route to the real corpus's 602/315.
+    mocking of `HTTPServer` or the handler. Compares the served body against
+    `graph_payload`'s own return value field-for-field -- through the same
+    JSON round-trip the wire imposes, so the tuple edges `graph_payload`
+    returns compare equal to the lists JSON turns them into -- not just node
+    and isolated counts, which would stay green even if `missing` or
+    `truncated` silently dropped out before `json.dumps`. Runs against the
+    synthetic store so it always executes; `t_graph_route_matches_real_corpus`
+    below ties the same route to the real corpus's 602/315, and
+    `t_graph_route_preserves_missing_and_truncated` is the one that forces
+    those two honesty fields non-empty over the wire.
     """
     import json
     import urllib.request
-    expected = gui.graph_payload({"m3": m3_db})
+    expected = json.loads(json.dumps(gui.graph_payload({"m3": m3_db})))
     with _running({"m3": m3_db}) as port:
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/graph" % port, timeout=10) as resp:
             body = json.loads(resp.read())
     check("GET /graph returns the payload over HTTP",
-          len(body["nodes"]) == len(expected["nodes"]) and
-          len(body["isolated"]) == len(expected["isolated"]),
+          body == expected,
           "%d node(s), %d isolated" % (len(body["nodes"]), len(body["isolated"])))
 
 
 def t_graph_route_matches_real_corpus(real_db):
-    """602 nodes, 315 isolated, served over the same socket path as above.
+    """602 nodes, 315 isolated, served over the same socket path as above,
+    with the same full-body equality as `t_graph_route_serves_the_payload`.
 
     Same SKIPPED pattern as `t_isolated_matches_md_gaps`: the figures are
     measured on the real store, so this degrades to a named SKIPPED line
@@ -198,13 +211,36 @@ def t_graph_route_matches_real_corpus(real_db):
         return
     import json
     import urllib.request
+    expected = json.loads(json.dumps(gui.graph_payload({"m3": real_db})))
     with _running({"m3": real_db}) as port:
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/graph" % port, timeout=30) as resp:
             body = json.loads(resp.read())
     check("GET /graph serves the real corpus (602 nodes, 315 isolated)",
-          len(body["nodes"]) == 602 and len(body["isolated"]) == 315,
+          body == expected and len(body["nodes"]) == 602 and len(body["isolated"]) == 315,
           "%d node(s), %d isolated" % (len(body["nodes"]), len(body["isolated"])))
+
+
+def t_graph_route_preserves_missing_and_truncated(m3_db):
+    """`missing` and `truncated` are the fields the design names as the ones
+    the whole GUI's honesty rests on, and both checks above have them empty
+    on the synthetic corpus -- an equality between two empty lists proves
+    nothing. Forces both non-empty over the same real socket: a model with
+    no store on disk (`missing`) and a cap sized below the synthetic corpus's
+    7 raw nodes, same as `t_capped_read_names_the_model_it_capped` (`truncated`).
+    """
+    import json
+    import urllib.request
+    model_paths = {"m3": m3_db, "ghost": "/no/such/path.db"}
+    expected = json.loads(json.dumps(
+        gui.graph_payload(model_paths, limit_per_model=5)))
+    with _running(model_paths, limit_per_model=5) as port:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/graph" % port, timeout=10) as resp:
+            body = json.loads(resp.read())
+    check("GET /graph carries missing and truncated over the wire, not just nodes",
+          bool(expected["missing"]) and bool(expected["truncated"]) and body == expected,
+          "missing=%r truncated=%r" % (body.get("missing"), body.get("truncated")))
 
 
 def t_isolated_matches_md_gaps(m3_db):
@@ -252,6 +288,7 @@ def main():
         t_payload_drops_non_file_kinds(synthetic_db)
         t_isolated_computation(synthetic_db)
         t_graph_route_serves_the_payload(synthetic_db)
+        t_graph_route_preserves_missing_and_truncated(synthetic_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())
