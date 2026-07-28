@@ -126,7 +126,7 @@ Whichever branch applies, the cap is reported in the `/path` response (Task 4) s
 `TODO.md` is **gitignored** (`.gitignore:59`) and has never been tracked — it carries real
 paths and the account name, which `tests/test_no_real_paths.py` exists to keep out of git.
 So it is never committed, never force-added, and the copy that matters is the one in the
-main checkout at `/home/nadi/homegraph/TODO.md`, not the worktree's. Edit that file.
+main checkout's `TODO.md`, not the worktree's copy. Edit that one.
 
 Add a new section:
 
@@ -1110,7 +1110,7 @@ Expected: no `RED:` lines except `test_no_real_paths.py` when the unpublished ma
 
 - [ ] **Step 4: Record the result in TODO.md**
 
-Fill in the CP-GUI section from Task 0 — in `/home/nadi/homegraph/TODO.md`, which is gitignored and not committed — with the outcome: checks passed, mutations killed, suites green. Numbers, not a tick.
+Fill in the CP-GUI section from Task 0 — in the main checkout's `TODO.md`, which is gitignored and not committed — with the outcome: checks passed, mutations killed, suites green. Numbers, not a tick.
 
 - [ ] **Step 5: Commit**
 
