@@ -63,17 +63,29 @@ def _running(model_paths, mesh_db=None, limit_per_model=None):
     return cm()
 
 
-def _post(port, path, body):
-    """POST JSON to a live handler and return the decoded JSON response."""
+def _post(port, path, body=None, raw=None):
+    """POST to a live handler; return (status_code, decoded JSON body).
+
+    `urlopen` raises `HTTPError` on a 4xx/5xx response, which would make the
+    body of an error response unreachable from a check -- caught here so a
+    400 is a return value, not an exception to route around. `raw`, given as
+    bytes, is sent as-is instead of JSON-encoding `body`: the only way to
+    reach `do_POST`'s malformed-JSON branch, since no `body` dict this
+    helper could build would ever fail `json.dumps`.
+    """
     import json
+    import urllib.error
     import urllib.request
 
-    data = json.dumps(body).encode("utf-8")
+    data = raw if raw is not None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         "http://127.0.0.1:%d%s" % (port, path), data=data,
         headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
 
 
 def _build_synthetic_m3(root):
@@ -192,7 +204,7 @@ def t_search_route_returns_hits(m3_db):
     query with zero possible hits could never fail.
     """
     with _running({"m3": m3_db}) as port:
-        out = _post(port, "/search", {"query": "isolated", "limit": 5})
+        _, out = _post(port, "/search", {"query": "isolated", "limit": 5})
     check("POST /search returns ranked hits",
           out.get("status") in ("complete", "partial") and out.get("hits"),
           "status=%s hits=%d" % (out.get("status"), len(out.get("hits", []))))
@@ -206,7 +218,7 @@ def t_missing_model_is_reported_as_partial(m3_db):
     a whole one -- the cbm failure this package was built against.
     """
     with _running({"m3": m3_db, "m9": "/nonexistent/m9.db"}) as port:
-        out = _post(port, "/search", {"query": "isolated", "limit": 5})
+        _, out = _post(port, "/search", {"query": "isolated", "limit": 5})
     check("a missing model makes the answer partial and names itself",
           out.get("status") == "partial"
           and "m9" in out.get("models_missing", []),
@@ -225,10 +237,67 @@ def t_query_route_refuses_unknown_model(m3_db):
     supports.
     """
     with _running({"m3": m3_db}) as port:
-        out = _post(port, "/query", {"model": "m9", "query": "NODES"})
+        _, out = _post(port, "/query", {"model": "m9", "query": "NODES"})
     check("POST /query names the models it does have when refusing",
           out.get("status") == "error" and "m3" in out.get("error", ""),
           repr(out.get("error"))[:60])
+
+
+def t_search_route_matches_server_verbatim(m3_db):
+    """The verbatim claim, checked on all five keys, not the three the
+    checks above happen to read.
+
+    `mesh_search` returns `status`, `models_queried`, `models_missing`,
+    `warnings` and `hits`. The checks above only ever look at three of them
+    -- a transport that quietly dropped `warnings` and `models_queried`
+    before sending the response would still pass every one. Compares the
+    POST body against `Server.mesh_search` called directly, through the same
+    JSON round-trip the wire imposes (`t_graph_route_serves_the_payload`'s
+    pattern). Runs the missing-model case so `warnings` and `models_missing`
+    are non-empty at the moment of comparison -- two empty lists would
+    compare equal without proving the field survived the trip.
+    """
+    import json
+
+    from homegraph.mcp_server import Server
+
+    model_paths = {"m3": m3_db, "m9": "/nonexistent/m9.db"}
+    expected = json.loads(json.dumps(
+        Server(model_paths).mesh_search(query="isolated", limit=5)))
+    with _running(model_paths) as port:
+        _, out = _post(port, "/search", {"query": "isolated", "limit": 5})
+    check("POST /search returns mesh_search's response verbatim, all five keys",
+          out == expected and bool(expected["warnings"])
+          and bool(expected["models_missing"]),
+          "warnings=%r missing=%r" % (out.get("warnings"),
+                                      out.get("models_missing")))
+
+
+def t_search_route_rejects_malformed_json(m3_db):
+    """Bytes that are not JSON at all -- the 400 body, not just the code.
+
+    `_post`'s `raw` bytes bypass `json.dumps` entirely; no `body` dict this
+    file could construct would ever reach `do_POST`'s `except ValueError`
+    branch on its own.
+    """
+    with _running({"m3": m3_db}) as port:
+        status, out = _post(port, "/search", raw=b"{not json")
+    check("malformed JSON is a 400 with an error, not a tool result",
+          status == 400 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
+
+
+def t_search_route_rejects_bad_argument_name(m3_db):
+    """A call `mesh_search`'s own signature refuses -- the case Important 1
+    exists to keep separate from a real failure inside the tool. Binding is
+    tried before the tool runs, so this is a 400 naming the bad call, not a
+    500 or a dropped connection.
+    """
+    with _running({"m3": m3_db}) as port:
+        status, out = _post(port, "/search", {"nonexistent_kwarg": 1})
+    check("an unknown argument name is a 400 with an error, not a tool result",
+          status == 400 and "error" in out and "status" not in out,
+          "status_code=%d body=%r" % (status, out))
 
 
 def t_binds_loopback_only():
@@ -360,6 +429,9 @@ def main():
         t_search_route_returns_hits(synthetic_db)
         t_missing_model_is_reported_as_partial(synthetic_db)
         t_query_route_refuses_unknown_model(synthetic_db)
+        t_search_route_matches_server_verbatim(synthetic_db)
+        t_search_route_rejects_malformed_json(synthetic_db)
+        t_search_route_rejects_bad_argument_name(synthetic_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())

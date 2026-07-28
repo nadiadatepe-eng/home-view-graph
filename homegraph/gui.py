@@ -13,6 +13,7 @@ what Python decides is under test.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -125,13 +126,20 @@ def build_handler(server, payload):
             except ValueError as exc:
                 self._send({"error": "bad JSON: %s" % exc}, 400)
                 return
+            # Bindingen prøves for seg (samme løsning som mcp_server.py sitt
+            # tools/call): da `except TypeError` lå rundt selve kallet,
+            # dekket den hele verktøykroppen, og en TypeError dypt inne i
+            # f.eks. mesh_search ble rapportert som klientens skyld. Nå kan
+            # bare en ekte signaturmismatch gi "bad arguments".
             try:
-                # Returned verbatim. `status`, `warnings` and `models_missing`
-                # are the answer's own account of how complete it is, and a
-                # transport that summarised them would be deciding something.
-                self._send(fn(**args))
+                inspect.signature(fn).bind(**args)
             except TypeError as exc:
                 self._send({"error": "bad arguments: %s" % exc}, 400)
+                return
+            # Returned verbatim. `status`, `warnings` and `models_missing`
+            # are the answer's own account of how complete it is, and a
+            # transport that summarised them would be deciding something.
+            self._send(fn(**args))
 
     return _Handler
 
