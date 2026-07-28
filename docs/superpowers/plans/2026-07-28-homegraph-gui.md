@@ -17,6 +17,7 @@
 - **The page holds no decisions.** Filtering to file level, which nodes are isolated, which path won, what got truncated — all computed in Python and sent finished. The browser turns values into pixels and nothing else.
 - **Bind 127.0.0.1 only.** No `--host` flag exists. The server exposes an entire home-directory corpus.
 - **Every response carries `status` and `warnings` through unchanged.** Never strip, never summarise, never swallow. A confidence field nothing forces you to read is decoration.
+- **`mesh_path` and `mesh_neighbors` require a mesh store.** `Mesh._read_mesh` refuses when `mesh_db` is falsy — deliberately, so a read against an absent mesh cannot leave an empty database behind and answer `count: 0`. Every check that exercises `/path` or `/neighbors` must pass `mesh_db`, and `corpus()` returns it alongside the M3 path for exactly that reason. A check that omits it fails for a reason that is not a defect in the code under test.
 - **Test convention:** checkpoint files use `from report import reporter` → `results, check = reporter(WIDTH)`, `t_*` helper functions driven by `main()` returning an exit code, plus a one-line `test_checkpoint_*` pytest adapter. Run standalone with `python3 tests/test_gui.py`. `pytest` is not in `.venv`; use `uvx` for `ruff`/`mypy`.
 - **Fixtures must be copied into a worktree** before tests run there (`CONTRIBUTING.md`).
 
@@ -332,18 +333,28 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
 
 ```python
 def corpus():
-    """The real M3 store when it exists, else say so and skip.
+    """The real M3 store and the mesh, or (None, None).
 
     The isolated cross-check needs a corpus with links in it; the synthetic
     fixture has fifteen declared relations and would pass trivially.
+
+    The mesh path is returned alongside because `Mesh._read_mesh` REFUSES when
+    `mesh_db` is falsy -- deliberately, so a read against an absent mesh cannot
+    leave an empty database behind and answer `count: 0`. `mesh_path` and
+    `mesh_neighbors` therefore cannot run without it, and the route checks in
+    Tasks 3 and 4 must pass it or they fail for a reason that is not a defect
+    in the code under test.
     """
-    real = os.path.expanduser("~/.homegraph/real-m3.db")
-    return real if os.path.exists(real) else None
+    m3 = os.path.expanduser("~/.homegraph/real-m3.db")
+    mesh = os.path.expanduser("~/.homegraph/real-mesh.db")
+    if os.path.exists(m3) and os.path.exists(mesh):
+        return m3, mesh
+    return None, None
 
 
 def main():
     t_file_kinds_are_the_measured_four()
-    m3_db = corpus()
+    m3_db, mesh_db = corpus()
     if m3_db:
         t_all_file_nodes_survive_the_read(m3_db)
         t_capped_read_names_the_model_it_capped(m3_db)
@@ -573,22 +584,23 @@ not borrowed."
 Add to `tests/test_gui.py`:
 
 ```python
-def t_search_route_returns_hits(m3_db):
-    with _running({"m3": m3_db}) as port:
+def t_search_route_returns_hits(m3_db, mesh_db):
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         out = _post(port, "/search", {"query": "wikilink", "limit": 5})
     check("POST /search returns ranked hits",
           out.get("status") in ("complete", "partial") and out.get("hits"),
           "status=%s hits=%d" % (out.get("status"), len(out.get("hits", []))))
 
 
-def t_missing_model_is_reported_as_partial(m3_db):
+def t_missing_model_is_reported_as_partial(m3_db, mesh_db):
     """The gate that must be able to say no.
 
     A model that is configured but absent must surface as `partial` with the
     model named. Swallowing it would make a half-answer indistinguishable from
     a whole one -- the cbm failure this package was built against.
     """
-    with _running({"m3": m3_db, "m9": "/nonexistent/m9.db"}) as port:
+    with _running({"m3": m3_db, "m9": "/nonexistent/m9.db"},
+                  mesh_db=mesh_db) as port:
         out = _post(port, "/search", {"query": "wikilink", "limit": 5})
     check("a missing model makes the answer partial and names itself",
           out.get("status") == "partial"
@@ -597,8 +609,8 @@ def t_missing_model_is_reported_as_partial(m3_db):
                                     out.get("models_missing")))
 
 
-def t_query_route_refuses_unknown_model(m3_db):
-    with _running({"m3": m3_db}) as port:
+def t_query_route_refuses_unknown_model(m3_db, mesh_db):
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         out = _post(port, "/query", {"model": "m9", "query": "NODES"})
     check("POST /query names the models it does have when refusing",
           out.get("status") == "error" and "m3" in out.get("error", ""),
@@ -681,7 +693,7 @@ Use the branch Task 0 selected for the two constants.
 Add to `tests/test_gui.py`:
 
 ```python
-def t_path_reports_unreachable_rather_than_omitting(m3_db):
+def t_path_reports_unreachable_rather_than_omitting(m3_db, mesh_db):
     """Absence of a path is an answer, not a shorter list.
 
     A hit with no bridge must come back named in `unreachable`. Dropping it
@@ -695,7 +707,7 @@ def t_path_reports_unreachable_rather_than_omitting(m3_db):
         check("corpus has both a linked pair and an isolated note", False,
               "linked=%d isolated=%d" % (len(linked), len(isolated)))
         return
-    with _running({"m3": m3_db}) as port:
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         out = _post(port, "/path",
                     {"src": linked[0], "dsts": [linked[1]] + lonely})
     total = len(out.get("bridges", [])) + len(out.get("unreachable", []))
@@ -705,11 +717,11 @@ def t_path_reports_unreachable_rather_than_omitting(m3_db):
                                            total))
 
 
-def t_path_cap_is_reported(m3_db):
+def t_path_cap_is_reported(m3_db, mesh_db):
     """A truncated view must say it was truncated."""
     payload = gui.graph_payload({"m3": m3_db})
     keys = [n["key"] for n in payload["nodes"]][:gui.DEFAULT_CAP + 5]
-    with _running({"m3": m3_db}) as port:
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         out = _post(port, "/path", {"src": keys[0], "dsts": keys[1:]})
     total = len(out.get("bridges", [])) + len(out.get("unreachable", []))
     check("over the cap, the response says truncated and how many it took",
@@ -819,7 +831,7 @@ five hits would look complete. Over the cap the response says truncated."
 Add to `tests/test_gui.py`:
 
 ```python
-def t_page_is_shipped_and_self_contained(m3_db):
+def t_page_is_shipped_and_self_contained(m3_db, mesh_db):
     """No CDN, no external fetch. The page must work with the network down."""
     import re
     import urllib.request
@@ -831,7 +843,7 @@ def t_page_is_shipped_and_self_contained(m3_db):
     external = re.findall(r"""(?:src|href)\s*=\s*["']https?://[^"']+""", text)
     check("the page references no external host",
           not external, "%d external reference(s)" % len(external))
-    with _running({"m3": m3_db}) as port:
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/" % port, timeout=10) as resp:
             served = resp.read().decode("utf-8")
