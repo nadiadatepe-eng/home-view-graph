@@ -57,3 +57,6 @@ build/
 # tests/test_no_real_paths.py fanget nettopp det (14 treff). Fila er til for
 # at man skal se hvor arbeidet står på DENNE maskinen, ikke for leseren av repoet.
 TODO.md
+
+# Superpowers brainstorming-mockups (lokale, ikke del av pakka)
+.superpowers/
