@@ -13,6 +13,10 @@ what Python decides is under test.
 """
 from __future__ import annotations
 
+import json
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from .visualize import collect
 
 # The kinds that stand for something on disk. Named, not derived: M1's
@@ -72,3 +76,65 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
 
     return {"nodes": out_nodes, "edges": out_edges, "isolated": isolated,
             "missing": missing, "counts": counts, "truncated": truncated}
+
+
+def build_handler(server, payload):
+    """A request handler bound to one Server and one prebuilt graph payload.
+
+    A factory rather than class attributes: two GUIs in one process would
+    otherwise share whichever stores were configured last, and the tests run
+    several handlers in the same interpreter.
+
+    `server` is unused until Task 3 wires `/search` and friends to it -- kept
+    as a parameter now so the route methods added then do not change this
+    signature.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass                       # one line per request is noise, not a log
+
+        def _send(self, obj, code=200):
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/graph":
+                self._send(payload)
+            else:
+                self._send({"error": "no route %r" % self.path}, 404)
+
+    return _Handler
+
+
+def serve(model_paths, mesh_db=None, port=0, open_browser=True):
+    """Run in the foreground until Ctrl-C. No daemon, nothing outlives the shell.
+
+    Loopback only, and there is deliberately no host argument: this serves a
+    whole home directory's corpus, and a flag that could publish it is a flag
+    somebody will pass by accident. Reach it from elsewhere with `ssh -L`.
+    """
+    from .mcp_server import Server
+
+    payload = graph_payload(model_paths, mesh_db=mesh_db)
+    httpd = HTTPServer(("127.0.0.1", port),
+                       build_handler(Server(model_paths, mesh_db=mesh_db),
+                                     payload))
+    url = "http://127.0.0.1:%d/" % httpd.server_address[1]
+    print("serving on %s  (Ctrl-C to stop)" % url)
+    if payload["missing"]:
+        print("partial: no store for %s" % ", ".join(payload["missing"]))
+    if payload["truncated"]:
+        print("partial: capped read on %s" % ", ".join(payload["truncated"]))
+    if open_browser and not webbrowser.open(url):
+        print("could not open a browser; the URL above is the whole interface")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        httpd.server_close()

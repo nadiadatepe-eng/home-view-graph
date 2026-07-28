@@ -34,6 +34,29 @@ from homegraph.store import Store                                  # noqa: E402
 results, check = reporter(50)
 
 
+def _running(model_paths, mesh_db=None):
+    """Context manager yielding a live port on a real socket. No mocking."""
+    import contextlib
+    import threading
+    from http.server import HTTPServer
+
+    from homegraph.mcp_server import Server
+
+    @contextlib.contextmanager
+    def cm():
+        payload = gui.graph_payload(model_paths, mesh_db=mesh_db)
+        httpd = HTTPServer(("127.0.0.1", 0),
+                           gui.build_handler(Server(model_paths,
+                                                    mesh_db=mesh_db), payload))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            yield httpd.server_address[1]
+        finally:
+            httpd.shutdown()
+
+    return cm()
+
+
 def _build_synthetic_m3(root):
     """A tiny M3 store: a linked pair and a file nothing points at or from.
 
@@ -134,6 +157,56 @@ def t_isolated_computation(m3_db):
           names == {"isolated.md"}, "isolated=%s" % sorted(names))
 
 
+def t_binds_loopback_only():
+    """The address is not configurable, and that is the point."""
+    import inspect
+    src = inspect.getsource(gui.serve)
+    params = list(inspect.signature(gui.serve).parameters)
+    check("serve() hardcodes 127.0.0.1 and takes no host argument",
+          "127.0.0.1" in src and "host" not in params, "params=%s" % params)
+
+
+def t_graph_route_serves_the_payload(m3_db):
+    """GET /graph over a real socket -- a live port, a real HTTP request, no
+    mocking of `HTTPServer` or the handler. Runs against the synthetic store
+    so it always executes; `t_graph_route_matches_real_corpus` below is the
+    additional check that ties the same route to the real corpus's 602/315.
+    """
+    import json
+    import urllib.request
+    expected = gui.graph_payload({"m3": m3_db})
+    with _running({"m3": m3_db}) as port:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/graph" % port, timeout=10) as resp:
+            body = json.loads(resp.read())
+    check("GET /graph returns the payload over HTTP",
+          len(body["nodes"]) == len(expected["nodes"]) and
+          len(body["isolated"]) == len(expected["isolated"]),
+          "%d node(s), %d isolated" % (len(body["nodes"]), len(body["isolated"])))
+
+
+def t_graph_route_matches_real_corpus(real_db):
+    """602 nodes, 315 isolated, served over the same socket path as above.
+
+    Same SKIPPED pattern as `t_isolated_matches_md_gaps`: the figures are
+    measured on the real store, so this degrades to a named SKIPPED line
+    rather than vanishing when `~/.homegraph/real-m3.db` is absent.
+    """
+    if real_db is None:
+        check("GET /graph serves the real corpus (602 nodes, 315 isolated)",
+              True, "SKIPPED -- ~/.homegraph/real-m3.db not present on this machine")
+        return
+    import json
+    import urllib.request
+    with _running({"m3": real_db}) as port:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/graph" % port, timeout=30) as resp:
+            body = json.loads(resp.read())
+    check("GET /graph serves the real corpus (602 nodes, 315 isolated)",
+          len(body["nodes"]) == 602 and len(body["isolated"]) == 315,
+          "%d node(s), %d isolated" % (len(body["nodes"]), len(body["isolated"])))
+
+
 def t_isolated_matches_md_gaps(m3_db):
     """The cross-check against the real corpus. 315 of 602, if it is here.
 
@@ -170,6 +243,7 @@ def real_m3():
 
 def main():
     t_file_kinds_are_the_measured_four()
+    t_binds_loopback_only()
 
     with tempfile.TemporaryDirectory(prefix="gui-cp-") as tmp:
         synthetic_db = _build_synthetic_m3(tmp)
@@ -177,8 +251,10 @@ def main():
         t_capped_read_names_the_model_it_capped(synthetic_db)
         t_payload_drops_non_file_kinds(synthetic_db)
         t_isolated_computation(synthetic_db)
+        t_graph_route_serves_the_payload(synthetic_db)
 
     t_isolated_matches_md_gaps(real_m3())
+    t_graph_route_matches_real_corpus(real_m3())
 
     failed = [n for n, ok, _ in results if not ok]
     print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
