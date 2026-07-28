@@ -85,9 +85,7 @@ def build_handler(server, payload):
     otherwise share whichever stores were configured last, and the tests run
     several handlers in the same interpreter.
 
-    `server` is unused until Task 3 wires `/search` and friends to it -- kept
-    as a parameter now so the route methods added then do not change this
-    signature.
+    `server` backs `do_POST`'s `/search`, `/query` and `/neighbors` routes.
     """
 
     class _Handler(BaseHTTPRequestHandler):
@@ -107,6 +105,33 @@ def build_handler(server, payload):
                 self._send(payload)
             else:
                 self._send({"error": "no route %r" % self.path}, 404)
+
+        def _read_json(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if not length:
+                return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+
+        def do_POST(self):
+            routes = {"/search": server.mesh_search,
+                      "/query": server.query,
+                      "/neighbors": server.mesh_neighbors}
+            fn = routes.get(self.path)
+            if fn is None:
+                self._send({"error": "no route %r" % self.path}, 404)
+                return
+            try:
+                args = self._read_json()
+            except ValueError as exc:
+                self._send({"error": "bad JSON: %s" % exc}, 400)
+                return
+            try:
+                # Returned verbatim. `status`, `warnings` and `models_missing`
+                # are the answer's own account of how complete it is, and a
+                # transport that summarised them would be deciding something.
+                self._send(fn(**args))
+            except TypeError as exc:
+                self._send({"error": "bad arguments: %s" % exc}, 400)
 
     return _Handler
 

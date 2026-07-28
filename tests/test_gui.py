@@ -63,6 +63,19 @@ def _running(model_paths, mesh_db=None, limit_per_model=None):
     return cm()
 
 
+def _post(port, path, body):
+    """POST JSON to a live handler and return the decoded JSON response."""
+    import json
+    import urllib.request
+
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d%s" % (port, path), data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 def _build_synthetic_m3(root):
     """A tiny M3 store: a linked pair and a file nothing points at or from.
 
@@ -88,6 +101,11 @@ def _build_synthetic_m3(root):
     db = os.path.join(root, "synthetic-m3.db")
     with Store(db, model="m3") as store:
         build(store, paths, date(2026, 7, 22))
+        # `build` writes nodes and edges; the FTS5 shadow table is separate
+        # postprocessing (`Store.rebuild_fts`, the only thing that writes to
+        # it) that the real ingest pipeline runs and this synthetic corpus
+        # would otherwise skip, leaving `mesh_search` matching nothing.
+        store.rebuild_fts()
     return db
 
 
@@ -161,6 +179,56 @@ def t_isolated_computation(m3_db):
     names = {os.path.basename(p) for p in isolated_paths}
     check("only the file with no file-to-file edge is isolated",
           names == {"isolated.md"}, "isolated=%s" % sorted(names))
+
+
+def t_search_route_returns_hits(m3_db):
+    """POST /search over a live socket, routed to `Server.mesh_search`.
+
+    `mesh_search` needs no mesh store to answer (measured 2026-07-28), so
+    this runs against the synthetic corpus with no `mesh_db` at all, always
+    -- no SKIPPED degradation. "isolated" is the search term because it is
+    text that is actually in the synthetic corpus ("wikilink" names a
+    relation kind, not body text, and matches nothing); a check against a
+    query with zero possible hits could never fail.
+    """
+    with _running({"m3": m3_db}) as port:
+        out = _post(port, "/search", {"query": "isolated", "limit": 5})
+    check("POST /search returns ranked hits",
+          out.get("status") in ("complete", "partial") and out.get("hits"),
+          "status=%s hits=%d" % (out.get("status"), len(out.get("hits", []))))
+
+
+def t_missing_model_is_reported_as_partial(m3_db):
+    """The gate that must be able to say no.
+
+    A model that is configured but absent must surface as `partial` with the
+    model named. Swallowing it would make a half-answer indistinguishable from
+    a whole one -- the cbm failure this package was built against.
+    """
+    with _running({"m3": m3_db, "m9": "/nonexistent/m9.db"}) as port:
+        out = _post(port, "/search", {"query": "isolated", "limit": 5})
+    check("a missing model makes the answer partial and names itself",
+          out.get("status") == "partial"
+          and "m9" in out.get("models_missing", []),
+          "status=%s missing=%s" % (out.get("status"),
+                                    out.get("models_missing")))
+
+
+def t_query_route_refuses_unknown_model(m3_db):
+    """POST /query for a model the server was never given.
+
+    Measured against the real `Server.query` (2026-07-28): a model absent
+    from `model_paths` is caught before any query runs, returning
+    `status="error"` with the models the server does have named in the
+    message -- not `"refused"`, which is what `query()` returns for a
+    *configured* model whose language a request asks more of than it
+    supports.
+    """
+    with _running({"m3": m3_db}) as port:
+        out = _post(port, "/query", {"model": "m9", "query": "NODES"})
+    check("POST /query names the models it does have when refusing",
+          out.get("status") == "error" and "m3" in out.get("error", ""),
+          repr(out.get("error"))[:60])
 
 
 def t_binds_loopback_only():
@@ -289,6 +357,9 @@ def main():
         t_isolated_computation(synthetic_db)
         t_graph_route_serves_the_payload(synthetic_db)
         t_graph_route_preserves_missing_and_truncated(synthetic_db)
+        t_search_route_returns_hits(synthetic_db)
+        t_missing_model_is_reported_as_partial(synthetic_db)
+        t_query_route_refuses_unknown_model(synthetic_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())
