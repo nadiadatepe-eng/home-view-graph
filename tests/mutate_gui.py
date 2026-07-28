@@ -345,6 +345,39 @@ MUTATIONS = [
      "            except (BadArgument, TypeError) as exc:"
      "  # mutated: reopens a9b8022",
      "a TypeError from inside a route body is a 500 with a traceback, not a 400"),
+
+    # -- fix round 1 of this task: two proven-but-unguarded findings --------
+
+    # task-3 fix round 1, Important 2: the checks only ever read three of
+    # `mesh_search`'s five keys. A transport that drops `warnings` and
+    # `models_queried` on the way out passed every one of them.
+    ("do_POST drops warnings and models_queried from the response",
+     "homegraph/gui.py",
+     "            self._send(result)",
+     "            if isinstance(result, dict):\n"
+     "                result = {k: v for k, v in result.items()\n"
+     "                         if k not in (\"warnings\", \"models_queried\")}"
+     "  # mutated\n"
+     "            self._send(result)",
+     "POST /search returns mesh_search's response verbatim, all five keys"),
+
+    # task-4 fix round 2, the isinstance guard: without it, `dsts: "abc"`
+    # silently became three one-character destinations and `dsts: 5` was a
+    # 500, not a 400.
+    ("bridges()'s isinstance(dsts, list) guard is removed",
+     "homegraph/gui.py",
+     "    if dsts is None:\n"
+     "        dsts = []\n"
+     "    elif not isinstance(dsts, list):\n"
+     "        # `list(\"abc\")` silently becomes three one-character destinations\n"
+     "        # instead of refusing a caller who meant one; `list(5)` raises\n"
+     "        # `TypeError`, which past this point reads as an internal bug, not a\n"
+     "        # caller mistake. Both are wrong shapes, checked explicitly instead\n"
+     "        # of relying on either accident.\n"
+     "        raise BadArgument(\"dsts must be a list of node keys, got %s\"\n"
+     "                          % type(dsts).__name__)",
+     "    dsts = list(dsts or [])  # mutated: no isinstance guard",
+     "a /path call with a non-list dsts is a 400, not a 500"),
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
