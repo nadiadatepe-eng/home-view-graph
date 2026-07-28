@@ -51,6 +51,21 @@ class ModelUnavailable(Exception):
     pass
 
 
+class AmbiguousKey(Exception):
+    """A bare key resolved under more than one model prefix -- refused, not guessed.
+
+    Measured against real-mesh.db (9 125 nodes): 0 paths appear under more
+    than one model prefix. The corpus classifier gives each path exactly one
+    partition, which makes collision structurally rare rather than merely
+    unlucky -- and rare is the reason to refuse loudly the day it happens,
+    not a reason to skip the check. Picking the first candidate would be
+    right for whichever caller meant that model and silently wrong for the
+    other, with nothing in the answer to say so -- the same shape of
+    confident-wrong-answer this package measures `mesh_neighbors` against
+    elsewhere in this file.
+    """
+
+
 class Neighbour(typing.NamedTuple):
     """One traversed edge, with how it was derived.
 
@@ -716,6 +731,45 @@ class Mesh:
                                    "`homegraph mesh build`" % self.mesh_db)
         return Store(self.mesh_db)
 
+    def _resolve_key(self, mesh, key):
+        """A bare or qualified key, resolved to mesh.db's `<model>::<path>` form.
+
+        `mesh_search` hands back `node_key` as a bare path with `model` as a
+        separate field, but the mesh keys nodes `<model>::<path>`. A caller
+        that chains a search hit straight into `neighbours`/`path` therefore
+        holds a key the store never indexed under -- measured against
+        real-mesh.db (9 125 nodes): 0 of 7 search-hit keys resolved as given,
+        7 of 7 resolved once qualified, and `mesh_neighbors` on the unresolved
+        form answered `count=0, status=complete` -- a confident wrong answer,
+        not a visible miss.
+
+        Exact match wins first, so a caller that already holds a qualified
+        key -- or a key from mid-traversal, which is always qualified because
+        it came out of `edges` -- pays nothing extra. Failing that, every
+        model prefix actually present in the mesh is tried, read off the
+        stored `node_key`s rather than off `self.model_paths`: `code` stubs
+        live in mesh.db with no entry in `self.model_paths`, and a literal
+        `m1..m4, code` list drifts the day a sixth partition lands.
+
+        Two or more prefixes resolving raises `AmbiguousKey` instead of
+        picking one -- see that class for the measurement backing the
+        refusal. Nothing resolving returns `None`: absent is absent, same as
+        before this resolver existed.
+        """
+        if mesh.node_id(key) is not None:
+            return key
+        prefixes = [row[0] for row in mesh.db.execute(
+            "SELECT DISTINCT substr(node_key, 1, instr(node_key, '::') - 1) "
+            "FROM nodes WHERE node_key LIKE '%::%'")]
+        candidates = [q for q in ("%s::%s" % (model, key)
+                                   for model in sorted(prefixes))
+                      if mesh.node_id(q) is not None]
+        if len(candidates) > 1:
+            raise AmbiguousKey(
+                "%r resolves under more than one model prefix: %s"
+                % (key, ", ".join(candidates)))
+        return candidates[0] if candidates else None
+
     def neighbours(self, node_key, depth=1):
         mesh = self._read_mesh()
         try:
@@ -726,21 +780,22 @@ class Mesh:
                     if key in seen:
                         continue
                     seen.add(key)
-                    nid = mesh.node_id(key)
-                    if nid is None:
+                    resolved = self._resolve_key(mesh, key)
+                    if resolved is None:
                         continue
+                    nid = mesh.node_id(resolved)
                     for row in mesh.db.execute(
                             "SELECT d.node_key k, e.rel, e.method, "
                             "e.confidence FROM edges e "
                             "JOIN nodes d ON d.id=e.dst WHERE e.src=?", (nid,)):
-                        out.append(Neighbour(key, row["rel"], row["k"],
+                        out.append(Neighbour(resolved, row["rel"], row["k"],
                                              row["method"], row["confidence"]))
                         nxt.append(row["k"])
                     for row in mesh.db.execute(
                             "SELECT s.node_key k, e.rel, e.method, "
                             "e.confidence FROM edges e "
                             "JOIN nodes s ON s.id=e.src WHERE e.dst=?", (nid,)):
-                        out.append(Neighbour(row["k"], row["rel"], key,
+                        out.append(Neighbour(row["k"], row["rel"], resolved,
                                              row["method"], row["confidence"]))
                         nxt.append(row["k"])
                 frontier = nxt
@@ -752,9 +807,11 @@ class Mesh:
         """Shortest path between two mesh nodes. Breadth-first, cycle-safe."""
         mesh = self._read_mesh()
         try:
-            if mesh.node_id(src) is None or mesh.node_id(dst) is None:
+            rsrc = self._resolve_key(mesh, src)
+            rdst = self._resolve_key(mesh, dst)
+            if rsrc is None or rdst is None:
                 return None
-            seen, queue = {src}, collections.deque([[src]])
+            seen, queue = {rsrc}, collections.deque([[rsrc]])
             while queue:
                 trail = queue.popleft()
                 if len(trail) > max_depth:
@@ -766,8 +823,8 @@ class Mesh:
                         "UNION SELECT s.node_key k FROM edges e "
                         "JOIN nodes s ON s.id=e.src WHERE e.dst=?",
                         (nid, nid)):
-                    if row["k"] == dst:
-                        return trail + [dst]
+                    if row["k"] == rdst:
+                        return trail + [rdst]
                     if row["k"] not in seen:
                         seen.add(row["k"])
                         queue.append(trail + [row["k"]])

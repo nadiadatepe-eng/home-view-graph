@@ -249,6 +249,53 @@ MUTATIONS = [
      "        mesh = Store(self.mesh_db)  # mutated: second way in",
      "mesh_path refuses on a missing mesh too"),
 
+    # -- key resolution (CP-MESHKEY) ---------------------------------------
+    #
+    # mesh_search returns node_key as a bare path; the mesh keys nodes
+    # <model>::<path>. _resolve_key is what lets neighbours()/path() accept
+    # either form, and each of its three branches gets its own mutation.
+    ("the prefix fallback is removed from key resolution",
+     "homegraph/mesh.py",
+     "        if mesh.node_id(key) is not None:\n"
+     "            return key\n"
+     "        prefixes = [row[0] for row in mesh.db.execute(\n"
+     "            \"SELECT DISTINCT substr(node_key, 1, instr(node_key, '::') - 1) \"\n"
+     "            \"FROM nodes WHERE node_key LIKE '%::%'\")]\n"
+     "        candidates = [q for q in (\"%s::%s\" % (model, key)\n"
+     "                                   for model in sorted(prefixes))\n"
+     "                      if mesh.node_id(q) is not None]\n"
+     "        if len(candidates) > 1:\n"
+     "            raise AmbiguousKey(\n"
+     "                \"%r resolves under more than one model prefix: %s\"\n"
+     "                % (key, \", \".join(candidates)))\n"
+     "        return candidates[0] if candidates else None",
+     "        return key if mesh.node_id(key) is not None else None"
+     "  # mutated: no <model>:: fallback",
+     "mesh_neighbors composes the same whether the key is bare or "
+     "<model>::-qualified"),
+
+    ("the ambiguity branch is resolved to the first candidate",
+     "homegraph/mesh.py",
+     "        if len(candidates) > 1:\n"
+     "            raise AmbiguousKey(\n"
+     "                \"%r resolves under more than one model prefix: %s\"\n"
+     "                % (key, \", \".join(candidates)))\n"
+     "        return candidates[0] if candidates else None",
+     "        return candidates[0] if candidates else None"
+     "  # mutated: ambiguity picks the first candidate",
+     "an ambiguous key is refused, not guessed"),
+
+    ("exact-match-first is removed, so a qualified key goes down the "
+     "fallback path",
+     "homegraph/mesh.py",
+     "        if mesh.node_id(key) is not None:\n"
+     "            return key\n"
+     "        prefixes = [row[0] for row in mesh.db.execute(",
+     "        prefixes = [row[0] for row in mesh.db.execute("
+     "  # mutated: exact match no longer wins first",
+     "mesh_neighbors composes the same whether the key is bare or "
+     "<model>::-qualified"),
+
     # -- the federation ---------------------------------------------------
     # The difference between "this model is not here" and "this model found
     # nothing" is the whole reason `partial` exists. Collapsing them is the

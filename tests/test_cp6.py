@@ -45,7 +45,7 @@ if not REAL:
     os.environ.setdefault("HOMEGRAPH_ROOT", SYNTH_ROOT)
 
 from homegraph.corpus import Classifier                        # noqa: E402
-from homegraph.mesh import Mesh, ModelUnavailable              # noqa: E402
+from homegraph.mesh import AmbiguousKey, Mesh, ModelUnavailable  # noqa: E402
 from homegraph.models import m1_build, m2_build, m3_build, m4_misc  # noqa: E402
 from homegraph.store import Store                              # noqa: E402
 from homegraph.temporal import refresh_all_datelists           # noqa: E402
@@ -946,6 +946,70 @@ def t_mcp(tmp, paths, spec):
     check("mesh_search answers over stdio", body["hits"] and
           body["status"] == "complete", "%d hit(s), status=%s"
           % (len(body["hits"]), body["status"]))
+
+    # CP-MESHKEY: mesh_search returns node_key as a bare path with model as
+    # a separate field, but the mesh keys nodes <model>::<path>. Measured
+    # against real-mesh.db (9 125 nodes): mesh_neighbors on the bare form of
+    # a search hit gave count=0, status=complete -- a confident wrong answer
+    # -- and on the <model>::-qualified form gave count=3, status=partial.
+    # `spec["query"]` (the earlier mesh_search call, above) never lands on a
+    # node with an edge in THIS test's mesh.db, which build_edges here fills
+    # with FIGURE_FOR only (no --code-root), so this asks separately for
+    # "art" --
+    # true in both corpora, since FIGURE_FOR exists to link art notes to the
+    # images they discuss -- and walks the hits for the first with a real
+    # neighbour. An equivalence between two zeroes would pass while the
+    # defect stands, which is why count > 0 is asserted too.
+    art = handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                 "params": {"name": "mesh_search",
+                            "arguments": {"query": "art", "limit": 20}}})
+    art_hits = json.loads(art["result"]["content"][0]["text"])["hits"]
+    bare_body = qualified_body = None
+    for h in art_hits:
+        b = handle({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                    "params": {"name": "mesh_neighbors",
+                               "arguments": {"node": h["node_key"]}}})
+        bb = json.loads(b["result"]["content"][0]["text"])
+        if bb["count"] > 0:
+            q = handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                       "params": {"name": "mesh_neighbors",
+                                  "arguments": {"node": "%s::%s"
+                                                % (h["model"],
+                                                   h["node_key"])}}})
+            bare_body = bb
+            qualified_body = json.loads(q["result"]["content"][0]["text"])
+            break
+    check("mesh_neighbors composes the same whether the key is bare or "
+          "<model>::-qualified",
+          bare_body is not None and bare_body["count"] > 0
+          and bare_body["count"] == qualified_body["count"]
+          and bare_body["status"] == qualified_body["status"],
+          "bare: count=%s status=%s; qualified: count=%s status=%s"
+          % (bare_body and bare_body["count"], bare_body and bare_body["status"],
+             qualified_body and qualified_body["count"],
+             qualified_body and qualified_body["status"])
+          if bare_body is not None else "no 'art' hit had any neighbours")
+
+    # No collision exists on the real corpus to trip this branch (0 of
+    # 9 125 real-mesh.db paths appear under more than one model prefix,
+    # measured), so it is built here: the same bare path stored under two
+    # model prefixes, and the resolver must refuse rather than pick one.
+    amb_db = os.path.join(tmp, "ambiguous-mesh.db")
+    with Store(amb_db, model="m5") as amb:
+        amb.upsert_node("m1::/x/y.md", kind="file", path="/x/y.md", as_of=AS_OF)
+        amb.upsert_node("m3::/x/y.md", kind="file", path="/x/y.md", as_of=AS_OF)
+    with Mesh({}, mesh_db=amb_db) as amb_mesh:
+        try:
+            amb_mesh.neighbours("/x/y.md")
+            raised = None
+        except AmbiguousKey as exc:
+            raised = str(exc)
+        except Exception as exc:                                # noqa: BLE001
+            raised = "wrong exception: %r" % exc
+    check("an ambiguous key is refused, not guessed",
+          raised is not None and "m1::/x/y.md" in raised
+          and "m3::/x/y.md" in raised,
+          str(raised))
 
     # The property that matters for an unattended client: a degraded answer
     # must announce itself, because an agent never sees the model list.
