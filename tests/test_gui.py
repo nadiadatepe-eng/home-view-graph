@@ -154,6 +154,13 @@ def _build_synthetic_m3_for_path(root):
         # zero edges, and `/neighbors` needs a note that names an image file,
         # matched against the m2 store `_build_synthetic_m2_for_path` builds.
         write("figures.md", "# Figures\n\nSee synthetic-figure.png for detail.\n"),
+        # An apostrophe in a filename, planted deliberately. The page
+        # interpolates node keys into single-quoted attributes, and until this
+        # fixture existed nothing in the suite could produce the character that
+        # closes one early -- so `data-key='m3::/tmp/…/it'` truncated at the
+        # apostrophe, `select()` posted a key no node has, and `/path`
+        # answered "no bridges" about a node that was never asked about.
+        write("it's-a-note.md", "# Apostrophe\n\nA filename with a quote.\n"),
     ]
     paths += [write("filler-%03d.md" % i, "# Filler %d\n\nBody text %d.\n" % (i, i))
               for i in range(gui.DEFAULT_CAP + 10)]
@@ -701,6 +708,39 @@ def t_positions_are_deterministic(m3_db):
           "%d node(s), %d distinct position(s)" % (len(first), spread))
 
 
+# Measured on this fixture 2026-07-28 with `_layout(seed=20260722,
+# iterations=180, width=1600.0)` and `BAND_GAP = 140.0`. Stable across
+# tempdirs: the node order is `ORDER BY node_key`, and all three files share
+# one prefix, so the machine's temporary directory does not reach the layout.
+_PINNED = [("isolated.md", -564.5, 620.9),      # banded, x0 = the cloud's own
+           ("linked-a.md", -564.5, -455.6),
+           ("linked-b.md", 63.5, 480.9)]
+_PINNED_DIVIDER = 550.9
+
+
+def t_positions_match_their_measured_values(m3_db):
+    """The literal, pinned -- the half of determinism the comparison above
+    cannot see.
+
+    `t_positions_are_deterministic` compares two builds of the SAME version, so
+    it is silent about a behavioural change to the layout: retune
+    `visualize._layout`'s `seed`, `iterations` or `width`, or `gui.BAND_GAP`,
+    and every node moves while both builds still agree and all other checks
+    stay green. `gui.py` calls `_layout` across a module boundary and `_layout`
+    is private, so nothing else in the tree would report it either. A rename or
+    an arity change is already loud; this is the quiet one.
+
+    Re-blessing these numbers on a deliberate retune is the point of them, not
+    a nuisance: the diff then says the picture changed, which is exactly what
+    happened.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    got = [(os.path.basename(n["path"]), n["x"], n["y"]) for n in payload["nodes"]]
+    check("the layout still places the fixture where it was measured",
+          got == _PINNED and payload["band_divider"] == _PINNED_DIVIDER,
+          "got=%s divider=%s" % (got, payload["band_divider"]))
+
+
 def t_isolated_nodes_are_banded_not_simulated(m3_db):
     """An isolated node has no information in its position, so it does not get
     one from the simulation.
@@ -776,9 +816,13 @@ def t_page_is_shipped_and_self_contained(m3_db, mesh_db):
     if not os.path.exists(page):
         return
     text = open(page, encoding="utf-8").read()
-    external = re.findall(r"""(?:src|href)\s*=\s*["']https?://[^"']+""", text)
+    # Not a `src=`/`href=` pattern: that shape passes a `fetch("https://…")`,
+    # an `@import url(…)`, a `new Image().src = …` and a WebSocket, none of
+    # which are attributes. Any absolute URL at all is the thing being banned,
+    # so the scheme is the needle. Strictly stronger, and green today.
+    external = [m for m in re.findall(r"https?://[^\s\"'<>)]+", text)]
     check("the page references no external host",
-          not external, "%d external reference(s)" % len(external))
+          not external, "%d external URL(s): %s" % (len(external), external[:2]))
     with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/" % port, timeout=10) as resp:
@@ -787,17 +831,28 @@ def t_page_is_shipped_and_self_contained(m3_db, mesh_db):
           "%d byte(s) served, %d on disk" % (len(served), len(text)))
 
 
-# The one piece of the page that is a decision tree rather than a drawing:
-# the schematic has TWO conditions, and with one satisfied it must name which
-# of them is missing instead of going blank. Exercised by running the page's
-# own `<script>` under `node` against a fake payload and a fake DOM -- nothing
-# is installed, nothing is imported into the page, and the check degrades to a
-# named SKIPPED line on a machine without `node`, the same way the real-corpus
-# checks do. `boot()` is stripped so the harness drives the functions itself
-# rather than fetching.
+# The page's own script, run under `node` against a fake DOM and the REAL
+# payload `graph_payload` produced for the synthetic corpus. Nothing is
+# installed and nothing is imported into the page; the checks below degrade to
+# named SKIPPED lines on a machine without `node`, the same way the real-corpus
+# checks do. `boot()` is stripped from the source so the harness drives the
+# functions itself.
+#
+# The first version exported only `{boot, renderSchematic, state}`, which left
+# `renderHits`, `renderRows`, `runSearch`, `select` and `nodeAt` never
+# executed -- four concrete defects stayed green under it, all four now
+# covered: a dropped `models_missing`, a dropped `warnings` loop, a broken
+# `model + "::" + node_key` join, and a `dsts` list that includes the node the
+# path starts from.
+#
+# `fetch` is route-aware and recording, so `/path`'s request body can be read
+# back, and `/search` can be made to answer 500 -- the case where the page used
+# to print `undefined: 0 treff` and call a server exception an empty result.
 _PAGE_HARNESS = r"""
 const fs = require("fs");
-const src = fs.readFileSync(process.argv[2], "utf8");  // argv[1] is this file
+const src = fs.readFileSync(process.argv[2], "utf8");   // argv[1] is this file
+const payload = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
 const mk = () => ({innerHTML: "", textContent: "", className: "", value: "",
   hidden: false, style: {}, dataset: {}, closest: () => null,
   addEventListener() {}, getContext: () => new Proxy({}, {get: () => () => {}}),
@@ -808,87 +863,231 @@ global.document = {getElementById: (id) => els[id] || (els[id] = mk()),
     return String(this.textContent).replace(/&/g, "&amp;")
       .replace(/</g, "&lt;").replace(/>/g, "&gt;"); }})};
 global.window = {devicePixelRatio: 1, addEventListener() {}};
-const payload = {
-  nodes: [{key: "m3::/a.md", title: "A", model: "m3", path: "/a.md", x: 0, y: 0},
-          {key: "m3::/b.md", title: "B", model: "m3", path: "/b.md", x: 10, y: 5},
-          {key: "m3::/c.md", title: "C", model: "m3", path: "/c.md", x: 0, y: 200}],
-  edges: [[0, 1, "WIKILINKS_TO", null, null]], isolated: ["m3::/c.md"],
-  isolated_count: 1, isolated_share: 33.3, models: ["m3"], counts: {m3: 3},
-  missing: ["m9"], truncated: ["m3"]};
-global.fetch = async () => ({json: async () => payload, status: 200});
+
+// Two real keys out of the payload: the one with an apostrophe in its path,
+// and any other. Taken from the fixture rather than written here, so the
+// escaping is exercised against a filename that exists on disk.
+const apo = payload.nodes.find((n) => n.key.indexOf("'") !== -1);
+const other = payload.nodes.find((n) => n !== apo);
+const asHit = (n) => ({model: n.model, node_key: n.key.slice(n.model.length + 2),
+                       title: n.title, path: n.path});
+const searchOK = {status: "complete", hits: [asHit(apo), asHit(other)],
+                  warnings: ["EN ADVARSEL"], models_missing: ["m9"]};
+
+let searchStatus = 200, searchBody = searchOK;
+let queryStatus = 200, queryBody = null;
+const calls = [];
+global.fetch = async (url, opts) => {
+  calls.push({url: url, body: opts && opts.body ? JSON.parse(opts.body) : null});
+  if (url === "/graph")  return {status: 200, json: async () => payload};
+  if (url === "/search") return {status: searchStatus, json: async () => searchBody};
+  if (url === "/query")  return {status: queryStatus, json: async () => queryBody};
+  if (url === "/path")   return {status: 200, json: async () => ({
+      src: apo.key, max_depth: 4, cap: 20, truncated: true,
+      bridges: [{dst: other.key, path: [apo.key, other.key]}],
+      unreachable: ["m3::/gone.md"]})};
+  return {status: 404, json: async () => ({error: "no route"})};
+};
+
 const api = new Function(src.replace(/\nboot\(\);\s*$/, "\n") +
-  "\nreturn {boot, renderSchematic, state};")();
-const hits = (n) => ({status: "complete", warnings: [], models_missing: [],
-  hits: [{model: "m3", node_key: "/a.md", title: "A", path: "/a.md"},
-         {model: "m3", node_key: "/b.md", title: "B", path: "/b.md"}].slice(0, n)});
+  "\nreturn {boot, renderSchematic, renderHits, renderRows, runSearch, select," +
+  " nodeAt, sx, sy, state};")();
 const v2 = () => document.getElementById("v2").innerHTML;
-api.boot().then(() => {
-  const out = {status: document.getElementById("status").textContent};
-  api.renderSchematic();                       out.neither = v2();
-  api.state.search = hits(2);
-  api.renderSchematic();                       out.search_only = v2();
-  api.state.search = null; api.state.selection = "m3::/a.md";
-  api.renderSchematic();                       out.selection_only = v2();
-  api.state.search = hits(2);
-  api.renderSchematic({src: "m3::/a.md", max_depth: 4, cap: 20, truncated: true,
-    bridges: [{dst: "m3::/b.md", path: ["m3::/a.md", "m3::/b.md"]}],
-    unreachable: ["m3::/gone.md"]});
+const status = () => document.getElementById("status").textContent;
+const out = {};
+
+api.boot().then(async () => {
+  out.boot_status = status();
+
+  // -- the schematic's two conditions ------------------------------------
+  api.renderSchematic();                              out.neither = v2();
+  api.state.search = searchOK;
+  api.renderSchematic();                              out.search_only = v2();
+  api.state.search = null; api.state.selection = apo.key;
+  api.renderSchematic();                              out.selection_only = v2();
+  api.state.search = null; api.state.selection = null;
+
+  // -- a real search, through runSearch ----------------------------------
+  document.getElementById("mode").value = "search";
+  document.getElementById("q").value = "noe";
+  await api.runSearch();
+  out.search_request = calls[calls.length - 1].body;
+  out.search_status = status();
+  out.hits_html = document.getElementById("hits").innerHTML;
+  const m = out.hits_html.match(/data-key='([^']*)'/);
+  out.first_key = m ? m[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+                          .replace(/&amp;/g, "&") : null;
+  out.apo_key = apo.key;
+
+  // -- a click: the dsts must not contain the node the path starts from --
+  await api.select(apo.key);
+  out.path_request = calls[calls.length - 1].body;
   out.both = v2();
+
+  // -- a 500 from /search is not an empty result set ---------------------
+  searchStatus = 500; searchBody = {error: "simulated internal bug"};
+  await api.runSearch();
+  out.error_status = status();
+  out.error_hits = document.getElementById("hits").innerHTML;
+
+  // -- the closed language: a table, and a refusal -----------------------
+  searchStatus = 200; searchBody = searchOK;
+  document.getElementById("mode").value = "query";
+  queryBody = {status: "complete", columns: ["a.path"], rows: [["/x.md"]],
+               warnings: [], candidates: []};
+  await api.runSearch();
+  out.rows_status = status();
+  out.rows_html = document.getElementById("hits").innerHTML;
+  queryStatus = 500; queryBody = {error: "simulated internal bug"};
+  await api.runSearch();
+  out.query_error_status = status();
+
+  // -- hit testing -------------------------------------------------------
+  const n0 = payload.nodes[0];
+  const found = api.nodeAt({clientX: api.sx(n0.x), clientY: api.sy(n0.y)});
+  out.hit_test = found ? found.key : null;
+  out.hit_test_miss = api.nodeAt({clientX: -9999, clientY: -9999});
+
   console.log(JSON.stringify(out));
 }).catch((e) => { console.error(String(e && e.stack || e)); process.exit(1); });
 """
 
 
-def t_page_names_which_condition_is_missing():
-    """The schematic's two conditions, driven through the page's own script.
+_PAGE_LIMIT = 7          # see `_run_page`: a number `DEFAULT_CAP` is not
 
-    A search with hits AND a selected node. With one of the two satisfied the
-    pane must say which one is absent -- "nothing to draw" and "you have done
-    half of it" are different states, and a blank pane says neither. Also
-    proves an `unreachable` destination is drawn rather than omitted, and that
-    a truncated bridge set says so.
 
-    Every assertion here can go red: three distinct texts are required for the
-    three incomplete states, so a page that fell back to one generic message
-    fails, and one that drew only the bridges it found fails on `ingen sti`.
+def _run_page(m3_db):
+    """Run the page's script under `node` against a real payload.
+
+    Returns the harness's dict, or a string naming why it could not run.
     """
     import json
+    import re
     import shutil
     import subprocess
 
     node = shutil.which("node")
     page = os.path.join(os.path.dirname(gui.__file__), "assets", "gui.html")
     if node is None or not os.path.exists(page):
-        check("the schematic names which of its two conditions is missing",
-              True, "SKIPPED -- no `node` on this machine to run the page's "
-                    "own script under")
-        return
-    import re
+        return "SKIPPED -- no `node` on this machine to run the page under"
     script = re.search(r"<script>(.*)</script>",
                        open(page, encoding="utf-8").read(), re.S).group(1)
+    # A model with no store on disk, so `payload["missing"]` is non-empty and
+    # the page's `delvis:` banner has something to say. Two empty honesty
+    # fields would let a page that dropped the banner entirely stay green.
+    payload = gui.graph_payload({"m3": m3_db, "ghost": "/no/such/store.db"})
+    # Overwritten to something `DEFAULT_CAP` is not, on purpose: the page's
+    # `/search` limit used to be a literal `20` in JavaScript, and a check that
+    # compared the request against `gui.DEFAULT_CAP` -- also 20 -- would have
+    # passed on the literal. `_PAGE_LIMIT` is a value only the payload can
+    # supply, so reading it back proves the page took it from there.
+    payload["search_limit"] = _PAGE_LIMIT
+    if not any("'" in n["key"] for n in payload["nodes"]):
+        # The harness picks the apostrophe node out of the payload; without one
+        # the escaping check would compare a key that never needed escaping to
+        # itself and could not go red.
+        return "the fixture planted no filename with an apostrophe"
     with tempfile.TemporaryDirectory(prefix="gui-page-") as tmp:
-        js = os.path.join(tmp, "page.js")
-        harness = os.path.join(tmp, "harness.js")
-        with open(js, "w", encoding="utf-8") as fh:
-            fh.write(script)
-        with open(harness, "w", encoding="utf-8") as fh:
-            fh.write(_PAGE_HARNESS)
-        proc = subprocess.run([node, harness, js], capture_output=True,
-                              text=True, timeout=60)
+        paths = {}
+        for name, text in (("page.js", script),
+                           ("harness.js", _PAGE_HARNESS),
+                           ("payload.json", json.dumps(payload))):
+            paths[name] = os.path.join(tmp, name)
+            with open(paths[name], "w", encoding="utf-8") as fh:
+                fh.write(text)
+        try:
+            proc = subprocess.run(
+                [node, paths["harness.js"], paths["page.js"],
+                 paths["payload.json"]], capture_output=True, text=True,
+                timeout=60)
+        except subprocess.TimeoutExpired:
+            return "the page's script did not finish in 60 s"
     if proc.returncode != 0:
-        check("the schematic names which of its two conditions is missing",
-              False, "the page's script threw: %s"
-                     % (proc.stderr.strip().splitlines() or [""])[0][:90])
+        return ("the page's script threw: %s"
+                % (proc.stderr.strip().splitlines() or [""])[0][:90])
+    return json.loads(proc.stdout)
+
+
+def t_page_behaviour(m3_db):
+    """Five properties of the page, driven through its own script.
+
+    Grouped into one `node` run because the run is the expensive part; each
+    check below reads a different key out of it, and each can go red on its
+    own. Every one maps to a defect that was live in this file:
+
+    1. The schematic's two conditions -- three distinct texts for the three
+       incomplete states, so a page that fell back to one generic message
+       fails, and one that drew only the bridges it found fails on `ingen sti`.
+    2. An apostrophe in a filename survives into `data-key`. Before `esc`
+       escaped quotes, `it's-a-note.md` produced a key truncated at the
+       apostrophe, and `/path` answered "no bridges" about a node nobody asked
+       about -- a wrong answer wearing the shape of a finding.
+    3. A non-200 is not a result set. `undefined: 0 treff` was a 500 from
+       `/search` rendered as an empty search.
+    4. `warnings` and `models_missing` reach the status line, and the `/search`
+       limit comes from the payload rather than a second copy of `DEFAULT_CAP`.
+    5. `/path`'s `dsts` exclude the node the path starts from, and `nodeAt`
+       finds a node at its own coordinates and nothing at the far corner.
+    """
+    names = ["the schematic names which of its two conditions is missing",
+             "an apostrophe in a filename survives into data-key",
+             "a non-200 answer is an error, not an empty result set",
+             "warnings, models_missing and the payload's own limit are used",
+             "a click asks for bridges to the OTHER hits, and only those"]
+    out = _run_page(m3_db)
+    if isinstance(out, str):
+        for name in names:
+            check(name, out.startswith("SKIPPED"), out)
         return
-    out = json.loads(proc.stdout)
+
+    import re
     states = [out["neither"], out["search_only"], out["selection_only"]]
-    check("the schematic names which of its two conditions is missing",
+    check(names[0],
           len(set(states)) == 3
           and "mangler: en valgt node" in out["search_only"]
           and "mangler: et søk" in out["selection_only"]
           and "ingen sti" in out["both"] and "avkortet" in out["both"]
-          and "delvis" in out["status"],
-          "; ".join(re.sub(r"<[^>]+>", "", s)[:34] for s in states))
+          # `<title>` a CHILD of the circle, not a sibling: SVG renders no
+          # tooltip for a sibling, and the visible label is sliced to 22
+          # characters, so the full key would be unrecoverable.
+          # EVERY circle, not merely one of them: the first version of this
+          # clause asked only that `</title></circle>` appear somewhere, and a
+          # mutation that self-closed the bridge circles stayed green because
+          # the unreachable circle still carried its title.
+          and out["both"].count("<circle") == out["both"].count("</title></circle>")
+          and "/><title>" not in out["both"],
+          "; ".join(re.sub(r"<[^>]+>", "", s)[:30] for s in states))
+
+    check(names[1],
+          "'" in out["apo_key"] and out["first_key"] == out["apo_key"]
+          and "&#39;" in out["hits_html"],
+          "key=%r read back as %r" % (out["apo_key"][-24:],
+                                      (out["first_key"] or "")[-24:]))
+
+    check(names[2],
+          out["error_status"].startswith("HTTP 500")
+          and "undefined" not in out["error_status"]
+          and out["error_hits"] == ""
+          and out["query_error_status"].startswith("HTTP 500"),
+          "search=%r query=%r" % (out["error_status"][:40],
+                                  out["query_error_status"][:40]))
+
+    check(names[3],
+          "m9" in out["search_status"] and "EN ADVARSEL" in out["search_status"]
+          and "delvis" in out["boot_status"] and "ghost" in out["boot_status"]
+          and out["search_request"]["limit"] == _PAGE_LIMIT
+          and "1 rad(er)" in out["rows_status"],
+          "boot=%r status=%r limit=%r" % (out["boot_status"][:34],
+                                          out["search_status"][:40],
+                                          out["search_request"].get("limit")))
+
+    dsts = out["path_request"]["dsts"]
+    check(names[4],
+          out["path_request"]["src"] == out["apo_key"]
+          and out["apo_key"] not in dsts and len(dsts) == 1
+          and out["hit_test"] is not None and out["hit_test_miss"] is None,
+          "src excluded from %d dst(s), hit_test=%s"
+          % (len(dsts), (out["hit_test"] or "")[-18:]))
 
 
 def t_gui_subcommand_exists_without_a_host_flag(m3_db):
@@ -1016,7 +1215,6 @@ def t_path_route_answers_over_the_real_corpus(real_m3_db, real_mesh_db):
 def main():
     t_file_kinds_are_the_measured_four()
     t_binds_loopback_only()
-    t_page_names_which_condition_is_missing()
 
     with tempfile.TemporaryDirectory(prefix="gui-cp-") as tmp:
         synthetic_db = _build_synthetic_m3(tmp)
@@ -1025,6 +1223,7 @@ def main():
         t_payload_drops_non_file_kinds(synthetic_db)
         t_isolated_computation(synthetic_db)
         t_positions_are_deterministic(synthetic_db)
+        t_positions_match_their_measured_values(synthetic_db)
         t_isolated_nodes_are_banded_not_simulated(synthetic_db)
         t_band_states_its_count_and_share(synthetic_db)
         t_gui_subcommand_exists_without_a_host_flag(synthetic_db)
@@ -1051,6 +1250,8 @@ def main():
         t_neighbors_route_returns_edges(path_db, mesh_db)
         t_neighbors_route_without_mesh_answers_rather_than_resets(path_db)
         t_page_is_shipped_and_self_contained(path_db, mesh_db)
+        # Needs the corpus that plants `it's-a-note.md`.
+        t_page_behaviour(path_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())

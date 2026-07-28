@@ -65,7 +65,6 @@ const state = { filter: null, search: null, selection: null };
 
 let payload = null;      // the /graph answer, fetched once
 let view = null;         // payload space -> canvas space, computed once
-let bandTop = null;      // y of the first band row, in payload space
 let graphKeys = null;    // every key that has a dot to colour
 let hitKeys = new Set(); // node keys the current search matched
 
@@ -76,7 +75,14 @@ const ctx = canvas.getContext("2d");
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s === null || s === undefined ? "" : String(s);
-  return d.innerHTML;
+  // `textContent` -> `innerHTML` escapes `&`, `<` and `>` and nothing else,
+  // and every use below interpolates into a SINGLE-QUOTED attribute
+  // (`data-key='…'`, `<option value='…'>`). An apostrophe in a filename
+  // therefore closed the attribute early: `it's-a-note.md` reached `select()`
+  // as the truncated key `m3::/notes/it`, `/path` answered about a node that
+  // does not exist, and the pane read "0 bro(er), 19 uten sti" -- a wrong
+  // answer wearing the shape of a finding about the corpus.
+  return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
 }
 
 // -- once, on load ---------------------------------------------------------
@@ -154,13 +160,6 @@ function fit() {
                          (canvas.height - 2 * pad) / ((y1 - y0) || 1));
   view = { scale: scale, dpr: dpr,
            ox: pad - x0 * scale, oy: pad - y0 * scale };
-
-  // Where the band starts, read off the nodes Python placed there rather than
-  // guessed at: the isolated keys are known, so the lowest y among the
-  // connected ones is the boundary.
-  const iso = new Set(payload.isolated);
-  const linkedYs = payload.nodes.filter((n) => !iso.has(n.key)).map((n) => n.y);
-  bandTop = linkedYs.length ? Math.max.apply(null, linkedYs) : null;
 }
 
 const sx = (x) => x * view.scale + view.ox;
@@ -181,8 +180,8 @@ function draw() {
   }
   ctx.stroke();
 
-  if (bandTop !== null && payload.isolated_count) {
-    const y = sy(bandTop + 70);         // half the gap Python left above them
+  if (payload.band_divider !== null) {
+    const y = sy(payload.band_divider);      // Python's number, not a copy
     ctx.save();
     ctx.strokeStyle = "#ddd";
     ctx.setLineDash([4 * dpr, 4 * dpr]);
@@ -231,15 +230,37 @@ async function post(route, body) {
   return { status: resp.status, body: await resp.json() };
 }
 
+function renderError(out) {
+  // A 4xx or a 5xx is not a result set. Without this guard the error body
+  // became `state.search`, and `renderHits` printed `undefined: 0 treff` --
+  // a server exception rendered as "your search found nothing", which is the
+  // silent wrong answer this whole package exists to refuse. `renderRows` had
+  // the same hole from the other side: `out.rows.length` on a body with no
+  // `rows` threw inside an async function, leaving the previous status on
+  // screen with nothing to say it was stale.
+  state.search = null;
+  state.selection = null;
+  hitKeys = new Set();
+  $("status").className = "partial";
+  $("status").textContent = "HTTP " + out.status + ": " +
+    ((out.body && out.body.error) || "ukjent feil");
+  $("hits").innerHTML = "";
+  draw();
+  renderSchematic();
+}
+
 async function runSearch() {
   const text = $("q").value.trim();
   if (!text) return;
   if ($("mode").value === "query") {
     const out = await post("/query", { model: $("model").value, query: text });
+    if (out.status !== 200) { renderError(out); return; }
     renderRows(out.body);
     return;
   }
-  const out = await post("/search", { query: text, limit: 20 });
+  const out = await post("/search",
+                         { query: text, limit: payload.search_limit });
+  if (out.status !== 200) { renderError(out); return; }
   state.search = out.body;
   state.selection = null;
   // Hits are keyed `<model>::<node_key>` in the graph and handed back as a
@@ -352,18 +373,24 @@ function renderSchematic(bridgeOut) {
         const x = 20 + j * W;
         if (j) svg += "<line x1='" + (x - W + 6) + "' y1='" + y + "' x2='" +
                       (x - 6) + "' y2='" + y + "' stroke='#8899aa'/>";
+        // `<title>` as a CHILD of the circle, not a sibling: SVG renders a
+        // tooltip only for a `<title>` inside the shape, and self-closing the
+        // circle first made it silently nothing -- with the label sliced to
+        // 22 characters, the full key was then unrecoverable from the picture.
         svg += "<circle cx='" + x + "' cy='" + y + "' r='5' fill='" +
                (j === 0 ? "#1a73e8" : j === r.path.length - 1 ? "#d64545"
-                                    : "#8899aa") + "'/>" +
-               "<title>" + esc(k) + "</title>" +
+                                    : "#8899aa") + "'>" +
+               "<title>" + esc(k) + "</title></circle>" +
                "<text x='" + x + "' y='" + (y + 16) + "' font-size='9' " +
                "text-anchor='middle'>" + esc(k.split("/").pop().slice(0, 22)) +
                "</text>";
       });
     } else {
-      svg += "<circle cx='20' cy='" + y + "' r='5' fill='#1a73e8'/>" +
+      svg += "<circle cx='20' cy='" + y + "' r='5' fill='#1a73e8'>" +
+             "<title>" + esc(bridgeOut.src) + "</title></circle>" +
              "<circle cx='" + (20 + W) + "' cy='" + y + "' r='5' " +
-             "fill='none' stroke='#d64545' stroke-dasharray='3 2'/>" +
+             "fill='none' stroke='#d64545' stroke-dasharray='3 2'>" +
+             "<title>" + esc(r.dst) + "</title></circle>" +
              "<text x='" + (20 + W) + "' y='" + (y + 16) + "' font-size='9' " +
              "text-anchor='middle' fill='#a00'>" +
              esc(r.dst.split("/").pop().slice(0, 22)) + " (ingen sti)</text>";
@@ -401,6 +428,7 @@ async function select(key) {
   }
   const out = await post("/path", { src: key, dsts: dsts });
   if (state.selection !== key) return;  // a later click already won
+  if (out.status !== 200) { renderError(out); return; }
   renderSchematic(out.body);
 }
 

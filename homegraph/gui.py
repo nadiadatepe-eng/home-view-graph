@@ -53,7 +53,8 @@ BAND_WIDTH = 1600.0                       # `_layout`'s own default `width`
 
 
 def _positions(out_nodes, out_edges, linked):
-    """`(x, y)` per node: a force layout for the connected, a band for the rest.
+    """`([(x, y), ...], band_divider)`: a force layout for the connected nodes,
+    a band for the rest, and the y the two are separated at.
 
     Computed in Python, and shipped in the payload, for two reasons. The first
     is this module's whole premise -- the page draws, it does not decide. The
@@ -73,6 +74,14 @@ def _positions(out_nodes, out_edges, linked):
     `_layout` is private to `visualize`, and is called rather than copied: a
     second force implementation here would be a second opinion about what the
     same graph looks like, and the two would drift.
+
+    `band_divider` -- the y halfway up the gap, or `None` when there is no band
+    or no cloud to separate it from -- is returned rather than left for the
+    page to derive. It first shipped as a literal `bandTop + 70` in JavaScript,
+    which is `BAND_GAP / 2` hand-copied across a language boundary with no gate
+    between the two: retuning `BAND_GAP` to 40 here would have drawn the
+    divider *inside* the band, striking through the isolated nodes, with every
+    check still green.
     """
     order = sorted(linked)
     slot = {old: new for new, old in enumerate(order)}
@@ -92,18 +101,20 @@ def _positions(out_nodes, out_edges, linked):
     if laid:
         x0 = min(x for x, _ in laid)
         span = (max(x for x, _ in laid) - x0) or BAND_WIDTH
-        top = max(y for _, y in laid) + BAND_GAP
+        floor = max(y for _, y in laid)
+        top = floor + BAND_GAP
+        divider = round(floor + BAND_GAP / 2, 1) if band else None
     else:
         # Every node isolated -- the band is the whole picture, and there is no
-        # cloud above it to sit under.
-        x0, span, top = -BAND_WIDTH / 2, BAND_WIDTH, 0.0
+        # cloud above it to sit under, so there is nothing to divide.
+        x0, span, top, divider = -BAND_WIDTH / 2, BAND_WIDTH, 0.0, None
     cols = max(1, math.ceil(math.sqrt(len(band)) * 2))
     step = span / cols
     row_height = max(step, BAND_GAP / 4)
     for k, i in enumerate(band):
         pos[i] = (round(x0 + (k % cols) * step, 1),
                   round(top + (k // cols) * row_height, 1))
-    return pos
+    return pos, divider
 
 
 class BadArgument(Exception):
@@ -159,7 +170,8 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
 
     isolated = [n["key"] for i, n in enumerate(out_nodes) if i not in linked]
 
-    for n, (x, y) in zip(out_nodes, _positions(out_nodes, out_edges, linked)):
+    pos, band_divider = _positions(out_nodes, out_edges, linked)
+    for n, (x, y) in zip(out_nodes, pos):
         n["x"] = x
         n["y"] = y
 
@@ -170,7 +182,12 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
 
     return {"nodes": out_nodes, "edges": out_edges, "isolated": isolated,
             "isolated_count": len(isolated), "isolated_share": share,
-            "models": sorted(counts),
+            "band_divider": band_divider, "models": sorted(counts),
+            # The page's `/search` limit, sent rather than written twice. It is
+            # `DEFAULT_CAP` on purpose: a search's hits become `/path`'s
+            # `dsts`, so a limit above the cap would make every click report
+            # `truncated` and a limit below it would leave the cap unreachable.
+            "search_limit": DEFAULT_CAP,
             "missing": missing, "counts": counts, "truncated": truncated}
 
 
