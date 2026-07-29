@@ -56,10 +56,12 @@ MUTATIONS = [
     # (`self._send(fn(**args))`) predates `_run` and no longer exists.
     ("status is normalised to complete on the way out",
      "homegraph/gui.py",
-     "            self._send(result)",
-     "            if isinstance(result, dict) and \"status\" in result:\n"
-     "                result[\"status\"] = \"complete\"  # mutated\n"
-     "            self._send(result)",
+     "                if result is not None:\n"
+     "                    self._send(result)",
+     "                if isinstance(result, dict) and \"status\" in result:\n"
+     "                    result[\"status\"] = \"complete\"  # mutated\n"
+     "                if result is not None:\n"
+     "                    self._send(result)",
      "a missing model makes the answer partial and names itself"),
 
     ("unreachable hits are dropped rather than named",
@@ -128,10 +130,10 @@ MUTATIONS = [
 
     ("GET / truncates the served file by one byte",
      "homegraph/gui.py",
-     "                with open(page, \"rb\") as fh:\n"
-     "                    body = fh.read()",
-     "                with open(page, \"rb\") as fh:\n"
-     "                    body = fh.read()[:-1]  # mutated: M5",
+     "            with open(page, \"rb\") as fh:\n"
+     "                body = fh.read()",
+     "            with open(page, \"rb\") as fh:\n"
+     "                body = fh.read()[:-1]  # mutated: M5",
      "GET / serves that same page"),
 
     ("the schematic's three waiting states collapse to one message",
@@ -146,7 +148,7 @@ MUTATIONS = [
      "homegraph/assets/gui.html",
      "  for (const d of bridgeOut.unreachable) rows.push({ path: null, dst: d });",
      "  // mutated: M7, unreachable hits dropped from the schematic",
-     "the schematic names which of its two conditions is missing"),
+     "the schematic draws every unreachable hit and says when capped"),
 
     # -- M8-M18 (task-5-report.md fix round 1) -----------------------------
 
@@ -208,7 +210,7 @@ MUTATIONS = [
      "homegraph/assets/gui.html",
      '    const key = h.model + "::" + h.node_key;',
      '    const key = h.node_key;  // mutated: M14, model prefix dropped',
-     "an apostrophe in a filename survives into data-key"),
+     "a hit's key is joined as model::node_key"),
 
     ("the k !== key self-exclusion guard is dropped from select()",
      "homegraph/assets/gui.html",
@@ -232,7 +234,7 @@ MUTATIONS = [
      "               (j === 0 ? \"#1a73e8\" : j === r.path.length - 1 ? \"#d64545\"\n"
      "                                    : \"#8899aa\") + \"'/>\" +  // mutated: M17\n"
      "               \"<title>\" + esc(k) + \"</title>\" +",
-     "the schematic names which of its two conditions is missing"),
+     "every schematic circle carries its key in a child <title>"),
 
     ("<title> becomes a sibling of the self-closed unreachable source circle",
      "homegraph/assets/gui.html",
@@ -241,7 +243,7 @@ MUTATIONS = [
      "      svg += \"<circle cx='20' cy='\" + y + \"' r='5' fill='#1a73e8'/>\" +"
      "  // mutated: M17b\n"
      "             \"<title>\" + esc(bridgeOut.src) + \"</title>\" +",
-     "the schematic names which of its two conditions is missing"),
+     "every schematic circle carries its key in a child <title>"),
 
     ("the page fetches a script from a CDN",
      "homegraph/assets/gui.html",
@@ -273,13 +275,11 @@ MUTATIONS = [
     # nothing before this proved the route could not quietly drop them.
     ("GET /graph drops missing and truncated on the way out",
      "homegraph/gui.py",
-     "        def do_GET(self):\n"
      "            if self.path == \"/graph\":\n"
-     "                self._send(payload)",
-     "        def do_GET(self):\n"
+     "                self._run(lambda: payload)",
      "            if self.path == \"/graph\":\n"
-     "                self._send({k: v for k, v in payload.items()\n"
-     "                           if k not in (\"missing\", \"truncated\")})"
+     "                self._run(lambda: {k: v for k, v in payload.items()\n"
+     "                                   if k not in (\"missing\", \"truncated\")})"
      "  # mutated",
      "GET /graph carries missing and truncated over the wire, not just nodes"),
 
@@ -353,12 +353,14 @@ MUTATIONS = [
     # `models_queried` on the way out passed every one of them.
     ("do_POST drops warnings and models_queried from the response",
      "homegraph/gui.py",
-     "            self._send(result)",
-     "            if isinstance(result, dict):\n"
-     "                result = {k: v for k, v in result.items()\n"
-     "                         if k not in (\"warnings\", \"models_queried\")}"
+     "                if result is not None:\n"
+     "                    self._send(result)",
+     "                if isinstance(result, dict):\n"
+     "                    result = {k: v for k, v in result.items()\n"
+     "                             if k not in (\"warnings\", \"models_queried\")}"
      "  # mutated\n"
-     "            self._send(result)",
+     "                if result is not None:\n"
+     "                    self._send(result)",
      "POST /search returns mesh_search's response verbatim, all five keys"),
 
     # task-4 fix round 2, the isinstance guard: without it, `dsts: "abc"`
@@ -378,6 +380,45 @@ MUTATIONS = [
      "                          % type(dsts).__name__)",
      "    dsts = list(dsts or [])  # mutated: no isinstance guard",
      "a /path call with a non-list dsts is a 400, not a 500"),
+
+    # -- the final review's three must-fixes, plus the gate on `counts` -----
+
+    # renderRows was the third writer to #status and the one that forgot the
+    # corpus banner. Reinstated here as the private `parts` it used to build.
+    ("renderRows stops carrying the corpus banner",
+     "homegraph/assets/gui.html",
+     "  const parts = payloadParts();\n"
+     "  if (out.status === \"error\" || out.status === \"refused\") {",
+     "  const parts = [];  // mutated: renderRows drops missing/truncated\n"
+     "  if (out.status === \"error\" || out.status === \"refused\") {",
+     "the closed language's table counts its rows and keeps the banner"),
+
+    # GET's missing error path: back to the bare `_send` that gave the client
+    # `RemoteDisconnected` with no status and no body.
+    ("do_GET answers /graph without a guard around it",
+     "homegraph/gui.py",
+     "            if self.path == \"/graph\":\n"
+     "                self._run(lambda: payload)",
+     "            if self.path == \"/graph\":\n"
+     "                self._send(payload)  # mutated: no error path on GET",
+     "GET /graph that cannot be serialised is a 500 with a body"),
+
+    # The schematic answering about a node it does not name -- the defect the
+    # band's 3,65 px node spacing makes routine rather than theoretical.
+    ("the schematic's lead stops naming its source node",
+     "homegraph/assets/gui.html",
+     "  const lead = bridgeOut.src + \" — \" + bridgeOut.bridges.length + \" bro(er), \" +",
+     "  const lead = bridgeOut.bridges.length + \" bro(er), \" +"
+     "  // mutated: lead no longer names src",
+     "the schematic's lead names the node the bridges start from"),
+
+    # `counts` is the whole of h1's summary and went 19 commits with nothing
+    # asserting it. One per model regardless of how many nodes there are.
+    ("counts reports one node per model",
+     "homegraph/gui.py",
+     "        counts[n[\"model\"]] = counts.get(n[\"model\"], 0) + 1",
+     "        counts[n[\"model\"]] = 1  # mutated",
+     "counts is the per-model node count h1's summary prints"),
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))

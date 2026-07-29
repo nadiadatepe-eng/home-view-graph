@@ -5,12 +5,18 @@ Every check here is about what Python decides, because the page decides
 nothing. The structural checks run against a synthetic M3 store built in a
 tempdir, the way every other checkpoint builds its own corpus, so this file
 is not the one checkpoint in `tests/` that silently does nothing on a machine
-without `~/.homegraph/real-*.db`. The one check that still needs the real
-corpus is `t_isolated_matches_md_gaps`: it ties this surface to an
-already-measured fact, that the set `/graph` calls isolated is the set
-`isolated_notes` reports, so the GUI and `md gaps` cannot drift apart without
-anyone saying so -- and it prints a named SKIPPED line rather than vanishing
-when the real store is absent.
+without `~/.homegraph/real-*.db`.
+
+FOUR checks still need the real corpus, not one: `t_isolated_matches_md_gaps`,
+`t_graph_route_matches_real_corpus`, `t_band_matches_the_real_corpus` and
+`t_path_route_answers_over_the_real_corpus`. Each ties this surface to an
+already-measured
+fact -- that the set `/graph` calls isolated is the set `isolated_notes`
+reports, so the GUI and `md gaps` cannot drift apart without anyone saying so
+-- and each prints a named SKIPPED line rather than vanishing when the store
+is absent. Eleven more need `node`, in `t_page_behaviour`. A green run on a
+machine with neither is a green run in which fifteen checks asserted nothing,
+which is why they are named here rather than counted.
 
 Run:
     python3 tests/test_gui.py
@@ -234,6 +240,16 @@ def t_full_read_has_every_planted_file(m3_db):
           len(payload["nodes"]) == 3, "%d node(s)" % len(payload["nodes"]))
     check("an uncapped read truncates nothing",
           payload["truncated"] == [], repr(payload["truncated"]))
+    # `counts` is the whole of h1's summary -- `renderSummary` prints one
+    # `<dd>N filer</dd>` per model straight out of it -- and until this check
+    # nothing asserted it at all. Both conjuncts: the literal ties it to the
+    # three files the fixture plants, and the sum ties it to the node list it
+    # is supposed to be counting, so a per-model count that drifts from the
+    # nodes actually shipped cannot pass by matching a stale literal.
+    check("counts is the per-model node count h1's summary prints",
+          payload["counts"] == {"m3": 3}
+          and sum(payload["counts"].values()) == len(payload["nodes"]),
+          repr(payload["counts"]))
 
 
 def t_capped_read_names_the_model_it_capped(m3_db):
@@ -642,6 +658,55 @@ def t_graph_route_serves_the_payload(m3_db):
           "%d node(s), %d isolated" % (len(body["nodes"]), len(body["isolated"])))
 
 
+def t_graph_route_answers_when_the_payload_will_not_serialise(m3_db):
+    """A GET that fails is a status and a body, not a reset connection.
+
+    Until this check GET had no error path at all: `do_GET` called `_send`
+    with nothing around it, so anything raising while answering escaped past
+    `BaseHTTPRequestHandler` and the client saw `RemoteDisconnected` -- no
+    status, no body -- while the page's `boot()` guard claimed to handle
+    exactly that case. `_run` had removed this for POST months earlier.
+
+    The failure is induced the way it would really arrive: a payload holding
+    a value `json.dumps` refuses. That is not hypothetical for a prebuilt
+    payload -- `graph_payload` builds sets internally (`linked`, the isolated
+    computation) and one of them reaching the returned dict is a one-line
+    mistake. `_send` serialises before it writes a byte, so the 500 is
+    reachable rather than a half-written response.
+    """
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import HTTPServer
+
+    from homegraph.mcp_server import Server
+
+    bad = {"nodes": {"a set json cannot encode"}}
+    httpd = HTTPServer(("127.0.0.1", 0),
+                       gui.build_handler(Server({"m3": m3_db}), bad))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    status, body = None, None
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/graph" % httpd.server_address[1],
+                timeout=10) as resp:
+            status, body = resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        status, body = exc.code, json.loads(exc.read())
+    except Exception as exc:                                    # noqa: BLE001
+        # The pre-fix behaviour, kept reachable rather than raised: the
+        # connection resets and there is nothing to read. Reported as the
+        # failure it is, not as an error in this file.
+        body = {"error": "no response at all: %s" % type(exc).__name__}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    check("GET /graph that cannot be serialised is a 500 with a body",
+          status == 500 and isinstance(body, dict) and "TypeError" in body.get("error", ""),
+          "status=%r body=%r" % (status, body))
+
+
 def t_graph_route_matches_real_corpus(real_db):
     """602 nodes, 315 isolated, served over the same socket path as above,
     with the same full-body equality as `t_graph_route_serves_the_payload`.
@@ -1030,7 +1095,7 @@ def _run_page(m3_db):
 
 
 def t_page_behaviour(m3_db):
-    """Five properties of the page, driven through its own script.
+    """Eleven properties of the page, driven through its own script.
 
     Grouped into one `node` run because the run is the expensive part; each
     check below reads a different key out of it, and each can go red on its
@@ -1038,22 +1103,53 @@ def t_page_behaviour(m3_db):
 
     1. The schematic's two conditions -- three distinct texts for the three
        incomplete states, so a page that fell back to one generic message
-       fails, and one that drew only the bridges it found fails on `ingen sti`.
-    2. An apostrophe in a filename survives into `data-key`. Before `esc`
+       fails.
+    2. Every unreachable destination is drawn (`ingen sti`) and a capped
+       answer says so (`avkortet`): four bridges out of five must not look
+       complete.
+    3. Every schematic circle carries its key as a CHILD `<title>`. The
+       visible label is sliced to 22 characters, so a sibling title -- which
+       SVG renders as no tooltip at all -- makes the full key unrecoverable
+       from the picture.
+    4. The lead names the node the bridges start from. At four models the band
+       packs nodes 3,65 px apart against a 10 px hit radius, so a click
+       selects a neighbour often enough that an unnamed answer is a wrong
+       answer nobody can see is wrong.
+    5. An apostrophe in a filename survives into `data-key`. Before `esc`
        escaped quotes, `it's-a-note.md` produced a key truncated at the
        apostrophe, and `/path` answered "no bridges" about a node nobody asked
        about -- a wrong answer wearing the shape of a finding.
-    3. A non-200 is not a result set. `undefined: 0 treff` was a 500 from
+    6. A hit's key is joined `model::node_key`. `mesh_search` answers with the
+       two halves separate and the graph is keyed with them joined; dropping
+       the prefix greys every hit and selects nothing.
+    7. A non-200 is not a result set. `undefined: 0 treff` was a 500 from
        `/search` rendered as an empty search.
-    4. `warnings` and `models_missing` reach the status line, and the `/search`
+    8. `warnings` and `models_missing` reach the status line, and the `/search`
        limit comes from the payload rather than a second copy of `DEFAULT_CAP`.
-    5. `/path`'s `dsts` exclude the node the path starts from, and `nodeAt`
-       finds a node at its own coordinates and nothing at the far corner.
+    9. The closed language's table states its row count AND keeps the corpus
+       banner: `renderRows` was the third writer to #status and the one that
+       forgot `missing`/`truncated`, so one query erased `delvis:` for the
+       rest of the session.
+    10. `/path`'s `dsts` exclude the node the path starts from, and `nodeAt`
+        finds a node at its own coordinates and nothing at the far corner.
+    11. A `/graph` that fails says so instead of drawing nothing.
+
+    Eleven names, not five. Four mutations used to name check 1 as their gate
+    while mutating properties 2 and 3, and one named check 5 while mutating
+    property 6 -- 8 of 36 mutations resting on a gate name that did not name
+    what they broke. A compound name is also a single point of edit: one
+    rewrite of that check silently drops the coverage of every mutation
+    pointing at it.
     """
     names = ["the schematic names which of its two conditions is missing",
+             "the schematic draws every unreachable hit and says when capped",
+             "every schematic circle carries its key in a child <title>",
+             "the schematic's lead names the node the bridges start from",
              "an apostrophe in a filename survives into data-key",
+             "a hit's key is joined as model::node_key",
              "a non-200 answer is an error, not an empty result set",
              "warnings, models_missing and the payload's own limit are used",
+             "the closed language's table counts its rows and keeps the banner",
              "a click asks for bridges to the OTHER hits, and only those",
              "a /graph that fails says so instead of drawing nothing"]
     out = _run_page(m3_db)
@@ -1067,26 +1163,44 @@ def t_page_behaviour(m3_db):
     check(names[0],
           len(set(states)) == 3
           and "mangler: en valgt node" in out["search_only"]
-          and "mangler: et søk" in out["selection_only"]
-          and "ingen sti" in out["both"] and "avkortet" in out["both"]
-          # `<title>` a CHILD of the circle, not a sibling: SVG renders no
-          # tooltip for a sibling, and the visible label is sliced to 22
-          # characters, so the full key would be unrecoverable.
-          # EVERY circle, not merely one of them: the first version of this
-          # clause asked only that `</title></circle>` appear somewhere, and a
-          # mutation that self-closed the bridge circles stayed green because
-          # the unreachable circle still carried its title.
-          and out["both"].count("<circle") == out["both"].count("</title></circle>")
-          and "/><title>" not in out["both"],
+          and "mangler: et søk" in out["selection_only"],
           "; ".join(re.sub(r"<[^>]+>", "", s)[:30] for s in states))
 
     check(names[1],
-          "'" in out["apo_key"] and out["first_key"] == out["apo_key"]
-          and "&#39;" in out["hits_html"],
+          "ingen sti" in out["both"] and "avkortet" in out["both"],
+          re.sub(r"<[^>]+>", " ", out["both"])[:70])
+
+    # `<title>` a CHILD of the circle, not a sibling: SVG renders no tooltip
+    # for a sibling, and the visible label is sliced to 22 characters, so the
+    # full key would be unrecoverable. EVERY circle, not merely one of them:
+    # the first version of this clause asked only that `</title></circle>`
+    # appear somewhere, and a mutation that self-closed the bridge circles
+    # stayed green because the unreachable circle still carried its title.
+    check(names[2],
+          out["both"].count("<circle") == out["both"].count("</title></circle>")
+          and "/><title>" not in out["both"],
+          "%d circle(s), %d titled"
+          % (out["both"].count("<circle"),
+             out["both"].count("</title></circle>")))
+
+    # The lead is read back and unescaped, so the check compares the key the
+    # harness asked about with the key the pane says it answered about -- not
+    # merely that the lead is non-empty.
+    lead = re.search(r"<p class='lead[^']*'>(.*?)</p>", out["both"])
+    lead_text = (lead.group(1) if lead else "").replace("&#39;", "'")
+    check(names[3], out["apo_key"] in lead_text,
+          "lead=%r src=%r" % (lead_text[:52], out["apo_key"][-24:]))
+
+    check(names[4],
+          "'" in out["apo_key"] and "&#39;" in out["hits_html"],
+          "key=%r escaped in hits=%s" % (out["apo_key"][-24:],
+                                         "&#39;" in out["hits_html"]))
+
+    check(names[5], out["first_key"] == out["apo_key"],
           "key=%r read back as %r" % (out["apo_key"][-24:],
                                       (out["first_key"] or "")[-24:]))
 
-    check(names[2],
+    check(names[6],
           out["error_status"].startswith("HTTP 500")
           and "undefined" not in out["error_status"]
           and out["error_hits"] == ""
@@ -1094,17 +1208,23 @@ def t_page_behaviour(m3_db):
           "search=%r query=%r" % (out["error_status"][:40],
                                   out["query_error_status"][:40]))
 
-    check(names[3],
+    check(names[7],
           "m9" in out["search_status"] and "EN ADVARSEL" in out["search_status"]
           and "delvis" in out["boot_status"] and "ghost" in out["boot_status"]
-          and out["search_request"]["limit"] == _PAGE_LIMIT
-          and "1 rad(er)" in out["rows_status"],
+          and out["search_request"]["limit"] == _PAGE_LIMIT,
           "boot=%r status=%r limit=%r" % (out["boot_status"][:34],
                                           out["search_status"][:40],
                                           out["search_request"].get("limit")))
 
+    # `ghost` is the model with no store on disk (see `_run_page`), so the
+    # corpus banner has something to say through every writer to #status. It
+    # is asserted HERE because `renderRows` is the writer that forgot it.
+    check(names[8],
+          "1 rad(er)" in out["rows_status"] and "ghost" in out["rows_status"],
+          "rows=%r" % out["rows_status"][:60])
+
     dsts = out["path_request"]["dsts"]
-    check(names[4],
+    check(names[9],
           out["path_request"]["src"] == out["apo_key"]
           and out["apo_key"] not in dsts and len(dsts) == 1
           and out["hit_test"] is not None and out["hit_test_miss"] is None,
@@ -1115,7 +1235,7 @@ def t_page_behaviour(m3_db):
     # is reachable -- the payload is prebuilt, but it is served through the
     # same handler as every other route -- and it used to read `.nodes` off
     # `undefined`, leaving a page that was blank and silent about why.
-    check(names[5],
+    check(names[10],
           out["graph_error_status"].startswith("HTTP 500")
           and "undefined" not in out["graph_error_status"]
           and "ingen graf" in out["graph_error_v1"],
@@ -1262,6 +1382,7 @@ def main():
         t_gui_subcommand_exists_without_a_host_flag(synthetic_db)
         t_graph_route_serves_the_payload(synthetic_db)
         t_graph_route_preserves_missing_and_truncated(synthetic_db)
+        t_graph_route_answers_when_the_payload_will_not_serialise(synthetic_db)
         t_search_route_returns_hits(synthetic_db)
         t_missing_model_is_reported_as_partial(synthetic_db)
         t_query_route_refuses_unknown_model(synthetic_db)

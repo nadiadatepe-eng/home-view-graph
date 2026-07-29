@@ -265,22 +265,41 @@ def build_handler(server, payload):
             self.end_headers()
             self.wfile.write(body)
 
+        def _serve_page(self):
+            """Send the page itself, and return nothing -- see `_run`.
+
+            Read per request rather than cached at import: the file is the
+            interface, and editing it while the server runs should show up on
+            reload the way editing any other page does.
+            """
+            page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "assets", "gui.html")
+            with open(page, "rb") as fh:
+                body = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
+            """Both real routes go through `_run`, for the reason POST does.
+
+            GET had no error path at all. Measured 2026-07-28: make `_send`
+            raise on `/graph` and the client gets `RemoteDisconnected` -- no
+            status, no body -- which is exactly the failure `_run` was added
+            to remove for POST, and exactly the failure the page's `boot()`
+            claims to handle (`gui.html`, the 200 guard). The claim was true
+            of nothing the server could produce.
+
+            The 404 branch is left as a direct `_send`: its body is a
+            constant dict that `json.dumps` cannot refuse, so there is no
+            failure for a guard to catch.
+            """
             if self.path == "/graph":
-                self._send(payload)
+                self._run(lambda: payload)
             elif self.path in ("/", "/index.html"):
-                # Read per request rather than cached at import: the file is
-                # the interface, and editing it while the server runs should
-                # show up on reload the way editing any other page does.
-                page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "assets", "gui.html")
-                with open(page, "rb") as fh:
-                    body = fh.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._run(self._serve_page)
             else:
                 self._send({"error": "no route %r" % self.path}, 404)
 
@@ -344,20 +363,31 @@ def build_handler(server, payload):
             the process's own output -- not even the traceback a plain
             escaping exception used to get for free from
             `BaseHTTPRequestHandler`.
+
+            `call` returning `None` means it has already sent its own
+            response -- `_serve_page` does, because the page is bytes of HTML
+            and not a dict. Every route body that produces an answer returns
+            it; none of them returns `None`.
+
+            The send is INSIDE the guard, not after it. `_send` serialises the
+            whole body before it writes a single byte, so a payload that will
+            not encode becomes a 500 with a body instead of a reset
+            connection. Once bytes are on the wire a second response cannot
+            help, and does not: the write raises again and escapes, which is
+            what happened before this method existed.
             """
             try:
                 result = call()
+                # Returned verbatim. `status`, `warnings` and `models_missing`
+                # are the answer's own account of how complete it is, and a
+                # transport that summarised them would be deciding something.
+                if result is not None:
+                    self._send(result)
             except BadArgument as exc:
                 self._send({"error": "bad arguments: %s" % exc}, 400)
-                return
             except Exception as exc:                            # noqa: BLE001
                 traceback.print_exc()
                 self._send({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
-                return
-            # Returned verbatim. `status`, `warnings` and `models_missing`
-            # are the answer's own account of how complete it is, and a
-            # transport that summarised them would be deciding something.
-            self._send(result)
 
     return _Handler
 

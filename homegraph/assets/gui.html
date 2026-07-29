@@ -122,16 +122,28 @@ async function boot() {
   draw();
 }
 
-function renderStatus() {
+function payloadParts() {
   // `missing` and `truncated` are the payload's account of its own
   // completeness. A capped or partial read that looked like a whole one is the
   // failure this whole package is built against, so it is stated before
-  // anything is drawn.
+  // anything is drawn -- and it stays stated afterwards, whichever of the
+  // three writers to #status wrote last.
+  //
+  // One function because there were three copies of these four lines and the
+  // third one forgot them: a single query in "lukket språk" mode overwrote
+  // the banner with a row count, and `delvis: ingen lager for ghost` was gone
+  // for the rest of the session with nothing on screen saying the corpus was
+  // still short a store.
   const parts = [];
   if (payload.missing.length)
     parts.push("ingen lager for " + payload.missing.join(", "));
   if (payload.truncated.length)
     parts.push("avkortet lesing av " + payload.truncated.join(", "));
+  return parts;
+}
+
+function renderStatus() {
+  const parts = payloadParts();
   const el = $("status");
   el.className = parts.length ? "partial" : "";
   el.textContent = parts.length ? "delvis: " + parts.join("; ") : "";
@@ -302,11 +314,7 @@ function renderHits() {
   const warn = (state.search && state.search.warnings) || [];
   const missing = (state.search && state.search.models_missing) || [];
   const el = $("status");
-  const parts = [];
-  if (payload.missing.length)
-    parts.push("ingen lager for " + payload.missing.join(", "));
-  if (payload.truncated.length)
-    parts.push("avkortet lesing av " + payload.truncated.join(", "));
+  const parts = payloadParts();
   if (missing.length) parts.push("søket nådde ikke " + missing.join(", "));
   for (const w of warn) parts.push(w);
   el.className = parts.length ? "partial" : "";
@@ -334,15 +342,18 @@ function renderRows(out) {
   // The closed language answers with columns and rows, not with node keys, so
   // there is nothing here to colour a graph node by. Drawn as the table it is
   // rather than guessed into hits.
+  const parts = payloadParts();
   if (out.status === "error" || out.status === "refused") {
+    parts.push(out.error || "ukjent feil");
     $("status").className = "partial";
-    $("status").textContent = out.status + ": " + (out.error || "");
+    $("status").textContent = out.status + ": " + parts.join("; ");
     $("hits").innerHTML = "";
     return;
   }
-  $("status").className = (out.warnings && out.warnings.length) ? "partial" : "";
+  for (const w of (out.warnings || [])) parts.push(w);
+  $("status").className = parts.length ? "partial" : "";
   $("status").textContent = out.status + ": " + out.rows.length + " rad(er)" +
-    ((out.warnings && out.warnings.length) ? " — " + out.warnings.join("; ") : "");
+    (parts.length ? " — " + parts.join("; ") : "");
   $("hits").innerHTML = "<table id='rows'><tr>" +
     out.columns.map((c) => "<th>" + esc(c) + "</th>").join("") + "</tr>" +
     out.rows.map((r) => "<tr>" + r.map((v) => "<td>" + esc(v) + "</td>").join("") +
@@ -421,7 +432,13 @@ function renderSchematic(bridgeOut) {
     }
   });
 
-  const lead = bridgeOut.bridges.length + " bro(er), " +
+  // The src is named, not assumed. Measured on four models 2026-07-28: band
+  // nodes sit 3,65 x 4,17 px apart against `nodeAt`'s 10 px radius, and the
+  // band is 1 763 of 2 472 nodes -- so a click in it routinely selects a
+  // NEIGHBOUR, and this pane then reports that neighbour's bridges with
+  // nothing on screen saying whose they are. Escaped once, by `esc(lead)`
+  // below, so a key with an apostrophe is safe here too.
+  const lead = bridgeOut.src + " — " + bridgeOut.bridges.length + " bro(er), " +
     bridgeOut.unreachable.length + " uten sti innen dybde " +
     bridgeOut.max_depth +
     (bridgeOut.truncated ? " — avkortet ved " + bridgeOut.cap + " mål" : "");
