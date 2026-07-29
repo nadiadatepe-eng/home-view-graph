@@ -562,15 +562,17 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-two checkpoints plus a privacy check and a suite-completeness check.
-513 mutations across 24 harnesses, 0 survived, 0 detected only by a crash, 3
-killed by a gate other than the one named**, measured 2026-07-29 on `c383991`
+513 mutations across 24 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-07-29 on `66b1c80`
 by running every harness in one sweep rather than one at a time -- a harness
 that passes standalone can still survive in a full one. The whole sweep takes
-**1 316 seconds**, and four harnesses are 80 % of it: `mutate_gui` 461 s,
-`mutate_cp6` 245 s, `mutate_i1` 190 s, `mutate_cp13` 151 s.
+**1 374 seconds**, and four harnesses are 82 % of it: `mutate_gui` 537 s,
+`mutate_cp6` 246 s, `mutate_i1` 193 s, `mutate_cp13` 150 s.
 
-The previous figure was 442 mutations in 808 s on `3b78560` (2026-07-26), with
-the same three misattributions. The 71 added since are `mutate_gui`'s 54 and
+The figure before that was the same 513 mutations on `c383991`, with **three**
+misattributions rather than one: `66b1c80` fixed `mutate_cp12`'s two, leaving
+only `mutate_cp6`'s. Before both, 442 mutations in 808 s on `3b78560`
+(2026-07-26), also with three. The 71 added since are `mutate_gui`'s 54 and
 the 15 `mutate_cp6` gained with CP-MESHKEY. **Nothing reported `needle missing`**,
 which is the other thing a sweep is read for: a mutation whose anchor text has
 been refactored away is counted as a survivor, not skipped, and finding none
@@ -581,11 +583,21 @@ it used to say: that ran the fourteen `mutate_cp*` files and none of the ten
 others, so a reader following the README exercised 14 of 24 harnesses and had
 no way to notice.
 
-The three misattributed kills are `mutate_cp12`'s boundary-test-as-string-prefix
-and left-behind datelist anchor, and `mutate_cp6`'s tool implemented but never
-advertised. They died -- but the gate the mutation named stayed green, which is
-the distinction the harnesses exist to see, so it is reported rather than folded
-into the kill count.
+The one misattributed kill is `mutate_cp6`'s tool implemented but never
+advertised, which names `all four mesh tools are advertised` and dies to
+`every advertised tool can be called, and every callable one is advertised` --
+a real gate rename from CP-MESHKEY. It died -- but the gate the mutation named
+stayed green, which is the distinction the harnesses exist to see, so it is
+reported rather than folded into the kill count.
+
+`mutate_cp12`'s two were misattributed for a different reason and were fixed in
+`66b1c80` rather than documented: neither was a stale name, and both mutations
+had stopped being the defect they described. The boundary-test one deleted an
+assignment as well as weakening a test, so the mutant raised `NameError` and the
+harness read a crash as another gate's kill; the datelist one named a check that
+exports at `redaction="full"` and therefore could never observe the constant it
+dropped. A mutation that cannot be killed by the gate it names measures nothing,
+so the entry is wrong rather than the gate.
 
 The split of *how* they died is the fragile number and is timestamped for a
 reason: it has moved twice within an hour of measurement.
