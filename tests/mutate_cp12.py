@@ -25,10 +25,18 @@ MUTATIONS = [
      "  # mutated: escapes the reader's root",
      "`..` cannot escape the root on the way in"),
 
+    # `prefix` is KEPT and only the test is weakened. Deleting the assignment
+    # as well -- which this entry did until 2026-07-29 -- left `prefix`
+    # undefined for `return norm[len(prefix):]` two lines down, so the mutant
+    # raised NameError instead of accepting `/rootless` as being under
+    # `/root`. `t_key_fasit` then died inside the adversarial loop, the gate
+    # named here never ran, and the sweep reported the crash as another
+    # gate's kill. A mutation has to be the defect it names, not a break.
     ("the boundary test becomes a string prefix",
      "homegraph/portable.py",
      "    prefix = root if root.endswith(os.sep) else root + os.sep\n"
      "    if not norm.startswith(prefix):",
+     "    prefix = root if root.endswith(os.sep) else root + os.sep\n"
      "    if not norm.startswith(root):  # mutated: /rootless is under /root",
      "the adversarial rows behave as the key declares"),
 
@@ -130,7 +138,11 @@ MUTATIONS = [
      "homegraph/export.py",
      "\"activity_datelist\", \"datelist_int\", \"datelist_anchor\")",
      "\"activity_datelist\", \"datelist_int\")  # mutated: anchor left behind",
-     "a round trip under the same root changes nothing"),
+     # Named the round-trip check until 2026-07-29, which exports at
+     # `redaction="full"` and therefore cannot see a change to `SHAPE_DROPS`
+     # at all. The gate that can is the one that reads a shaped artifact's
+     # columns back.
+     "shape carries no fingerprint of the files themselves"),
 
     ("structure keeps the file text after all",
      "homegraph/export.py",
