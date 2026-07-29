@@ -562,19 +562,19 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-two checkpoints plus a privacy check and a suite-completeness check.
-442 mutations, 0 survived, 0 detected only by a crash, 3 killed by a gate other
-than the one named**, measured 2026-07-26 on `3b78560` by running every harness
-in one sweep rather than one at a time. The whole sweep takes **808 seconds**,
-and three harnesses are 70 % of it: `mutate_cp6` 215 s, `mutate_i1` 195 s,
-`mutate_cp13` 150 s.
+513 mutations across 24 harnesses, 0 survived, 0 detected only by a crash, 3
+killed by a gate other than the one named**, measured 2026-07-29 on `c383991`
+by running every harness in one sweep rather than one at a time -- a harness
+that passes standalone can still survive in a full one. The whole sweep takes
+**1 316 seconds**, and four harnesses are 80 % of it: `mutate_gui` 461 s,
+`mutate_cp6` 245 s, `mutate_i1` 190 s, `mutate_cp13` 151 s.
 
-**That whole-sweep figure predates the GUI and is due a re-run.** Counted on
-`649e55f` rather than swept: **513 mutations across 24 harnesses**, the
-difference being `mutate_gui`'s 54 and the 15 `mutate_cp6` gained with
-CP-MESHKEY. Those two were each swept on their own -- `mutate_gui` 54 of 54
-killed by a named gate, 0 survived; `mutate_cp6` 44 of 44 -- and a harness that
-passes standalone can still survive in a full sweep, so the 513 is a count, not
-a result.
+The previous figure was 442 mutations in 808 s on `3b78560` (2026-07-26), with
+the same three misattributions. The 71 added since are `mutate_gui`'s 54 and
+the 15 `mutate_cp6` gained with CP-MESHKEY. **Nothing reported `needle missing`**,
+which is the other thing a sweep is read for: a mutation whose anchor text has
+been refactored away is counted as a survivor, not skipped, and finding none
+means no harness has quietly stopped applying.
 
 The loop above names every harness rather than `for t in 0..13`, which is what
 it used to say: that ran the fourteen `mutate_cp*` files and none of the ten
