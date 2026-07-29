@@ -27,8 +27,11 @@ welcome.
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 
-python3 -m pytest -q tests/                 # 15 checkpoint modules + a privacy gate
-for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do python3 tests/mutate_cp$t.py; done
+python3 -m pytest -q tests/                 # 28 modules, incl. a privacy gate
+for h in cp0 cp1 cp2 cp3 cp4 cp5 cp6 cp7 cp8 cp9 cp10 cp11 cp12 cp13 \
+         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4; do
+    python3 tests/mutate_$h.py     # every harness: the cp* loop was 14 of 24
+done
 python3 tests/mutation_coverage.py          # which checks no mutation aims at
 ```
 

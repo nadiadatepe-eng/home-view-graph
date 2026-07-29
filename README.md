@@ -164,9 +164,10 @@ layout would still be imposed.
 | `mesh.py` | M5: federates the models, never merges them |
 | `visualize.py` | force layout in Python, canvas in the browser, one file |
 | `mcp_server.py` | MCP over stdio: `mesh_search`/`neighbors`/`path`/`explain` |
+| `gui.py` + `assets/gui.html` | the same answers over HTTP on 127.0.0.1: payloads and routes in Python, a page that only draws |
 | `portable.py` | node keys with the root taken out, and put back |
 | `export.py` / `importer.py` | the portable artifact: lzma JSON Lines, digest in a trailer |
-| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `mcp`, `update`, `watch`, `build`, `embed`, `export`, `import`, `inspect` |
+| `cli.py` | `init`, `config`, `explain`, `census`, `query`, `status`, `search`, `md …`, `mesh …`, `visualize`, `gui`, `mcp`, `update`, `watch`, `build`, `embed`, `export`, `import`, `inspect` |
 
 ## What the edges say
 
@@ -484,11 +485,69 @@ With it, code appears as a fifth layer and the cross-model edges are drawn.
 Only edges with both endpoints on the page: a mesh knows more nodes than a
 capped drawing shows, and half an edge is not a relation.
 
+## The GUI
+
+`visualize` writes a file. `gui` serves one:
+
+```sh
+homegraph gui --model m3=~/.homegraph/m3.db --mesh-db ~/.homegraph/mesh.db
+```
+
+A foreground server on `127.0.0.1` that dies on Ctrl-C. No daemon, and **no
+`--host` flag** -- this serves a whole home directory's corpus, and a switch
+that could publish it is a switch somebody passes by accident. Reach it from
+elsewhere with `ssh -L`.
+
+**It is a second transport over the answer layer, not a second opinion about
+it.** Every route calls the same `mcp_server.Server` an MCP client talks to:
+`/search` is `mesh_search`, `/query` is `query`, `/path` loops `mesh_path`,
+`/neighbors` is `mesh_neighbors`. Nothing in `mcp_server.py` was modified to
+make that work. The reason is the one in *Credits* about `CITES_CODE`: two
+implementations of the same question eventually answer it differently, and a
+browser reimplementation of FTS5 and cosine would be exactly that.
+
+So the page decides nothing. Positions, which nodes are files, which stand
+alone, which path won, what was truncated, which neighbours are derived --
+all computed in Python, shipped ready, and therefore under test. The layout is
+seeded and computed once, so the same corpus draws the same picture twice and
+this week's screenshot can be laid beside last week's; a search highlights in
+place and never moves a node.
+
+**The isolated band is the `md gaps` finding made visible.** Files with no
+edge park in a sorted band along the bottom with their count and share, rather
+than being scattered by a force layout -- a node with no edge has no
+information in its position, and a position without information draws noise
+that looks like data. On the real corpus at four models that band is **1 763
+of 2 472 file nodes, 71,3 %**.
+
+Click a search hit and the lower pane draws the **bridges** between it and the
+other hits: are these five findings one matter or five? A destination with no
+path within the depth is drawn detached and named -- "no path" is an answer,
+and omitting it would let four bridges out of five look complete. When there
+is no bridge at all, the pane falls back to the clicked file's neighbourhood,
+incoming left and outgoing right, with **derived relations drawn dashed**
+(`confidence < 1.0`, the same rule `provenance_note` applies everywhere else).
+
+The filters in the left pane dim and hide by model and by file type. They
+never refetch and never re-lay-out, for the same reason a search does not: a
+position has to mean the same thing all session. A filtered view says how much
+it hides, because a third of a corpus must not read like the whole of it.
+
+**Ceilings, measured rather than assumed.** Startup is **1,55 s and 0,96 MB
+for 2 472 nodes**, paid once before the browser opens. Click accuracy falls
+with corpus size: band nodes sit 3,65 x 4,17 px apart against a 10 px hit
+radius, so a click there can select a neighbour -- the schematic names the
+node it answered about, which makes that visible and correctable, not
+accurate. Ten times this corpus has not been tried.
+
 ## Tests
 
 ```sh
-uvx pytest -q tests/                                            # 15 modules
-for t in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do python3 tests/mutate_cp$t.py; done
+uvx pytest -q tests/                                            # 28 modules
+for h in cp0 cp1 cp2 cp3 cp4 cp5 cp6 cp7 cp8 cp9 cp10 cp11 cp12 cp13 \
+         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4; do
+    python3 tests/mutate_$h.py
+done
 python3 tests/mutation_coverage.py         # which checks no mutation aims at
 python3 tests/test_cp0.py                  # any checkpoint runs standalone too
 ```
@@ -508,6 +567,19 @@ than the one named**, measured 2026-07-26 on `3b78560` by running every harness
 in one sweep rather than one at a time. The whole sweep takes **808 seconds**,
 and three harnesses are 70 % of it: `mutate_cp6` 215 s, `mutate_i1` 195 s,
 `mutate_cp13` 150 s.
+
+**That whole-sweep figure predates the GUI and is due a re-run.** Counted on
+`649e55f` rather than swept: **513 mutations across 24 harnesses**, the
+difference being `mutate_gui`'s 54 and the 15 `mutate_cp6` gained with
+CP-MESHKEY. Those two were each swept on their own -- `mutate_gui` 54 of 54
+killed by a named gate, 0 survived; `mutate_cp6` 44 of 44 -- and a harness that
+passes standalone can still survive in a full sweep, so the 513 is a count, not
+a result.
+
+The loop above names every harness rather than `for t in 0..13`, which is what
+it used to say: that ran the fourteen `mutate_cp*` files and none of the ten
+others, so a reader following the README exercised 14 of 24 harnesses and had
+no way to notice.
 
 The three misattributed kills are `mutate_cp12`'s boundary-test-as-string-prefix
 and left-behind datelist anchor, and `mutate_cp6`'s tool implemented but never
