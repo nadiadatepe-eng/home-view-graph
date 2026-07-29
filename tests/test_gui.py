@@ -252,6 +252,24 @@ def t_full_read_has_every_planted_file(m3_db):
           repr(payload["counts"]))
 
 
+def t_kind_counts_are_the_other_half_of_the_summary(m3_db):
+    """The spec's h1 summary is "per file type and partition"; `counts` was
+    only the partition half.
+
+    Counted in Python for the same reason `counts` is: a per-kind total the
+    browser derived would be a second measurement of the same nodes. The sum
+    conjunct is what keeps it tied to the node list -- a per-kind count that
+    drifted from the nodes actually shipped cannot pass by matching a stale
+    literal.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    check("kind_counts is the per-kind node count, and kinds names them",
+          payload["kind_counts"] == {"file": 3}
+          and payload["kinds"] == ["file"]
+          and sum(payload["kind_counts"].values()) == len(payload["nodes"]),
+          "%r %r" % (payload["kinds"], payload["kind_counts"]))
+
+
 def t_capped_read_names_the_model_it_capped(m3_db):
     """The guard. A ceiling that does not announce itself is the defect.
 
@@ -601,6 +619,159 @@ def t_neighbors_route_returns_edges(m3_db, mesh_db):
     check("POST /neighbors returns edges for a node that has them",
           status == 200 and out.get("count", 0) > 0,
           "status_code=%d count=%s" % (status, out.get("count")))
+
+
+def t_neighbourhood_splits_the_edges(m3_db, m2_db, mesh_db):
+    """The spec's v2 fallback, in Python: incoming and outgoing, over the real
+    mesh.
+
+    Two separate checks over one call, because they are two separate
+    properties and a compound name is a gate that cannot say which of them
+    broke -- the defect this branch measured in its own harness on 07-29.
+    Ordering is NOT checked here; see
+    `t_neighbourhood_sorts_an_input_that_arrives_unsorted` for why this
+    corpus cannot check it.
+
+    The corpus is the note+image pair `t_path_finds_a_real_bridge` uses: the
+    note has an outgoing FIGURE_FOR-family edge to the image, and the image
+    has the same edge incoming, so both sides are non-empty across the two
+    calls and neither check is comparing empty lists.
+    """
+    payload = gui.graph_payload({"m3": m3_db, "m2": m2_db}, mesh_db=mesh_db)
+    note = next((n["key"] for n in payload["nodes"]
+                 if n["path"].endswith("figures.md")), None)
+    image = next((n["key"] for n in payload["nodes"]
+                  if n["key"].startswith("m2::")), None)
+    if note is None or image is None:
+        check("corpus has the note+image pair to probe the neighbourhood with",
+              False, "note=%r image=%r" % (note, image))
+        return
+    with _running({"m3": m3_db, "m2": m2_db}, mesh_db=mesh_db) as port:
+        _s, from_note = _post(port, "/neighbors", {"node": note})
+        _s, from_image = _post(port, "/neighbors", {"node": image})
+
+    # The verbatim half. `neighbourhood` adds two keys; it must not lose or
+    # rewrite `mesh_neighbors`' own five, which are the answer's account of
+    # what it found and how sure it is.
+    check("POST /neighbors keeps mesh_neighbors' own keys and adds two",
+          all(k in from_note for k in ("node", "depth", "count", "status",
+                                       "warnings", "edges", "incoming",
+                                       "outgoing"))
+          and from_note["count"] == len(from_note["edges"]),
+          "keys=%s count=%s" % (sorted(from_note), from_note.get("count")))
+
+    # Direction, from both ends of the same edge: the note sees it outgoing,
+    # the image sees it incoming, and the OTHER side of each is empty.
+    #
+    # The empty side is asserted by length, not by "the far key is absent".
+    # The first version of this check asked only that `image` not appear in
+    # the note's `incoming`, and a mutation that dropped the direction test
+    # entirely SURVIVED it: with `if e[near] == node` gone, `incoming` is
+    # built with `far="src"`, so it filled with the note's OWN key -- the
+    # key the check was looking for was never going to be there either way.
+    check("the neighbourhood splits edges by direction, from both ends",
+          [e["key"] for e in from_note["outgoing"]] == [image]
+          and from_note["incoming"] == []
+          and [e["key"] for e in from_image["incoming"]] == [note]
+          and from_image["outgoing"] == [],
+          "note out=%d in=%d, image out=%d in=%d"
+          % (len(from_note["outgoing"]), len(from_note["incoming"]),
+             len(from_image["outgoing"]), len(from_image["incoming"])))
+
+
+def t_neighbourhood_sorts_an_input_that_arrives_unsorted():
+    """Ordering, driven by a fake server rather than by the real mesh.
+
+    The real-mesh check above cannot test this and must not pretend to. The
+    synthetic corpus yields ONE edge per side, and a one-element list is
+    sorted in every order: the first version of this check asked
+    `sorted(side) == side` over those lists, and the mutation that replaced
+    the sort key with a constant SURVIVED it -- an `all()` over a list that
+    cannot disagree with itself, the same family this package has now found
+    in its own gates seven times.
+
+    Growing the fixture would not fix it either, because the order the mesh
+    happens to return two edges in may already be the sorted one, and a gate
+    that passes or fails on that accident is worse than none.
+
+    So the input is constructed to arrive REVERSED, which is the only way the
+    property can be observed at all: three edges per side, deliberately out of
+    order, and the answer must come back sorted by key then relation. The
+    fake is the whole server surface `neighbourhood` uses -- one method -- so
+    nothing about the real one is being mocked away except the corpus.
+    """
+    class _Reversed:
+        def mesh_neighbors(self, node, depth=1):
+            def e(src, dst, rel):
+                return {"src": src, "rel": rel, "dst": dst,
+                        "method": "exact", "confidence": 1.0}
+            return {"node": node, "depth": depth, "count": 6,
+                    "status": "complete", "warnings": [],
+                    # Reverse-sorted on both sides, and the two `/c.md` edges
+                    # differ only by relation so the tie-breaker is exercised
+                    # too -- `WIKILINKS_TO` must follow `CITES_CODE`.
+                    "edges": [e("m3::/c.md", node, "WIKILINKS_TO"),
+                              e("m3::/c.md", node, "CITES_CODE"),
+                              e("m3::/a.md", node, "MENTIONS"),
+                              e(node, "m3::/z.md", "WIKILINKS_TO"),
+                              e(node, "m3::/b.md", "MENTIONS")]}
+
+    out = gui.neighbourhood(_Reversed(), "m3::/mid.md")
+    check("the neighbourhood sorts an input that arrived unsorted",
+          [(e["key"], e["rel"]) for e in out["incoming"]]
+          == [("m3::/a.md", "MENTIONS"), ("m3::/c.md", "CITES_CODE"),
+              ("m3::/c.md", "WIKILINKS_TO")]
+          and [e["key"] for e in out["outgoing"]] == ["m3::/b.md", "m3::/z.md"],
+          "in=%s out=%s" % ([e["key"] for e in out["incoming"]],
+                            [e["key"] for e in out["outgoing"]]))
+
+
+def t_neighbourhood_marks_derived_by_confidence(m3_db, m2_db, mesh_db):
+    """`derived` is `confidence < 1.0`, the same rule `provenance_note` uses.
+
+    The spec says `method != "exact"`. The code's own honesty rule is the
+    confidence one, and `provenance_note`'s docstring names a second copy of
+    that question as how one copy ends up always answering no. They agree on
+    every method in `EDGE_METHODS` today (`exact` 1.0, `path_prefix` 0.7,
+    `basename` 0.6, `mention` 0.5) and would stop agreeing the moment a
+    stated-but-uncertain method is added.
+
+    Checks the flag against the confidence of the SAME edge rather than
+    against a literal, so it holds whichever methods the fixture's mesh
+    produces -- and asserts the fixture actually contains a derived edge, so
+    the equality is not being satisfied by an empty list.
+    """
+    payload = gui.graph_payload({"m3": m3_db, "m2": m2_db}, mesh_db=mesh_db)
+    note = next((n["key"] for n in payload["nodes"]
+                 if n["path"].endswith("figures.md")), None)
+    with _running({"m3": m3_db, "m2": m2_db}, mesh_db=mesh_db) as port:
+        _s, out = _post(port, "/neighbors", {"node": note})
+    sides = out["incoming"] + out["outgoing"]
+    check("a neighbour edge is derived exactly when its confidence is below 1",
+          bool(sides)
+          and all(e["derived"] == (e["confidence"] is not None
+                                   and e["confidence"] < 1.0) for e in sides)
+          and any(e["derived"] for e in sides),
+          "%d edge(s), confidences=%s"
+          % (len(sides), sorted({e["confidence"] for e in sides})))
+
+
+def t_neighbors_route_rejects_malformed_depth(m3_db, mesh_db):
+    """A `depth` that binds but will not parse is a 400, not a 500.
+
+    Same shape as `/path`'s `max_depth`, and for the same reason: past the
+    pre-call binding check a `TypeError` means a bug in the answer layer, so
+    a caller's malformed value has to raise `BadArgument` instead of being
+    left to blow up inside `mesh_neighbors`.
+    """
+    payload = gui.graph_payload({"m3": m3_db})
+    node = payload["nodes"][0]["key"]
+    with _running({"m3": m3_db}, mesh_db=mesh_db) as port:
+        status, out = _post(port, "/neighbors",
+                            {"node": node, "depth": "dypt"})
+    check("a /neighbors call with a non-integer depth is a 400, not a 500",
+          status == 400 and "depth" in out.get("error", ""),
+          "status_code=%d body=%r" % (status, out))
 
 
 def t_neighbors_route_without_mesh_answers_rather_than_resets(m3_db):
@@ -953,24 +1124,48 @@ const searchOK = {status: "complete", hits: [asHit(apo), asHit(other)],
 let graphStatus = 200, graphBody = payload;
 let searchStatus = 200, searchBody = searchOK;
 let queryStatus = 200, queryBody = null;
+// `/path` answering with a bridge is the normal case; emptied later to drive
+// the neighbourhood fallback, which only fires when NO bridge was found.
+let pathBody = {src: apo.key, max_depth: 4, cap: 20, truncated: true,
+                bridges: [{dst: other.key, path: [apo.key, other.key]}],
+                unreachable: ["m3::/gone.md"]};
+// One stated edge and one derived one, so "drawn differently" has both sides
+// to be different about. Shaped like `neighbourhood()`'s real answer.
+let neighboursStatus = 200;
+let neighboursBody = {node: apo.key, depth: 1, count: 2, status: "partial",
+  warnings: ["derived, not stated: 1 by basename (0.6)"],
+  edges: [],
+  incoming: [{key: "m3::/inn.md", rel: "MENTIONS", method: "exact",
+              confidence: 1.0, derived: false}],
+  outgoing: [{key: "m3::/ut.md", rel: "LIKELY_COPY", method: "basename",
+              confidence: 0.6, derived: true}]};
 const calls = [];
 global.fetch = async (url, opts) => {
   calls.push({url: url, body: opts && opts.body ? JSON.parse(opts.body) : null});
   if (url === "/graph")  return {status: graphStatus, json: async () => graphBody};
   if (url === "/search") return {status: searchStatus, json: async () => searchBody};
   if (url === "/query")  return {status: queryStatus, json: async () => queryBody};
-  if (url === "/path")   return {status: 200, json: async () => ({
-      src: apo.key, max_depth: 4, cap: 20, truncated: true,
-      bridges: [{dst: other.key, path: [apo.key, other.key]}],
-      unreachable: ["m3::/gone.md"]})};
+  if (url === "/path")   return {status: 200, json: async () => pathBody};
+  if (url === "/neighbors")
+    return {status: neighboursStatus, json: async () => neighboursBody};
   return {status: 404, json: async () => ({error: "no route"})};
 };
 
 const api = new Function(src.replace(/\nboot\(\);\s*$/, "\n") +
   "\nreturn {boot, renderSchematic, renderHits, renderRows, runSearch, select," +
-  " nodeAt, sx, sy, state};")();
+  " nodeAt, sx, sy, state, toggleFilter, visible, hiddenCount};")();
 const v2 = () => document.getElementById("v2").innerHTML;
 const status = () => document.getElementById("status").textContent;
+// The last request to a NAMED route. `calls[calls.length - 1]` was read
+// instead, and one click can now make two calls: the moment the neighbourhood
+// fallback fired, "the last call" was /neighbors and `out.path_request.dsts`
+// raised KeyError halfway through the checks -- which the mutation harness
+// reported as a different gate's kill rather than as the crash it was.
+const lastCall = (route) => {
+  for (let i = calls.length - 1; i >= 0; i--)
+    if (calls[i].url === route) return calls[i].body;
+  return null;
+};
 const out = {};
 
 // A 500 from /graph FIRST, on a page that has booted nothing yet: `payload`
@@ -997,7 +1192,7 @@ api.boot().then(async () => {
   document.getElementById("mode").value = "search";
   document.getElementById("q").value = "noe";
   await api.runSearch();
-  out.search_request = calls[calls.length - 1].body;
+  out.search_request = lastCall("/search");
   out.search_status = status();
   out.hits_html = document.getElementById("hits").innerHTML;
   const m = out.hits_html.match(/data-key='([^']*)'/);
@@ -1006,8 +1201,10 @@ api.boot().then(async () => {
   out.apo_key = apo.key;
 
   // -- a click: the dsts must not contain the node the path starts from --
+  const beforeBridged = calls.length;
   await api.select(apo.key);
-  out.path_request = calls[calls.length - 1].body;
+  out.routes_when_bridged = calls.slice(beforeBridged).map((c) => c.url);
+  out.path_request = lastCall("/path");
   out.both = v2();
 
   // -- a 500 from /search is not an empty result set ---------------------
@@ -1034,6 +1231,62 @@ api.boot().then(async () => {
   out.hit_test = found ? found.key : null;
   out.hit_test_miss = api.nodeAt({clientX: -9999, clientY: -9999});
 
+  // -- the neighbourhood fallback ----------------------------------------
+  // /path with not one bridge. Everything else is left as it was, so the
+  // only difference from the click above is the empty `bridges`.
+  document.getElementById("mode").value = "search";
+  searchStatus = 200; searchBody = searchOK;
+  await api.runSearch();
+  pathBody = {src: apo.key, max_depth: 4, cap: 20, truncated: false,
+              bridges: [], unreachable: [other.key, "m3::/gone.md"]};
+  const before = calls.length;
+  await api.select(apo.key);
+  out.fallback_routes = calls.slice(before).map((c) => c.url);
+  out.fallback_request = lastCall("/neighbors");
+  out.fallback_v2 = v2();
+
+  // A 500 from /neighbors is not an empty neighbourhood, same rule as every
+  // other route.
+  neighboursStatus = 500; neighboursBody = {error: "simulated internal bug"};
+  await api.select(apo.key);
+  out.fallback_error_status = status();
+  neighboursStatus = 200;
+
+  // -- the filters --------------------------------------------------------
+  // Driven through `toggleFilter` with the event the checkbox would send,
+  // because `addEventListener` is a no-op in this fake DOM.
+  const twoModels = payload.models.length > 1;
+  const victim = payload.nodes.find((n) => n.model === payload.models[0]);
+  const spared = payload.nodes.find((n) => n.model !== payload.models[0]);
+  // A sentinel on the canvas, because comparing the SCALE cannot see the
+  // defect: `fit()` recomputes the same transform from the same payload and
+  // the same rect, so a filter that called it left `sx(100)` untouched and
+  // the mutation adding `fit()` survived. `fit()` does write the canvas
+  // size, so a value it would overwrite is what makes the call observable.
+  document.getElementById("graph").width = -1;
+  const scaleBefore = api.sx(100);
+  const callsBefore = calls.length;
+  api.toggleFilter({target: {checked: false, dataset:
+    {axis: "models", value: payload.models[0]}}});
+  out.filter_status = status();
+  out.filter_hidden = api.hiddenCount();
+  out.filter_total = payload.nodes.length;
+  out.filter_victim_visible = api.visible(victim);
+  out.filter_spared_visible = spared ? api.visible(spared) : null;
+  out.filter_two_models = twoModels;
+  out.filter_no_fetch = calls.length === callsBefore;
+  out.filter_no_relayout = api.sx(100) === scaleBefore &&
+                           document.getElementById("graph").width === -1;
+  // A hidden node has no dot, so the hit test must not find one at its own
+  // coordinates -- the picture and the click have to agree.
+  const hitHidden = api.nodeAt({clientX: api.sx(victim.x),
+                                clientY: api.sy(victim.y)});
+  out.filter_hit_hidden = hitHidden ? hitHidden.key : null;
+  out.filter_victim_key = victim.key;
+  api.toggleFilter({target: {checked: true, dataset:
+    {axis: "models", value: payload.models[0]}}});
+  out.filter_restored = api.hiddenCount();
+
   console.log(JSON.stringify(out));
 }).catch((e) => { console.error(String(e && e.stack || e)); process.exit(1); });
 """
@@ -1042,7 +1295,7 @@ api.boot().then(async () => {
 _PAGE_LIMIT = 7          # see `_run_page`: a number `DEFAULT_CAP` is not
 
 
-def _run_page(m3_db):
+def _run_page(m3_db, m2_db):
     """Run the page's script under `node` against a real payload.
 
     Returns the harness's dict, or a string naming why it could not run.
@@ -1061,7 +1314,14 @@ def _run_page(m3_db):
     # A model with no store on disk, so `payload["missing"]` is non-empty and
     # the page's `delvis:` banner has something to say. Two empty honesty
     # fields would let a page that dropped the banner entirely stay green.
-    payload = gui.graph_payload({"m3": m3_db, "ghost": "/no/such/store.db"})
+    #
+    # TWO real models, not one: with a single model every filter hides the
+    # whole corpus, and "hides everything" would satisfy a filter check that
+    # a correct implementation and a `return false` both pass. With m2 beside
+    # m3 the check can require that the filtered model went and the other
+    # stayed.
+    payload = gui.graph_payload({"m3": m3_db, "m2": m2_db,
+                                 "ghost": "/no/such/store.db"})
     # Overwritten to something `DEFAULT_CAP` is not, on purpose: the page's
     # `/search` limit used to be a literal `20` in JavaScript, and a check that
     # compared the request against `gui.DEFAULT_CAP` -- also 20 -- would have
@@ -1094,7 +1354,7 @@ def _run_page(m3_db):
     return json.loads(proc.stdout)
 
 
-def t_page_behaviour(m3_db):
+def t_page_behaviour(m3_db, m2_db):
     """Eleven properties of the page, driven through its own script.
 
     Grouped into one `node` run because the run is the expensive part; each
@@ -1151,8 +1411,16 @@ def t_page_behaviour(m3_db):
              "warnings, models_missing and the payload's own limit are used",
              "the closed language's table counts its rows and keeps the banner",
              "a click asks for bridges to the OTHER hits, and only those",
-             "a /graph that fails says so instead of drawing nothing"]
-    out = _run_page(m3_db)
+             "a /graph that fails says so instead of drawing nothing",
+             "no bridge found falls back to /neighbors, and only then",
+             "the fallback still names the hits with no path",
+             "a derived neighbour edge is drawn differently from a stated one",
+             "a 500 from /neighbors is an error, not an empty neighbourhood",
+             "the filter hides the model it is given and keeps the others",
+             "the filter says on the status line how much it hides",
+             "a filtered-out node cannot be clicked",
+             "the filter triggers no fetch and no re-layout"]
+    out = _run_page(m3_db, m2_db)
     if isinstance(out, str):
         for name in names:
             check(name, out.startswith("SKIPPED"), out)
@@ -1241,6 +1509,69 @@ def t_page_behaviour(m3_db):
           and "ingen graf" in out["graph_error_v1"],
           "status=%r v1=%r" % (out["graph_error_status"][:44],
                                re.sub(r"<[^>]+>", "", out["graph_error_v1"])[:24]))
+
+    # -- the neighbourhood fallback (step 2b) ------------------------------
+    #
+    # BOTH halves, in one check because they are one property: the click that
+    # found a bridge must NOT have called /neighbors, and the click that
+    # found none must. A check that only asserted the second would pass a
+    # page that fetched the neighbourhood on every click.
+    check(names[11],
+          out["fallback_routes"] == ["/path", "/neighbors"]
+          and out["routes_when_bridged"] == ["/path"]
+          and out["fallback_request"] == {"node": out["apo_key"]},
+          "routes=%r request=%r" % (out["fallback_routes"],
+                                    out["fallback_request"]))
+
+    fb = re.sub(r"<[^>]+>", " ", out["fallback_v2"])
+    check(names[12],
+          "ingen sti til 2 treff innen dybde 4" in fb,
+          "lead=%r" % fb[:76])
+
+    # Stated and derived must not render the same. Asserted as a difference
+    # between the two edges the harness supplies -- one `derived: true`, one
+    # `derived: false` -- rather than as a literal colour, so restyling the
+    # pane does not silently turn the distinction off.
+    # EXACTLY two dashed marks -- the derived edge's line and its circle --
+    # not "at least two": a pane that dashed every edge would satisfy a
+    # minimum while drawing the distinction away, which is the same shape of
+    # vacuous clause this branch has now caught six times.
+    check(names[13],
+          out["fallback_v2"].count("stroke-dasharray") == 2
+          and "/ut.md" in out["fallback_v2"] and "/inn.md" in out["fallback_v2"]
+          and "basename" in out["fallback_v2"],
+          "%d dashed mark(s) over 3 circles"
+          % out["fallback_v2"].count("stroke-dasharray"))
+
+    check(names[14],
+          out["fallback_error_status"].startswith("HTTP 500")
+          and "undefined" not in out["fallback_error_status"],
+          "status=%r" % out["fallback_error_status"][:44])
+
+    # -- the filters (step 2a) ---------------------------------------------
+    check(names[15],
+          out["filter_two_models"]
+          and out["filter_victim_visible"] is False
+          and out["filter_spared_visible"] is True
+          and 0 < out["filter_hidden"] < out["filter_total"]
+          and out["filter_restored"] == 0,
+          "hid %d of %d, spared visible=%r, restored to %d"
+          % (out["filter_hidden"], out["filter_total"],
+             out["filter_spared_visible"], out["filter_restored"]))
+
+    check(names[16],
+          ("filteret skjuler %d av %d noder"
+           % (out["filter_hidden"], out["filter_total"])) in out["filter_status"],
+          "status=%r" % out["filter_status"][:76])
+
+    check(names[17], out["filter_hit_hidden"] is None,
+          "click at the hidden node's own coordinates found %r"
+          % (out["filter_hit_hidden"] or "nothing"))
+
+    check(names[18],
+          out["filter_no_fetch"] and out["filter_no_relayout"],
+          "no fetch=%r, scale unchanged=%r"
+          % (out["filter_no_fetch"], out["filter_no_relayout"]))
 
 
 def t_gui_subcommand_exists_without_a_host_flag(m3_db):
@@ -1367,11 +1698,13 @@ def t_path_route_answers_over_the_real_corpus(real_m3_db, real_mesh_db):
 
 def main():
     t_file_kinds_are_the_measured_four()
+    t_neighbourhood_sorts_an_input_that_arrives_unsorted()
     t_binds_loopback_only()
 
     with tempfile.TemporaryDirectory(prefix="gui-cp-") as tmp:
         synthetic_db = _build_synthetic_m3(tmp)
         t_full_read_has_every_planted_file(synthetic_db)
+        t_kind_counts_are_the_other_half_of_the_summary(synthetic_db)
         t_capped_read_names_the_model_it_capped(synthetic_db)
         t_payload_drops_non_file_kinds(synthetic_db)
         t_isolated_computation(synthetic_db)
@@ -1402,10 +1735,13 @@ def main():
         t_path_finds_a_real_bridge(path_db, path_m2_db, mesh_db)
         t_path_cap_is_reported(path_db, mesh_db)
         t_neighbors_route_returns_edges(path_db, mesh_db)
+        t_neighbourhood_splits_the_edges(path_db, path_m2_db, mesh_db)
+        t_neighbourhood_marks_derived_by_confidence(path_db, path_m2_db, mesh_db)
+        t_neighbors_route_rejects_malformed_depth(path_db, mesh_db)
         t_neighbors_route_without_mesh_answers_rather_than_resets(path_db)
         t_page_is_shipped_and_self_contained(path_db, mesh_db)
         # Needs the corpus that plants `it's-a-note.md`.
-        t_page_behaviour(path_db)
+        t_page_behaviour(path_db, path_m2_db)
 
     t_isolated_matches_md_gaps(real_m3())
     t_graph_route_matches_real_corpus(real_m3())

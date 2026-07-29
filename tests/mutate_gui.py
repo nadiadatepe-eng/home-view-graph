@@ -247,8 +247,10 @@ MUTATIONS = [
 
     ("the page fetches a script from a CDN",
      "homegraph/assets/gui.html",
-     "const state = { filter: null, search: null, selection: null };",
-     "const state = { filter: null, search: null, selection: null };\n"
+     "const state = { filter: { models: new Set(), kinds: new Set() },\n"
+     "                search: null, selection: null };",
+     "const state = { filter: { models: new Set(), kinds: new Set() },\n"
+     "                search: null, selection: null };\n"
      'const _cdn = "https://cdn.example.com/d3.v7.js";  // mutated: M18',
      "the page references no external host"),
 
@@ -419,6 +421,114 @@ MUTATIONS = [
      "        counts[n[\"model\"]] = counts.get(n[\"model\"], 0) + 1",
      "        counts[n[\"model\"]] = 1  # mutated",
      "counts is the per-model node count h1's summary prints"),
+
+    # -- step 2a, the filters in h1 ----------------------------------------
+
+    ("kind_counts reports one node per kind",
+     "homegraph/gui.py",
+     "        kind_counts[n[\"kind\"]] = kind_counts.get(n[\"kind\"], 0) + 1",
+     "        kind_counts[n[\"kind\"]] = 1  # mutated",
+     "kind_counts is the per-kind node count, and kinds names them"),
+
+    # The filter that filters nothing -- the shape a "hides everything"
+    # check could not tell from a working one, which is why the page harness
+    # runs two models.
+    ("visible() stops consulting the filter",
+     "homegraph/assets/gui.html",
+     "  return !state.filter.models.has(n.model) && !state.filter.kinds.has(n.kind);",
+     "  return true;  // mutated: the filter hides nothing",
+     "the filter hides the model it is given and keeps the others"),
+
+    ("the filter stops announcing what it hides",
+     "homegraph/assets/gui.html",
+     "  const hidden = hiddenCount();\n"
+     "  if (hidden)\n"
+     '    parts.push("filteret skjuler " + hidden + " av " + payload.nodes.length +\n'
+     '               " noder");',
+     "  // mutated: the filtered view says nothing about being filtered",
+     "the filter says on the status line how much it hides"),
+
+    ("nodeAt stops skipping filtered-out nodes",
+     "homegraph/assets/gui.html",
+     "    if (!visible(n)) continue;\n"
+     "    const d = Math.hypot(sx(n.x) - px, sy(n.y) - py);",
+     "    const d = Math.hypot(sx(n.x) - px, sy(n.y) - py);  // mutated",
+     "a filtered-out node cannot be clicked"),
+
+    ("toggling a filter re-lays-out the graph",
+     "homegraph/assets/gui.html",
+     "  if (state.search) renderHits(); else renderStatus();\n"
+     "  draw();",
+     "  if (state.search) renderHits(); else renderStatus();\n"
+     "  fit();  // mutated: the filter re-scales the view\n"
+     "  draw();",
+     "the filter triggers no fetch and no re-layout"),
+
+    # -- step 2b, the neighbourhood fallback -------------------------------
+
+    ("neighbourhood drops mesh_neighbors' own answer",
+     "homegraph/gui.py",
+     "    out[\"incoming\"] = side(edges, \"dst\", \"src\")\n"
+     "    out[\"outgoing\"] = side(edges, \"src\", \"dst\")\n"
+     "    return out",
+     "    return {\"incoming\": side(edges, \"dst\", \"src\"),  # mutated\n"
+     "            \"outgoing\": side(edges, \"src\", \"dst\")}",
+     "POST /neighbors keeps mesh_neighbors' own keys and adds two"),
+
+    ("the neighbourhood ignores direction and puts every edge on both sides",
+     "homegraph/gui.py",
+     "                       for e in edges if e[near] == node),",
+     "                       for e in edges),  # mutated: direction ignored",
+     "the neighbourhood splits edges by direction, from both ends"),
+
+    ("the neighbourhood comes back in mesh-read order",
+     "homegraph/gui.py",
+     "                      key=lambda e: (e[\"key\"], e[\"rel\"]))",
+     "                      key=lambda e: 0)  # mutated: no order",
+     "the neighbourhood sorts an input that arrived unsorted"),
+
+    ("every neighbour edge is reported as stated",
+     "homegraph/gui.py",
+     "                        \"derived\": e[\"confidence\"] is not None\n"
+     "                        and e[\"confidence\"] < 1.0}",
+     "                        \"derived\": False}  # mutated",
+     "a neighbour edge is derived exactly when its confidence is below 1"),
+
+    ("neighbourhood's depth guard is removed",
+     "homegraph/gui.py",
+     "    try:\n"
+     "        depth = int(depth) if depth else 1\n"
+     "    except (TypeError, ValueError) as exc:\n"
+     "        raise BadArgument(\"depth must be an integer: %s\" % exc) from exc",
+     "    depth = int(depth) if depth else 1  # mutated: no BadArgument",
+     "a /neighbors call with a non-integer depth is a 400, not a 500"),
+
+    ("the fallback fires on every click, bridge or no bridge",
+     "homegraph/assets/gui.html",
+     "  if (out.body.bridges.length) { renderSchematic(out.body); return; }",
+     "  // mutated: the neighbourhood is fetched even when a bridge was found",
+     "no bridge found falls back to /neighbors, and only then"),
+
+    ("the fallback stops naming the hits it found no path to",
+     "homegraph/assets/gui.html",
+     "  if (bridgeOut && bridgeOut.unreachable.length)\n"
+     '    parts.push("ingen sti til " + bridgeOut.unreachable.length +\n'
+     '               " treff innen dybde " + bridgeOut.max_depth);',
+     "  // mutated: the unreachable hits are not named in the fallback",
+     "the fallback still names the hits with no path"),
+
+    ("a derived neighbour edge is drawn like a stated one",
+     "homegraph/assets/gui.html",
+     "           (e.derived ? \"fill='none' stroke='#c88' stroke-dasharray='3 2'\"\n"
+     "                      : \"fill='#8899aa'\") + \">\" +",
+     "           \"fill='#8899aa'\" + \">\" +  // mutated: derived looks stated",
+     "a derived neighbour edge is drawn differently from a stated one"),
+
+    ("select() drops the status guard on /neighbors",
+     "homegraph/assets/gui.html",
+     "  if (nb.status !== 200) { renderError(nb); return; }",
+     "  // mutated: a 500 from /neighbors is drawn as a neighbourhood",
+     "a 500 from /neighbors is an error, not an empty neighbourhood"),
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))

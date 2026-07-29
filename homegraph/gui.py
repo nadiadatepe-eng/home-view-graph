@@ -160,13 +160,22 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
         linked.add(a)
         linked.add(b)
 
-    counts = {}
+    counts, kind_counts = {}, {}
     for n in out_nodes:
         # The key is `model::node_key`, and for a file node the node_key IS
         # the path. Split here rather than re-querying: a second read could
         # disagree with the one the edges were built from.
         n["path"] = n["key"].split("::", 1)[1] if "::" in n["key"] else n["key"]
         counts[n["model"]] = counts.get(n["model"], 0) + 1
+        # The other half of the spec's "summary per file type and partition".
+        # Counted here for the same reason `counts` is: a per-kind total the
+        # browser derived would be a second measurement of the same nodes,
+        # and the two would eventually disagree. Measured 2026-07-29 on four
+        # models: file 1655, code 561, image 183, document 73 -- four values,
+        # which is what makes `kind` the filter axis and `subtype` (over
+        # twenty values) not one, though every node still carries `subtype`
+        # for whoever wants it later.
+        kind_counts[n["kind"]] = kind_counts.get(n["kind"], 0) + 1
 
     isolated = [n["key"] for i, n in enumerate(out_nodes) if i not in linked]
 
@@ -183,6 +192,9 @@ def graph_payload(model_paths, mesh_db=None, limit_per_model=NO_LIMIT):
     return {"nodes": out_nodes, "edges": out_edges, "isolated": isolated,
             "isolated_count": len(isolated), "isolated_share": share,
             "band_divider": band_divider, "models": sorted(counts),
+            # The filter axes, named by Python. The page turns them into
+            # checkboxes and decides nothing about what they mean.
+            "kinds": sorted(kind_counts), "kind_counts": kind_counts,
             # The page's `/search` limit, sent rather than written twice. It is
             # `DEFAULT_CAP` on purpose: a search's hits become `/path`'s
             # `dsts`, so a limit above the cap would make every click report
@@ -240,6 +252,53 @@ def bridges(server, src, dsts=None, max_depth=None, cap=None):
             unreachable.append(dst)
     return {"src": src, "bridges": found, "unreachable": unreachable,
             "max_depth": depth, "cap": cap, "truncated": truncated}
+
+
+def neighbourhood(server, node, depth=None):
+    """`mesh_neighbors`' answer verbatim, plus the two sides of it, sorted.
+
+    The spec's fallback for v2: when no path exists between the clicked file
+    and the other hits, draw its neighbourhood instead -- the file in the
+    middle, incoming left, outgoing right, deterministically sorted.
+
+    The verbatim answer is passed through untouched (`count`, `status`,
+    `warnings` and `edges` are `mesh_neighbors`' own account of what it found
+    and how sure it is, and a transport that rewrote them would be deciding
+    something). `incoming` and `outgoing` are added beside it, because the
+    split and the order ARE decisions and this package puts those in Python.
+    Sorted by the far key then the relation, so the same neighbourhood draws
+    the same picture twice -- the same property `_positions` exists to keep.
+
+    `derived` is `confidence < 1.0`, NOT `method != "exact"`. The spec says
+    the latter; `store.provenance_note` -- "the whole of the honesty rule,
+    and it lives here once" -- says the former, and its docstring names a
+    second copy of that question as the way one copy ends up always
+    answering no. `exact` is 1.0, `path_prefix` 0.7, `basename` 0.6,
+    `mention` 0.5, so the two agree today on every method in
+    `EDGE_METHODS`; they would stop agreeing the moment a stated-but-uncertain
+    method is added, and then the confidence reading is the correct one.
+
+    A self-edge lands in both lists, which is the honest answer: it is both
+    an incoming and an outgoing relation of the node.
+    """
+    try:
+        depth = int(depth) if depth else 1
+    except (TypeError, ValueError) as exc:
+        raise BadArgument("depth must be an integer: %s" % exc) from exc
+    out = server.mesh_neighbors(node=node, depth=depth)
+
+    def side(edges, near, far):
+        return sorted(({"key": e[far], "rel": e["rel"],
+                        "method": e["method"], "confidence": e["confidence"],
+                        "derived": e["confidence"] is not None
+                        and e["confidence"] < 1.0}
+                       for e in edges if e[near] == node),
+                      key=lambda e: (e["key"], e["rel"]))
+
+    edges = out.get("edges", [])
+    out["incoming"] = side(edges, "dst", "src")
+    out["outgoing"] = side(edges, "src", "dst")
+    return out
 
 
 def build_handler(server, payload):
@@ -312,7 +371,7 @@ def build_handler(server, payload):
         def do_POST(self):
             routes = {"/search": server.mesh_search,
                       "/query": server.query,
-                      "/neighbors": server.mesh_neighbors,
+                      "/neighbors": functools.partial(neighbourhood, server),
                       "/path": functools.partial(bridges, server)}
             fn = routes.get(self.path)
             if fn is None:

@@ -43,6 +43,10 @@
      font-size='9' labels near 3.6 px and the r='5' circles near 2 px, from the
      first click with more than about eight hits. */
   .lead { color: #555; margin: 0 0 4px 0; }
+  #filters { border: 1px solid #ddd; margin: 8px 0 0 0; padding: 4px 8px 8px 8px; }
+  #filters legend { color: #555; padding: 0 4px; }
+  #filters label { display: block; }
+  #filters .axis { color: #888; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -53,6 +57,7 @@
                       <option value="query">lukket språk</option></select>
     <select id="model" hidden></select>
     <div id="summary"></div>
+    <fieldset id="filters"><legend>filter</legend></fieldset>
   </div>
   <div id="mid">
     <div id="v1"><canvas id="graph"></canvas></div>
@@ -61,7 +66,8 @@
   <div id="h3"><div id="status"></div><ol id="hits"></ol></div>
 </div>
 <script>
-const state = { filter: null, search: null, selection: null };
+const state = { filter: { models: new Set(), kinds: new Set() },
+                search: null, selection: null };
 // The page draws. Every decision -- which nodes are files, which are isolated,
 // which path won, what was truncated -- arrived already made from Python.
 //
@@ -118,6 +124,7 @@ async function boot() {
   renderStatus();
   renderSummary();
   renderModels();
+  renderFilters();
   fit();
   draw();
 }
@@ -139,6 +146,16 @@ function payloadParts() {
     parts.push("ingen lager for " + payload.missing.join(", "));
   if (payload.truncated.length)
     parts.push("avkortet lesing av " + payload.truncated.join(", "));
+  // The filter's own account of itself, on the same line and under the same
+  // rule: a view showing a third of the corpus must not read like the whole
+  // of it. This is the one number this page computes rather than receives --
+  // unavoidably, since the filter is a browser-side toggle that never calls
+  // the server -- and it is a count over nodes Python sent, not a judgement
+  // about which of them matter.
+  const hidden = hiddenCount();
+  if (hidden)
+    parts.push("filteret skjuler " + hidden + " av " + payload.nodes.length +
+               " noder");
   return parts;
 }
 
@@ -171,6 +188,59 @@ function renderModels() {
 
 function syncMode() {
   $("model").hidden = $("mode").value !== "query";
+}
+
+// -- the filters -----------------------------------------------------------
+//
+// Two axes, both named and counted by Python: `models`/`counts` (the spec's
+// "partition") and `kinds`/`kind_counts` (its "file type"). `state.filter`
+// holds what is OFF, so an empty pair of sets is the unfiltered corpus and
+// nothing below has to special-case "no filter set".
+//
+// `subtype` is deliberately NOT an axis. Measured 2026-07-29 across four
+// models: `kind` has four values, `subtype` has over twenty (`code/inventory`
+// 561, `note` 465, `config` 421, `text` 396, ...), which is a list to read
+// rather than a control to use. Every node still carries `subtype` in the
+// payload, so making it an axis later costs a `renderFilters` change and
+// nothing else.
+
+function visible(n) {
+  return !state.filter.models.has(n.model) && !state.filter.kinds.has(n.kind);
+}
+
+function hiddenCount() {
+  let n = 0;
+  for (const node of payload.nodes) if (!visible(node)) n++;
+  return n;
+}
+
+function renderFilters() {
+  const box = (axis, value, count) =>
+    "<label><input type='checkbox' checked data-axis='" + axis +
+    "' data-value='" + esc(value) + "'> " + esc(value) + " (" + count + ")</label>";
+  $("filters").innerHTML =
+    "<legend>filter</legend><div class='axis'>partisjon</div>" +
+    payload.models.map((m) => box("models", m, payload.counts[m])).join("") +
+    "<div class='axis'>filtype</div>" +
+    payload.kinds.map((k) => box("kinds", k, payload.kind_counts[k])).join("");
+}
+
+function toggleFilter(ev) {
+  const inp = ev.target;
+  if (!inp.dataset || !inp.dataset.axis) return;
+  const off = state.filter[inp.dataset.axis];
+  if (inp.checked) off.delete(inp.dataset.value);
+  else off.add(inp.dataset.value);
+  // No fetch and no `fit()`. The spec's route table is emphatic that the
+  // filters trigger NEITHER, for the same reason a search never re-lays-out:
+  // a position has to mean the same thing all session. (The spec's dataflow
+  // diagram draws an arrow from the filter into POST /search; the route
+  // table's reasoned "aldri" is the one followed, and this comment is where
+  // that choice is written down.)
+  // `renderHits` owns #status once a search exists; before one, it would
+  // write "0 treff" about a search nobody ran.
+  if (state.search) renderHits(); else renderStatus();
+  draw();
 }
 
 // -- the graph pane --------------------------------------------------------
@@ -211,6 +281,9 @@ function draw() {
   ctx.beginPath();
   for (const e of payload.edges) {
     const a = payload.nodes[e[0]], b = payload.nodes[e[1]];
+    // An edge with a filtered-out end is not drawn. Drawing it would leave a
+    // line running to nothing, which reads as a node the picture forgot.
+    if (!visible(a) || !visible(b)) continue;
     ctx.moveTo(sx(a.x), sy(a.y));
     ctx.lineTo(sx(b.x), sy(b.y));
   }
@@ -235,6 +308,7 @@ function draw() {
 
   const r = 3 * dpr;
   for (const n of payload.nodes) {
+    if (!visible(n)) continue;
     ctx.beginPath();
     ctx.arc(sx(n.x), sy(n.y), n.key === state.selection ? r * 2 : r, 0, 6.2832);
     ctx.fillStyle = n.key === state.selection ? "#1a73e8"
@@ -250,6 +324,10 @@ function nodeAt(ev) {
   const py = (ev.clientY - rect.top) * view.dpr;
   let best = null, bestD = 10 * view.dpr;
   for (const n of payload.nodes) {
+    // A node the filter hid has no dot, so it cannot be what was clicked.
+    // Without this the picture and the hit test disagree, and a click on
+    // empty canvas selects a file that is not on screen.
+    if (!visible(n)) continue;
     const d = Math.hypot(sx(n.x) - px, sy(n.y) - py);
     if (d <= bestD) { bestD = d; best = n; }
   }
@@ -450,6 +528,69 @@ function renderSchematic(bridgeOut) {
     svg + "</svg></div>";
 }
 
+function renderNeighbourhood(out, bridgeOut) {
+  // The spec's fallback: no path to any other hit, so the pane draws what the
+  // clicked file IS connected to instead of standing empty. Selected in the
+  // middle, incoming left, outgoing right, in the order Python sorted them.
+  const pane = $("v2");
+  const inc = out.incoming || [], outg = out.outgoing || [];
+  const parts = [];
+  // The unreachable hits are still named. The fallback answers a different
+  // question than the one that was asked, and dropping "no path to these
+  // five within depth 4" while quietly showing something else is the swap
+  // this package refuses -- "ingen sti" is an answer, not an empty result.
+  if (bridgeOut && bridgeOut.unreachable.length)
+    parts.push("ingen sti til " + bridgeOut.unreachable.length +
+               " treff innen dybde " + bridgeOut.max_depth);
+  parts.push("naboskap: " + inc.length + " inn, " + outg.length + " ut");
+  for (const w of (out.warnings || [])) parts.push(w);
+  const lead = bridgeOut.src + " — " + parts.join("; ");
+
+  if (!inc.length && !outg.length) {
+    pane.innerHTML = "<p class='lead partial'>" + esc(lead) + "</p>" +
+      "<div class='waiting'>" + esc("ingen kanter heller — noden står alene")
+      + "</div>";
+    return;
+  }
+
+  const H = 34, W = 260;
+  const rows = Math.max(inc.length, outg.length);
+  const mid = 20 + W, height = 40 + rows * H;
+  const cy = height / 2;
+  let svg = "<circle cx='" + mid + "' cy='" + cy + "' r='6' fill='#1a73e8'>" +
+            "<title>" + esc(bridgeOut.src) + "</title></circle>" +
+            "<text x='" + mid + "' y='" + (cy + 18) + "' font-size='9' " +
+            "text-anchor='middle'>" +
+            esc(bridgeOut.src.split("/").pop().slice(0, 22)) + "</text>";
+  const side = (list, x, dir) => list.forEach((e, i) => {
+    const y = 20 + i * H;
+    // A derived relation is drawn as a dashed line and an open circle; a
+    // stated one is solid and filled. `derived` is Python's flag, read from
+    // `confidence < 1.0` in `neighbourhood()` -- the page does not decide
+    // what counts as a guess, it only draws the two differently.
+    svg += "<line x1='" + x + "' y1='" + y + "' x2='" + (mid - dir * 8) +
+           "' y2='" + cy + "' stroke='" + (e.derived ? "#c88" : "#8899aa") +
+           "'" + (e.derived ? " stroke-dasharray='3 2'" : "") + "/>" +
+           "<circle cx='" + x + "' cy='" + y + "' r='5' " +
+           (e.derived ? "fill='none' stroke='#c88' stroke-dasharray='3 2'"
+                      : "fill='#8899aa'") + ">" +
+           "<title>" + esc(e.key + " — " + e.rel + " (" + e.method + " " +
+                           e.confidence + ")") + "</title></circle>" +
+           "<text x='" + x + "' y='" + (y + 16) + "' font-size='9' " +
+           "text-anchor='middle'>" +
+           esc(e.key.split("/").pop().slice(0, 22)) + "</text>";
+  });
+  side(inc, 20, 1);
+  side(outg, 20 + 2 * W, -1);
+
+  const width = 40 + 2 * W;
+  pane.innerHTML = "<p class='lead" +
+    (out.status === "partial" ? " partial" : "") + "'>" + esc(lead) + "</p>" +
+    "<div style='overflow:auto;height:calc(100% - 24px)'>" +
+    "<svg id='schematic' viewBox='0 0 " + width + " " + height +
+    "' width='" + width + "' height='" + height + "'>" + svg + "</svg></div>";
+}
+
 async function select(key) {
   state.selection = key;
   draw();
@@ -470,13 +611,21 @@ async function select(key) {
   const out = await post("/path", { src: key, dsts: dsts });
   if (state.selection !== key) return;  // a later click already won
   if (out.status !== 200) { renderError(out); return; }
-  renderSchematic(out.body);
+  if (out.body.bridges.length) { renderSchematic(out.body); return; }
+  // Not one bridge to any other hit. The spec's fallback: ask what this file
+  // IS connected to. Fetched only here, so a search whose hits do bridge
+  // never pays for the call.
+  const nb = await post("/neighbors", { node: key });
+  if (state.selection !== key) return;
+  if (nb.status !== 200) { renderError(nb); return; }
+  renderNeighbourhood(nb.body, out.body);
 }
 
 // -- wiring ----------------------------------------------------------------
 
 $("q").addEventListener("keydown", (ev) => { if (ev.key === "Enter") runSearch(); });
 $("mode").addEventListener("change", syncMode);
+$("filters").addEventListener("change", toggleFilter);
 canvas.addEventListener("click", (ev) => {
   const n = nodeAt(ev);
   if (n) select(n.key);
