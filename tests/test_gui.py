@@ -7,16 +7,29 @@ tempdir, the way every other checkpoint builds its own corpus, so this file
 is not the one checkpoint in `tests/` that silently does nothing on a machine
 without `~/.homegraph/real-*.db`.
 
-FOUR checks still need the real corpus, not one: `t_isolated_matches_md_gaps`,
-`t_graph_route_matches_real_corpus`, `t_band_matches_the_real_corpus` and
-`t_path_route_answers_over_the_real_corpus`. Each ties this surface to an
-already-measured
-fact -- that the set `/graph` calls isolated is the set `isolated_notes`
-reports, so the GUI and `md gaps` cannot drift apart without anyone saying so
--- and each prints a named SKIPPED line rather than vanishing when the store
-is absent. Eleven more need `node`, in `t_page_behaviour`. A green run on a
-machine with neither is a green run in which fifteen checks asserted nothing,
-which is why they are named here rather than counted.
+**A GREEN RUN HERE IS A STATEMENT ABOUT THIS MACHINE.** Twenty-three of the
+checks below need something that is not in the repository, and each prints a
+named SKIPPED line rather than vanishing when it is absent -- but SKIPPED
+still counts as passed, so `65/65` on a bare machine means forty-two checks
+ran and twenty-three asserted nothing. They are named here rather than
+counted, so that the number can be recognised as the smaller claim it is:
+
+- FOUR need `~/.homegraph/real-*.db`, not the one an earlier version of this
+  docstring named: `t_isolated_matches_md_gaps`,
+  `t_graph_route_matches_real_corpus`, `t_band_matches_the_real_corpus` and
+  `t_path_route_answers_over_the_real_corpus`. Each ties this surface to an
+  already-measured fact -- that the set `/graph` calls isolated is the set
+  `isolated_notes` reports, so the GUI and `md gaps` cannot drift apart
+  without anyone saying so.
+- NINETEEN need `node`, all in `t_page_behaviour`: the page's own script is
+  run under it against a real payload, and without it the whole of `gui.html`
+  is unexercised.
+
+The same holds for `mutate_gui.py`: its "0 survived" is a claim about a
+machine with both. Counted 2026-07-29: **24 of its 54 mutations name a gate
+that only runs with `node` (23) or with the real corpus (1)**, so on a bare
+machine those 24 would survive silently while the sweep reported a score it
+had not earned.
 
 Run:
     python3 tests/test_gui.py
@@ -1355,7 +1368,7 @@ def _run_page(m3_db, m2_db):
 
 
 def t_page_behaviour(m3_db, m2_db):
-    """Eleven properties of the page, driven through its own script.
+    """Nineteen properties of the page, driven through its own script.
 
     Grouped into one `node` run because the run is the expensive part; each
     check below reads a different key out of it, and each can go red on its
@@ -1393,12 +1406,25 @@ def t_page_behaviour(m3_db, m2_db):
     10. `/path`'s `dsts` exclude the node the path starts from, and `nodeAt`
         finds a node at its own coordinates and nothing at the far corner.
     11. A `/graph` that fails says so instead of drawing nothing.
+    12. The neighbourhood fallback fires when no bridge was found, and ONLY
+        then -- a page that fetched it on every click would pass a check that
+        asked only about the empty case.
+    13. The fallback still names the hits it found no path to.
+    14. A derived neighbour edge is drawn differently from a stated one.
+    15. A 500 from `/neighbors` is not an empty neighbourhood.
+    16. The filter hides the model it is given and keeps the others -- which
+        is why `_run_page` builds TWO real models: with one, "hides
+        everything" and "hides the right ones" are the same answer.
+    17. The filtered view says how much it hides.
+    18. A filtered-out node cannot be clicked: the picture and the hit test
+        have to agree.
+    19. The filter triggers no fetch and no re-layout.
 
-    Eleven names, not five. Four mutations used to name check 1 as their gate
-    while mutating properties 2 and 3, and one named check 5 while mutating
-    property 6 -- 8 of 36 mutations resting on a gate name that did not name
-    what they broke. A compound name is also a single point of edit: one
-    rewrite of that check silently drops the coverage of every mutation
+    Nineteen names, not five. Four mutations used to name check 1 as their
+    gate while mutating properties 2 and 3, and one named check 5 while
+    mutating property 6 -- 8 of 36 mutations resting on a gate name that did
+    not name what they broke. A compound name is also a single point of edit:
+    one rewrite of that check silently drops the coverage of every mutation
     pointing at it.
     """
     names = ["the schematic names which of its two conditions is missing",
@@ -1631,6 +1657,22 @@ def t_isolated_matches_md_gaps(m3_db):
     structural check above: the synthetic corpus proves the isolated
     computation is correct in shape, but only the real corpus proves it
     agrees with `isolated_notes()` at the scale the defect was measured at.
+
+    **IT PINS THE ONE CONFIGURATION NOBODY RUNS.** `md gaps` is about M3's
+    markdown, so this check passes `{"m3": ...}` with no mesh -- and that is
+    the right corpus for the question it asks. It is not the corpus anyone
+    opens the GUI on. Measured 2026-07-29:
+
+        m3 alone           602 nodes, 315 isolated   52.3 %   <- checked here
+        m3 + mesh        1 163 nodes, 531 isolated   45.7 %
+        four models+mesh 2 472 nodes, 1 763 isolated 71.3 %   <- what is used
+
+    So a green line here says the GUI and `md gaps` agree about M3's markdown.
+    It says nothing about the picture a `homegraph gui --model m1=... m2=...`
+    actually draws, where seven of ten file nodes stand alone and the band is
+    most of the window. Anything that reasons from "the isolated share is
+    52,3 %" to a property of the interface is reasoning about a corpus this
+    check does not cover.
     """
     if m3_db is None:
         check("isolated set equals isolated_notes()", True,

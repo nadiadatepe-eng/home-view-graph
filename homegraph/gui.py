@@ -10,6 +10,28 @@ Nothing outside this file is modified to make that work.
 Everything the page draws is decided here, in Python, for the same reason
 `visualize.collect` decides the `link` flag there rather than in the browser:
 what Python decides is under test.
+
+Ceilings, measured rather than assumed. None of these is a defect; each is a
+limit that was found and left, and a limit nobody wrote down is one the next
+reader has to rediscover by being surprised by it.
+
+- **Click accuracy falls with corpus size, and nothing here fixes it.**
+  Measured 2026-07-29 over four models: 2 472 file nodes, of which 1 763
+  (71,3 %) are isolated and therefore packed into the band, 3,65 x 4,17 px
+  apart against `nodeAt`'s 10 px hit radius. A click in the band routinely
+  selects a NEIGHBOUR of the intended file. The schematic's lead names the
+  node it answered about, which makes the mistake visible and correctable;
+  it does not make the click accurate. Zoom, or a band laid out by something
+  other than a sorted grid, is the real fix and is not built.
+- **Startup is 1,55 s and 0,96 MB of payload for 2 472 nodes** (re-measured
+  2026-07-29), all of it paid once in `serve()` before the browser opens:
+  `graph_payload` reads every store, runs the force layout, and ships every
+  node's coordinates. It is linear in nothing that was measured -- ten times
+  this corpus has not been tried.
+- **`collect` caps per model BEFORE filtering**, which is why `NO_LIMIT`
+  exists rather than a tuned number. Any caller passing a real limit gets
+  `truncated` naming the model it cut -- the ceiling announces itself, which
+  is the whole reason the cap was allowed to stay reachable at all.
 """
 from __future__ import annotations
 
