@@ -198,6 +198,23 @@ def subtype_of(path, rules=None):
     return "note"
 
 
+def _heading_at(sections, pos):
+    """The nearest heading above `pos`, or None if `pos` precedes them all.
+
+    Any level counts. An index that files pages under `##` and one that uses
+    `###` are both saying the same thing about the page beneath, and picking a
+    level would make the mechanism depend on a formatting choice the author did
+    not intend as meaning. Text above the first heading has no category rather
+    than the document's own title -- a title is not a category.
+    """
+    title = None
+    for sec in sections:
+        if sec["offset"] >= pos:
+            break
+        title = sec["title"]
+    return title
+
+
 class MarkdownExtractor:
     def __init__(self, rules=None):
         self.rules = rules or {}
@@ -220,10 +237,27 @@ class MarkdownExtractor:
         for m in RE_EMBED_WIKI.finditer(clean):
             embeds.append(m.group(1).strip())
         embed_spans = {m.span() for m in RE_EMBED_WIKI.finditer(clean)}
+        # Which heading each link sat under. Only an index page uses this, but
+        # it is computed here because `clean` is where the offsets mean
+        # anything: `blank_code` has already removed fenced and inline code, so
+        # a `[[link]]` shown as an example is not there to be filed under
+        # anything. Recomputing it from the raw text elsewhere would quietly
+        # disagree with `wikilinks` about which links exist at all.
+        wikilink_headings = {}
         for m in RE_WIKILINK.finditer(clean):
             if m.span() in embed_spans:
                 continue
-            wikilinks.append(m.group(1).strip())
+            target = m.group(1).strip()
+            wikilinks.append(target)
+            # EVERY heading, not the first. `wikilinks` dedupes because one
+            # edge to a page is one edge; a page listed under two headings is
+            # two classifications, and keeping only the first would drop a
+            # category the author wrote on purpose. Order preserved, repeats
+            # within one heading collapsed.
+            for_target = wikilink_headings.setdefault(target, [])
+            heading = _heading_at(sections, m.start())
+            if heading is not None and heading not in for_target:
+                for_target.append(heading)
 
         links, path_mentions = [], []
         for m in RE_MDLINK.finditer(clean):
@@ -269,6 +303,7 @@ class MarkdownExtractor:
             "frontmatter_problems": front_problems,
             "sections": sections,
             "wikilinks": _dedupe(wikilinks),
+            "wikilink_headings": wikilink_headings,
             "links": _dedupe(links),
             "embeds": _dedupe(embeds),
             "tags": _dedupe(tags),

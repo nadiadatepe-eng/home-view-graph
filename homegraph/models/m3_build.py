@@ -44,6 +44,10 @@ class BuildReport:
         self.unresolved_mentions = 0
         self.frontmatter_problems = []
         self.subtypes = collections.Counter()
+        # Distinct headings in `index.md` that actually list an article. A
+        # heading with nothing under it is not a category anyone assigned, so
+        # it is not counted and no node is written for it.
+        self.categories = 0
         # Files the builder was asked for and could not read. Recorded rather
         # than passed over: during an incremental update the old edges have
         # already been deleted by the time this happens, so a silent skip
@@ -62,6 +66,7 @@ class BuildReport:
             "broken_link_total": sum(self.broken_links.values()),
             "ambiguous_targets": len(self.ambiguous_targets),
             "unresolved_mentions": self.unresolved_mentions,
+            "categories": self.categories,
             "frontmatter_problems": len(self.frontmatter_problems),
             "unreadable": len(self.unreadable),
             "subtypes": dict(self.subtypes),
@@ -83,6 +88,33 @@ def build_index(paths):
     return index
 
 
+def index_file_for(root):
+    """`index.md` at the corpus root, or None.
+
+    One rule, one place, because both callers that build M3 have to agree: a
+    store built by `md build` and then maintained by `update` would otherwise
+    disagree about which file assigns categories, and the disagreement would
+    show up as edges appearing and vanishing between runs. At the root only --
+    a nested `index.md` is a page like any other, and picking between several
+    is the guess `build_index` refuses to make.
+    """
+    candidate = os.path.join(root, "index.md")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _index_categories(data, index):
+    """Headings in the index that actually list an existing page.
+
+    A heading with nothing resolvable under it is not a category anyone
+    assigned. Writing a node for it would put empty boxes in the graph that
+    look like classifications with no members, which reads as data loss rather
+    than as an author who wrote a heading and moved on.
+    """
+    return dict.fromkeys(
+        heading for target, headings in data["wikilink_headings"].items()
+        if target in index for heading in headings)
+
+
 def rules_from_config(cfg):
     """The extractor rules an installation's config implies.
 
@@ -96,7 +128,8 @@ def rules_from_config(cfg):
     return {"generated_markers": tuple(getattr(cfg, "generated_dirs", ()) or ())}
 
 
-def build(store, paths, as_of, rules=None, report=None, index_paths=None):
+def build(store, paths, as_of, rules=None, report=None, index_paths=None,
+          index_file=None):
     """Build nodes and edges for `paths`.
 
     `index_paths` is the name index's population, defaulting to `paths`. They
@@ -111,6 +144,12 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
     index = build_index(index_paths if index_paths is not None else paths)
     report = report or BuildReport()
     extractions = []
+    # The one file whose headings mean "category". Named by the caller rather
+    # than discovered: `build_index`'s docstring already refuses to guess which
+    # of two files called `index.md` is meant, and this would be the same guess
+    # with a worse blast radius -- every article in the corpus filed under
+    # somebody else's headings. No index named, no category edges.
+    index_key = os.path.realpath(index_file) if index_file else None
 
     # Pass 1: nodes. Every endpoint must exist before any edge is inserted.
     for path in paths:
@@ -159,6 +198,13 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
                                   subtype="broken", title=target, body=target,
                                   as_of=as_of)
 
+        if index_key and os.path.realpath(path) == index_key:
+            for heading in _index_categories(data, index):
+                store.upsert_node("category:%s" % heading, kind="category",
+                                  subtype="category", title=heading,
+                                  body=heading, as_of=as_of)
+                report.categories += 1
+
     # Pass 2: edges.
     for data in extractions:
         path = data["path"]
@@ -193,6 +239,22 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None):
         for tag in data["tags"]:
             store.upsert_edge(path, "tag:%s" % tag, "TAGGED", as_of, method="exact")
             report.edges["TAGGED"] += 1
+
+        # The category edge runs article -> category, and is written IN ADDITION
+        # to the `WIKILINKS_TO` edge the same link already produced above. The
+        # index links to the article and files it under a heading; those are two
+        # facts, and collapsing them would cost the graph every link the index
+        # contributes -- 39 of them on `~/wiki`.
+        if index_key and os.path.realpath(path) == index_key:
+            for target, headings in data["wikilink_headings"].items():
+                if target not in index:
+                    continue
+                for heading in headings:
+                    store.upsert_edge(resolve_target(target, path, index),
+                                      "category:%s" % heading,
+                                      "CATEGORIZED_UNDER", as_of,
+                                      method="exact")
+                    report.edges["CATEGORIZED_UNDER"] += 1
 
         for target in data["links"]:
             resolved = _resolve_relative(path, target)

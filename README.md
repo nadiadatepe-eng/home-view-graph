@@ -543,9 +543,9 @@ accurate. Ten times this corpus has not been tried.
 ## Tests
 
 ```sh
-uvx pytest -q tests/                                            # 28 modules
+uvx pytest -q tests/                                            # 29 modules
 for h in cp0 cp1 cp2 cp3 cp4 cp5 cp6 cp7 cp8 cp9 cp10 cp11 cp12 cp13 \
-         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4; do
+         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4 idx; do
     python3 tests/mutate_$h.py
 done
 python3 tests/mutation_coverage.py         # which checks no mutation aims at
@@ -568,6 +568,14 @@ by running every harness in one sweep rather than one at a time -- a harness
 that passes standalone can still survive in a full one. The whole sweep takes
 **1 374 seconds**, and four harnesses are 82 % of it: `mutate_gui` 537 s,
 `mutate_cp6` 246 s, `mutate_i1` 193 s, `mutate_cp13` 150 s.
+
+CP-IDX added a twenty-fifth harness on 2026-07-31, `mutate_idx`, with 6
+mutations: 6 killed by the gate that names them, 0 survived, 0 crash-only,
+measured standalone. **The figures above are not restated to include it** --
+they are what one sweep on one commit produced, and a number measured then does
+not become a number measured now by adding to it. The next full sweep replaces
+them; until it runs, 513 across 24 is the last swept figure and `mutate_idx` is
+the harness that has not been in a sweep.
 
 The figure before that was the same 513 mutations on `c383991`, with **three**
 misattributions rather than one: `66b1c80` fixed `mutate_cp12`'s two, leaving

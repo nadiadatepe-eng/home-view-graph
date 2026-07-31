@@ -105,12 +105,13 @@ def _m2(store, paths, as_of):
 
 
 def _m3(store, paths, as_of, all_paths=None, cfg=None):
-    from .models.m3_build import build, rules_from_config
+    from .models.m3_build import build, index_file_for, rules_from_config
     # The name index has to see the WHOLE corpus even when three files are
     # being rebuilt. Without that a partial build declares every link broken --
     # the targets are real, they were just not in the batch.
     return build(store, paths, as_of, index_paths=all_paths or paths,
-                 rules=rules_from_config(cfg) if cfg is not None else None)
+                 rules=rules_from_config(cfg) if cfg is not None else None,
+                 index_file=index_file_for(home_root()))
 
 
 def _m3_affected(store, changes, all_paths):
@@ -141,11 +142,17 @@ def _m3_affected(store, changes, all_paths):
     """
     from .models.m3_markdown import page_name
 
+    # Computed before the early return below: editing `index.md` in place is a
+    # `changed`, not an `added`/`removed`, and it is the ordinary case. Leaving
+    # it after the guard meant re-filing a page under a new heading updated
+    # nothing at all.
+    extra = _index_and_its_articles(store, changes, all_paths)
     moved = list(changes.added) + list(changes.removed)
     if not moved:
-        return []
+        current = set(all_paths)
+        return sorted((extra & current) - set(changes.added)
+                      - set(changes.changed) - set(changes.removed))
     names = {page_name(p) for p in moved}
-    extra = set()
     for row in store.db.execute(
             "SELECT s.node_key src, d.node_key dst FROM edges e "
             "JOIN nodes s ON s.id = e.src JOIN nodes d ON d.id = e.dst "
@@ -163,6 +170,44 @@ def _m3_affected(store, changes, all_paths):
     current = set(all_paths)
     return sorted((extra & current) - set(changes.added)
                   - set(changes.changed) - set(changes.removed))
+
+
+def _index_and_its_articles(store, changes, all_paths):
+    """`index.md` and the pages it files are rebuilt together, or not at all.
+
+    `CATEGORIZED_UNDER` runs article -> category, but only the index's own
+    build writes it, and `forget` deletes edges by `src`. Neither half survives
+    alone: rebuilding the article drops the edge with nobody left to rewrite
+    it, and rebuilding the index leaves behind the edges of articles it no
+    longer lists. So either half drags the other in.
+
+    Costs nothing on a corpus with no root `index.md`, which is every home
+    directory -- the query never runs.
+    """
+    from .models.m3_build import index_file_for
+
+    filed = {row["src"] for row in store.db.execute(
+        "SELECT s.node_key src FROM edges e JOIN nodes s ON s.id = e.src "
+        "WHERE e.rel = 'CATEGORIZED_UNDER'")}
+    index_file = index_file_for(home_root())
+    if index_file is None or index_file not in set(all_paths):
+        # The index is gone. Its edges are not: nothing else writes them and
+        # nothing else deletes them, so the pages it used to file keep a
+        # category no file assigns any more. Rebuilding them is what removes
+        # the edges -- `forget` deletes by src -- and `prune` then takes the
+        # emptied `category:` nodes, the same way it takes an emptied `tag:`.
+        return filed
+    touched = set(changes.added) | set(changes.changed) | set(changes.removed)
+    if index_file in touched:
+        return filed | {index_file}
+    # Arrivals and departures are NOT handled here, deliberately. A name the
+    # index lists with no file behind it gets its category the day that file
+    # appears -- and the caller's existing expansion already drags the index in
+    # for exactly that case, because the index holds a `WIKILINKS_TO` edge to
+    # the `wikilink:` node standing in for the missing page. A branch here for
+    # it was written, measured redundant (its mutation survived, 2026-07-31),
+    # and removed. K9 stays as the gate that says so.
+    return {index_file} if touched & filed else set()
 
 
 def _m1_affected(store, changes, all_paths):

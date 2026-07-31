@@ -1104,7 +1104,7 @@ def cmd_md_build(args):
     from . import update as up
     from .corpus import Classifier
     from .corpus import ExclusionReport
-    from .models.m3_build import build, rules_from_config
+    from .models.m3_build import build, index_file_for, rules_from_config
     clf = Classifier()
     excluded = ExclusionReport(args.root or home_root())
     paths = []
@@ -1116,7 +1116,8 @@ def cmd_md_build(args):
     with _writing(args.db, model="m3",
                   fingerprint=up.fingerprint(clf.config)) as s:
         report = build(s, paths, args.as_of or date.today().isoformat(),
-                       rules=rules_from_config(clf.config))
+                       rules=rules_from_config(clf.config),
+                       index_file=index_file_for(args.root or home_root()))
         s.rebuild_fts()
         # Which layout this store was built under, so a later `update` can
         # tell a file change from a structural one. Written here rather than
