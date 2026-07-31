@@ -545,7 +545,7 @@ accurate. Ten times this corpus has not been tried.
 ```sh
 uvx pytest -q tests/                                            # 29 modules
 for h in cp0 cp1 cp2 cp3 cp4 cp5 cp6 cp7 cp8 cp9 cp10 cp11 cp12 cp13 \
-         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4 idx; do
+         gui h1 h2 h3 h3_crosslingual h3_graph i1 i2 i3 i4 idx h3_para; do
     python3 tests/mutate_$h.py
 done
 python3 tests/mutation_coverage.py         # which checks no mutation aims at
