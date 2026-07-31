@@ -63,7 +63,7 @@ from homegraph.providers import ollama                              # noqa: E402
 from homegraph.search import hybrid_search, vector_search           # noqa: E402
 from homegraph.store import Store                                   # noqa: E402
 
-results, check = reporter(58)
+results, check = reporter(64)
 
 
 def _tmp() -> str:
@@ -98,9 +98,16 @@ _MODEL = "fake-embed"
 _V_TARGET = [0.6, 0.0]
 _V_DECOY = [6.0, 8.0]
 _V_ZERO = [0.0, 0.0]
+# A third direction, distinct from both, so an ORDER check has three different
+# answers to tell apart. With only target/decoy two of the batch's texts map to
+# the same vector and a reversed batch is invisible -- measured 2026-07-31, the
+# reversal mutation SURVIVED the first version of that gate.
+_V_THIRD = [0.0, 0.5]
 
 
 def _vector_for(text: str) -> list[float]:
+    if "pepper" in text:
+        return list(_V_THIRD)
     if "onion" in text:
         return list(_V_DECOY)
     if "retrieval" in text:
@@ -175,10 +182,41 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # A degenerate model: it answers, with the right shape and the
             # right dim, and says nothing. The dangerous case, because every
             # check that only looks for "did floats come back" passes.
-            self._send(200, {"embeddings": [[0.0, 0.0]]})
+            # One zero vector PER INPUT. Answering a batch with a single vector
+            # would trip the count check instead, and the degenerate-model gate
+            # would pass on the wrong refusal -- measured 2026-07-31, the
+            # mutation that stores zeros SURVIVED while this returned one.
+            got = payload.get("input")
+            n = len(got) if isinstance(got, list) else 1
+            self._send(200, {"embeddings": [[0.0, 0.0]] * n})
+        elif mode == "shortbatch":
+            # One vector fewer than asked for. With a single input this is the
+            # `twovectors` case in reverse; with a batch it is the shape that
+            # would silently shift every vector after the gap onto the wrong
+            # node if the count were not checked.
+            got = payload.get("input")
+            if not isinstance(got, list):
+                # `connect` probes with a single input. Answering that one short
+                # would kill the connection before the batch path is reached, and
+                # the gate would pass on the wrong refusal.
+                self._send(200, {"embeddings": [_vector_for(str(got))]})
+            else:
+                self._send(200,
+                           {"embeddings": [_vector_for("retrieval")] * (len(got) - 1)})
+        elif mode == "widerdim_second":
+            # The FIRST vector is the right width and the second is not. A dim
+            # check that looks at vectors[0] and stops passes this.
+            got = payload.get("input")
+            if not isinstance(got, list):
+                self._send(200, {"embeddings": [[1.0, 0.0]]})
+            else:
+                self._send(200, {"embeddings": [[1.0, 0.0], [1.0, 0.0, 0.0]]})
         else:
-            text = str(payload.get("input", ""))
-            self._send(200, {"embeddings": [_vector_for(text)]})
+            got = payload.get("input", "")
+            if isinstance(got, list):
+                self._send(200, {"embeddings": [_vector_for(str(t)) for t in got]})
+            else:
+                self._send(200, {"embeddings": [_vector_for(str(got))]})
 
 
 class _FakeOllama:
@@ -448,6 +486,14 @@ def t_failure_midrun_leaves_the_store_untouched():
                     raise ollama.OllamaUnreachable("link went down")
                 return original_post(endpoint, path, payload, timeout)
 
+            # One text per request for this gate: the failure it names happens
+            # BETWEEN writes, and at the shipped batch size the whole corpus is
+            # a single round trip with no middle to die in. Shrinking the batch
+            # keeps the meaning rather than weakening it to "the first request
+            # failed" -- which would pass over a provider that wrote half a
+            # namespace and then stopped.
+            original_batch = cli.EMBED_BATCH
+            cli.EMBED_BATCH = 1
             ollama._post = flaky
             try:
                 rc = cli.cmd_embed(Args())
@@ -459,6 +505,7 @@ def t_failure_midrun_leaves_the_store_untouched():
                 rc = "escaped %s" % type(exc).__name__
             finally:
                 ollama._post = original_post
+                cli.EMBED_BATCH = original_batch
 
             with Store(db) as st:
                 n = st.embedding_count("ollama", _MODEL, _DIM)
@@ -917,6 +964,108 @@ def t_search_refuses_when_the_provider_dies_mid_query():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def t_batching_is_a_round_trip_saving_and_nothing_else():
+    """CP-BATCH -- one request per batch, same vectors, same order.
+
+    Measured against a real bge-m3 before this was written: 255.6 ms per text
+    one at a time, 8.1 ms at batch 64, and the vectors bit-identical (largest
+    element difference 0.00e+00). So the whole risk of this change is ALIGNMENT,
+    not arithmetic. A single call cannot confuse two texts; a batch can, and a
+    misaligned batch writes correct vectors onto the wrong nodes -- a store that
+    is confidently, systematically wrong with nothing raising.
+    """
+    with _FakeOllama() as srv:
+        emb = ollama.connect(srv.endpoint, _MODEL, declared_dim=_DIM)
+
+        texts = ["about retrieval", "an onion", "", "a pepper", "  "]
+        many = emb.embed_many(texts)
+        one = [emb.embed(t) for t in texts]
+        check("embed_many agrees with embed, text for text", many == one,
+              "%r != %r" % (many, one))
+
+        # Order, asserted against DIFFERENT expected vectors per position, so a
+        # reversed or rotated batch cannot pass by symmetry.
+        check("the batch keeps the caller's order",
+              many[0] == emb.embed("about retrieval")
+              and many[1] == emb.embed("an onion")
+              and many[3] == emb.embed("a pepper")
+              and len({tuple(many[0]), tuple(many[1]), tuple(many[3])}) == 3,
+              "%r" % ([many[0], many[1], many[3]],))
+
+        check("an empty text is a zero vector and shifts nothing",
+              many[2] == [0.0] * _DIM and many[4] == [0.0] * _DIM
+              and many[3] == emb.embed("a pepper"),
+              "%r" % (many,))
+
+        # Only the non-empty texts are sent: the empties are known answers, and
+        # a round trip for them would cost latency to learn nothing.
+        srv.log.clear()
+        emb.embed_many(["about retrieval", "", "an onion"])
+        sent = srv.log[-1]["payload"]["input"]
+        check("empty texts are not sent to the server",
+              sent == ["about retrieval", "an onion"], "sent %r" % (sent,))
+
+    with _FakeOllama("shortbatch") as srv:
+        emb = ollama.connect(srv.endpoint, _MODEL, declared_dim=_DIM)
+        try:
+            emb.embed_many(["about retrieval", "an onion", "a pepper"])
+            ok, detail = False, "a short batch was accepted"
+        except ollama.OllamaError as exc:
+            ok, detail = "expected exactly" in str(exc), str(exc)[:70]
+        check("a batch answered short is refused, not truncated", ok, detail)
+
+    with _FakeOllama("widerdim_second") as srv:
+        emb = ollama.connect(srv.endpoint, _MODEL, declared_dim=_DIM)
+        try:
+            emb.embed_many(["about retrieval", "an onion"])
+            ok, detail = False, "a wrong dim in position 2 was accepted"
+        except ollama.OllamaError as exc:
+            ok, detail = "dimensional" in str(exc), str(exc)[:70]
+        check("the dim is checked on every vector, not just the first",
+              ok, detail)
+
+
+def t_the_write_loop_does_not_trust_a_providers_count():
+    """`_embed_store` takes ANY provider with `embed_many`, so it checks.
+
+    The ollama provider refuses a miscounted response itself, which made this
+    look covered. It is not: the loop is generic, `zip` stops at the shorter
+    side, and a provider returning three vectors for four texts would leave the
+    fourth node silently unembedded while the run reported success. Raised by
+    codex, 2026-07-31.
+    """
+    from homegraph import cli
+
+    class Stingy:
+        namespace = ("stingy", "m", 2)
+
+        def embed(self, text):                                  # noqa: ARG002
+            return [1.0, 0.0]
+
+        def embed_many(self, texts):
+            return [[1.0, 0.0]] * (len(texts) - 1)              # one short
+
+    tmp = tempfile.mkdtemp(prefix="i1-count-", dir=os.path.expanduser("~/.homegraph"))
+    try:
+        db = os.path.join(tmp, "m3.db")
+        with Store(db, model="m3") as st:
+            for i in range(3):
+                st.upsert_node("n%d" % i, kind="file", path="/x/%d.md" % i,
+                               title="t%d" % i, body="b%d" % i, as_of="2026-07-31")
+        try:
+            cli._embed_store(db, Stingy())
+            ok, detail = False, "a short batch was written anyway"
+        except ValueError as exc:
+            ok, detail = "partly-aligned" in str(exc), str(exc)[:60]
+        check("the write loop refuses a provider that returns too few vectors",
+              ok, detail)
+        with Store(db) as st:
+            n = st.embedding_count("stingy", "m", 2)
+        check("and writes no vector at all when it does", n == 0, "stored=%d" % n)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def t_a_matrix_cannot_claim_another_providers_namespace():
     """A static matrix file declaring `provider = "ollama"` is refused.
 
@@ -958,6 +1107,8 @@ def main() -> int:
                t_a_zero_vector_model_is_refused,
                t_a_non_http_server_is_refused,
                t_search_refuses_when_the_provider_dies_mid_query,
+               t_batching_is_a_round_trip_saving_and_nothing_else,
+               t_the_write_loop_does_not_trust_a_providers_count,
                t_a_matrix_cannot_claim_another_providers_namespace):
         fn()
     bad = [r for r in results if not r[1]]

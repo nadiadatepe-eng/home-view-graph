@@ -145,8 +145,11 @@ MUTATIONS = [
     # semantic ranking.
     ("zero vectors are stored instead of skipped",
      "homegraph/cli.py",
-     "            if not any(vec):\n                degenerate += 1\n                continue",
-     "            if False:  # mutated: zero vectors stored\n                degenerate += 1\n                continue",
+     # Indented one level deeper since CP-BATCH moved the write into a batch
+     # loop. The needle stopped matching, and an unappliable mutation counts as
+     # a survivor -- which is how the sweep reported it.
+     "                if not any(vec):\n                    degenerate += 1\n                    continue",
+     "                if False:  # mutated: zero vectors stored\n                    degenerate += 1\n                    continue",
      "a model answering only zero vectors exits 2"),
 
     # http.client.HTTPException is not an OSError, so without its own clause it
@@ -221,6 +224,39 @@ MUTATIONS = [
      "                        embeddings=emb)\n"
      "    except ZeroDivisionError as exc:  # mutated",
      "visualize exits 2 on a missing matrix instead of a traceback"),
+    # CP-BATCH. Alignment is the whole risk of batching: a single call cannot
+    # confuse two texts, a batch can, and a misaligned one writes correct
+    # vectors onto the wrong nodes with nothing raising.
+    ("the batch comes back in the server's order, not the caller's",
+     "homegraph/providers/ollama.py",
+     "            for (i, _), vec in zip(sending, vectors):",
+     "            for (i, _), vec in zip(sending, reversed(vectors)):  # mutated",
+     "the batch keeps the caller's order"),
+
+    ("an empty text is sent instead of short-circuited",
+     "homegraph/providers/ollama.py",
+     '        sending = [(i, t) for i, t in enumerate(texts) if t.strip()]',
+     "        sending = list(enumerate(texts))  # mutated: empties sent too",
+     "empty texts are not sent to the server"),
+
+    ("a short batch is truncated instead of refused",
+     "homegraph/providers/ollama.py",
+     "    if not isinstance(vectors, list) or len(vectors) != want:",
+     "    if not isinstance(vectors, list):  # mutated: count no longer checked",
+     "a batch answered short is refused, not truncated"),
+
+    ("the dim is checked on the first vector only",
+     "homegraph/providers/ollama.py",
+     "                self._check_dim(vec, url)\n                out[i] = l2_normalise(vec)",
+     "                out[i] = l2_normalise(vec)  # mutated: dim unchecked",
+     "the dim is checked on every vector, not just the first"),
+    # codex found this one: the loop takes any provider with `embed_many`, and
+    # `zip` stops at the shorter side without a word.
+    ("the write loop trusts the provider's vector count",
+     "homegraph/cli.py",
+     "            if len(vecs) != len(chunk):",
+     "            if False:  # mutated: count taken on trust",
+     "the write loop refuses a provider that returns too few vectors"),
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
