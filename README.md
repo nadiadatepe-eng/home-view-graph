@@ -561,21 +561,23 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twenty-two checkpoints plus a privacy check and a suite-completeness check.
-513 mutations across 24 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-07-29 on `66b1c80`
+**Twenty-three checkpoints plus a privacy check and a suite-completeness check.
+523 mutations across 25 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-07-31 on `c2038bd`
 by running every harness in one sweep rather than one at a time -- a harness
 that passes standalone can still survive in a full one. The whole sweep takes
-**1 374 seconds**, and four harnesses are 82 % of it: `mutate_gui` 537 s,
-`mutate_cp6` 246 s, `mutate_i1` 193 s, `mutate_cp13` 150 s.
+**1 334 seconds**, and four harnesses are 80 % of it: `mutate_gui` 493 s,
+`mutate_cp6` 236 s, `mutate_i1` 192 s, `mutate_cp13` 150 s.
 
-CP-IDX added a twenty-fifth harness on 2026-07-31, `mutate_idx`, with 6
-mutations: 6 killed by the gate that names them, 0 survived, 0 crash-only,
-measured standalone. **The figures above are not restated to include it** --
-they are what one sweep on one commit produced, and a number measured then does
-not become a number measured now by adding to it. The next full sweep replaces
-them; until it runs, 513 across 24 is the last swept figure and `mutate_idx` is
-the harness that has not been in a sweep.
+**The first attempt at that sweep is the reason the sentence above can be
+trusted.** It reported one survivor: `mutate_cp2`'s *markdown files are read but
+not all stored*, as `needle missing`. CP-IDX had given `m3_build.build` an
+`index_file` argument, which split its signature across two lines, and the
+mutation's anchor text stopped matching. A mutation that cannot be applied is
+counted as a survivor rather than skipped -- which is the only reason anyone saw
+it, because `mutate_cp2` passed standalone before and after. The anchor was
+repaired and the whole sweep re-run rather than that one harness: a figure
+assembled from a patched run and twenty-four older ones is not a sweep result.
 
 The figure before that was the same 513 mutations on `c383991`, with **three**
 misattributions rather than one: `66b1c80` fixed `mutate_cp12`'s two, leaving

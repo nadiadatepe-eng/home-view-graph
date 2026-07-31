@@ -91,8 +91,14 @@ MUTATIONS = [
     # -- what the build produces ------------------------------------------
     ("markdown files are read but not all stored",
      "homegraph/models/m3_build.py",
-     "def build(store, paths, as_of, rules=None, report=None, index_paths=None):",
-     "def build(store, paths, as_of, rules=None, report=None, index_paths=None):\n"
+     # The signature gained `index_file` in CP-IDX and this needle stopped
+     # matching. A mutation that cannot be applied is counted as a survivor,
+     # not skipped, which is how the sweep on `c2038bd` reported it -- the
+     # harness passed standalone throughout.
+     "def build(store, paths, as_of, rules=None, report=None, index_paths=None,\n"
+     "          index_file=None):",
+     "def build(store, paths, as_of, rules=None, report=None, index_paths=None,\n"
+     "          index_file=None):\n"
      "    paths = list(paths)[:-3]  # mutated: quietly drop the last three",
      "every classified markdown file is a node in the graph"),
 
