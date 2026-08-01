@@ -49,9 +49,8 @@ MUTATIONS = [
     # feilkode på et manglende filnavn i stedet for å hoppe over det.
     ("the loop names a harness that is not on disk",
      "CONTRIBUTING.md",
-     "review_findings no_real_paths type_regressions suite_is_complete; do",
-     "review_findings no_real_paths type_regressions suite_is_complete "
-     "renamed_away; do",
+     "         h4; do",
+     "         h4 renamed_away; do",
      "and the loop names no harness that does not exist"),
 ]
 

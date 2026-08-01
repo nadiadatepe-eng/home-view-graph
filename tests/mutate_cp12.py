@@ -70,7 +70,7 @@ MUTATIONS = [
 
     ("shape ships the content hash after all",
      "homegraph/export.py",
-     'SHAPE_DROPS = ("body", "mtime", "content_hash", "size",\n'
+     'SHAPE_DROPS = ("body", "mtime", "content_hash", "size", "heading_path",\n'
      '               "activity_datelist", "datelist_int", "datelist_anchor")',
      'SHAPE_DROPS = ("body", "mtime")  # mutated: fingerprints travel',
      "shape carries no fingerprint of the files themselves"),

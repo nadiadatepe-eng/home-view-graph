@@ -383,7 +383,7 @@ MUTATIONS = [
 
     ("fusion keys by model again",
      "homegraph/mesh.py",
-     '        if row.get("content_hash"):\n'
+     '        if row.get("content_hash") and row.get("kind") != "section":\n'
      '            return "hash:%s" % row["content_hash"]\n'
      '        if row.get("path"):\n'
      '            return "path:%s" % os.path.normpath(row["path"])',

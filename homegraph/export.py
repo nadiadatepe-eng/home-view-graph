@@ -84,7 +84,13 @@ DIGEST_CHARS = 16
 # `first_seen` and `last_seen` stay, because the import needs them and a graph
 # without them is not importable. That is a real residue and it is written
 # down rather than implied away -- see DECISIONS.md section 27.
-SHAPE_DROPS = ("body", "mtime", "content_hash", "size",
+# `heading_path` is here because it is CONTENT: it carries heading text
+# verbatim, and `shape` hashes `title` for exactly that reason. Exporting it in
+# the clear beside a hashed title would have published the document's outline
+# while claiming to have redacted its labels -- a shape export of a note titled
+# after a deal would hide the title and print `["Acquisition of NorthCorp",
+# "Price 4.2 MNOK"]`. `section_leaf` stays: 0 or 1 says nothing about anyone.
+SHAPE_DROPS = ("body", "mtime", "content_hash", "size", "heading_path",
                "activity_datelist", "datelist_int", "datelist_anchor")
 
 # Columns copied verbatim. `first_seen`, `last_seen` and the datelist columns
@@ -92,9 +98,16 @@ SHAPE_DROPS = ("body", "mtime", "content_hash", "size",
 # a fresh mask. The importer restores them explicitly, and CP-12 compares them
 # as part of the equivalence -- history that survives a round trip only
 # because nobody looked at it is not history.
+# A column added to `nodes` and forgotten here is not an error anywhere: the
+# export succeeds, the import succeeds, and the round trip silently returns a
+# graph with less in it than went in. `heading_path` and `section_leaf` were
+# exactly that on the day CP-H4 added them, found by review rather than by a
+# test -- and nothing here can notice a NEXT one, which is written down in
+# TODO.md rather than left implied.
 NODE_COLUMNS = ("kind", "subtype", "title", "title_method", "title_confidence",
                 "body", "size", "mtime",
-                "content_hash", "first_seen", "last_seen",
+                "content_hash", "heading_path", "section_leaf",
+                "first_seen", "last_seen",
                 "activity_datelist", "datelist_int", "datelist_anchor")
 
 

@@ -561,13 +561,20 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twenty-three checkpoints plus a privacy check and a suite-completeness check.
-560 mutations across 30 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-08-01 on `762a2a4`
-by running every harness in one sweep rather than one at a time -- a harness
-that passes standalone can still survive in a full one. The whole sweep takes
-**1 483 seconds**, and four harnesses are 76 % of it: `mutate_gui` 466 s,
-`mutate_i1` 274 s, `mutate_cp6` 234 s, `mutate_cp13` 150 s.
+**Twenty-four checkpoints plus a privacy check and a suite-completeness check.
+574 mutations across 31 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-08-01 on `b0697b6`
+plus CP-H4 by running every harness in one sweep rather than one at a time --
+a harness that passes standalone can still survive in a full one. The whole
+sweep takes **1 502 seconds**, and four harnesses are 76 % of it:
+`mutate_gui` 478 s, `mutate_i1` 278 s, `mutate_cp6` 229 s, `mutate_cp13` 150 s.
+
+**The sweep before this one was red, and every harness in it passed
+standalone.** CP-H4 edited three lines that three older mutations were
+anchored to -- the mesh fusion key, the shape-export drop list, the
+CONTRIBUTING loop -- and a mutation whose anchor text no longer matches is
+counted as a survivor rather than skipped. That is the second time in a week
+the same shape has been caught, and both times only by running the whole set.
 
 **Every suite in `tests/` now has a mutation harness.** Four did not until
 2026-08-01, and they were not the small ones: the review-findings suite (the

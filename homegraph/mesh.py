@@ -195,7 +195,12 @@ class Mesh:
         being edited would be the one nobody reads. `kind` is the only thing
         the two callers differ by.
         """
-        sql = ("SELECT n.id node_id, n.node_key, n.title, n.title_confidence, "
+        # `kind` is selected for `_fusion_key`, which refuses to fuse sections
+        # on their digest. Without it here the guard reads None for every row
+        # and never fires -- the column being absent is exactly as silent as
+        # the guard being absent.
+        sql = ("SELECT n.id node_id, n.node_key, n.kind, n.title, "
+               "n.title_confidence, "
                "n.subtype, n.path, n.content_hash, bm25(nodes_fts) score "
                "FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid "
                "WHERE nodes_fts MATCH ?")
@@ -301,7 +306,21 @@ class Mesh:
         so it rarely fires; the day one file is indexed twice it would have
         halved that file's rank silently.
         """
-        if row.get("content_hash"):
+        # A section's hash is a digest of a FRAGMENT, not of a document, and
+        # two files that share a paragraph are not one node. Until CP-H4 every
+        # section carried NULL here and fell through to path; the day sections
+        # gained a digest, `_fusion_key` started merging them across files and
+        # dropping one side entirely. Measured on the day it was added: two
+        # files with the same paragraph collapsed to one entry, and the
+        # survivor took both contributions. Over `~/homegraph` + `~/.claude` +
+        # `~/wiki` -- 33 010 section nodes, 14 615 distinct digests -- 90 % of
+        # sections share a digest with at least one other, most of them the
+        # digest of a single newline.
+        #
+        # Excluded by KIND rather than by "does this look like a fragment",
+        # because the next model to store a partial-content hash should have to
+        # come here and say so.
+        if row.get("content_hash") and row.get("kind") != "section":
             return "hash:%s" % row["content_hash"]
         if row.get("path"):
             return "path:%s" % os.path.normpath(row["path"])

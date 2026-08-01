@@ -29,7 +29,8 @@ import os
 
 from ..incremental import hash_file
 from ..temporal import record_observation, refresh_datelist
-from .m3_markdown import MarkdownExtractor, page_name, resolve_target
+from .m3_markdown import (BREADCRUMB, MarkdownExtractor, page_name,
+                          resolve_target)
 
 
 
@@ -182,9 +183,24 @@ def build(store, paths, as_of, rules=None, report=None, index_paths=None,
         refresh_datelist(store, nid, as_of)
 
         for i, sec in enumerate(data["sections"]):
+            # CP-H4. `body` is the breadcrumb rather than the bare heading, and
+            # it is joined FROM `heading_path` here -- the one place either is
+            # written -- so the stored list and the searchable string cannot
+            # drift apart. The list is the form to read: a heading may itself
+            # contain the separator, and then the joined string cannot be split
+            # back. See `tests/gold/FASIT-h4.md`.
+            #
+            # The section text is deliberately NOT the body: it would turn one
+            # FTS hit per file into one per heading, which is a retrieval change
+            # to measure against H1 rather than a side effect of adding fields.
+            place = data["section_tree"][i]
             store.upsert_node("%s#%d" % (path, i), kind="section",
                               subtype="h%d" % sec["level"], path=path,
-                              title=sec["title"], body=sec["title"],
+                              title=sec["title"],
+                              body=BREADCRUMB.join(place["heading_path"]),
+                              heading_path=place["heading_path"],
+                              section_leaf=place["leaf"],
+                              content_hash=place["content_hash"],
                               as_of=as_of)
             report.sections += 1
 

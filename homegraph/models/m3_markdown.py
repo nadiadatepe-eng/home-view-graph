@@ -26,6 +26,7 @@ must be able to say no whether or not anything currently trips it.
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import re
 
@@ -215,6 +216,53 @@ def _heading_at(sections, pos):
     return title
 
 
+BREADCRUMB = " > "
+
+
+def heading_tree(sections, body, clean):
+    """Place each heading in the tree: ancestors, leaf-ness, own-text digest.
+
+    Pure, and given both strings on purpose. `sections` offsets were computed on
+    `clean` -- they have to be, or a `#` inside a fenced block becomes a heading
+    -- and `blank_code` replaces code with spaces OF THE SAME LENGTH, so the
+    same offsets are valid in `body`. The digest is taken from `body`, because
+    hashing the blanked text would make an edit inside a code fence invisible to
+    the incremental path: content changed, hash unchanged, section reported
+    clean. See `tests/gold/FASIT-h4.md`.
+
+    Returns one dict per section, in document order, with `heading_path` (the
+    ancestor chain including the heading itself), `leaf`, and `content_hash`.
+    """
+    out, stack = [], []
+    for i, sec in enumerate(sections):
+        # Ancestors are the nearest preceding headings of strictly shallower
+        # level. Levels can skip -- `#` straight to `###` is legal markdown and
+        # people write it -- so this pops by comparison rather than by count.
+        while stack and stack[-1]["level"] >= sec["level"]:
+            stack.pop()
+        # The last heading in a document is a leaf; so is one whose successor is
+        # not deeper. Level decides, not blank lines or indentation.
+        leaf = (i + 1 == len(sections)
+                or sections[i + 1]["level"] <= sec["level"])
+        # Own text only: from the end of the heading line to the next heading of
+        # ANY level, not to the end of the subtree. A parent's digest therefore
+        # covers its own prose, and an edit deep below does not restamp every
+        # ancestor as stale.
+        line_end = clean.find("\n", sec["offset"])
+        start = len(body) if line_end == -1 else line_end + 1
+        end = sections[i + 1]["offset"] if i + 1 < len(sections) else len(body)
+        text = body[start:max(start, end)]
+        out.append({
+            "heading_path": [a["title"] for a in stack] + [sec["title"]],
+            "leaf": leaf,
+            # An empty section hashes the empty string rather than storing
+            # nothing: "this section has no text" is a fact, not an absence.
+            "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        })
+        stack.append(sec)
+    return out
+
+
 class MarkdownExtractor:
     def __init__(self, rules=None):
         self.rules = rules or {}
@@ -302,6 +350,11 @@ class MarkdownExtractor:
             "frontmatter": front,
             "frontmatter_problems": front_problems,
             "sections": sections,
+            # Parallel to `sections`, same order, same length. Separate rather
+            # than merged in so the offsets stay the only thing `sections`
+            # carries about position -- everything reading `sections` today
+            # keeps reading exactly what it read before.
+            "section_tree": heading_tree(sections, body, clean),
             "wikilinks": _dedupe(wikilinks),
             "wikilink_headings": wikilink_headings,
             "links": _dedupe(links),

@@ -29,6 +29,7 @@ which.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from array import array
 from collections.abc import Iterable, Sequence
@@ -241,6 +242,25 @@ ALTER TABLE nodes ADD COLUMN title_method     TEXT;
 ALTER TABLE nodes ADD COLUMN title_confidence REAL;
 CREATE INDEX idx_nodes_title_confidence ON nodes(title_confidence);
 """),
+
+    (4, "sections carry their place in the heading tree", """
+-- CP-H4. A section node knew its own heading and nothing about the tree above
+-- it, so "which part of the document is this" was a question the graph could
+-- not answer. `heading_path` is the ancestor chain including the heading
+-- itself, stored as a JSON list rather than the joined breadcrumb: a heading
+-- may itself contain the separator, and then the joined string cannot be split
+-- back. The joined form lives in `body` and is built FROM this column at the
+-- one place either is written, so the two cannot drift.
+--
+-- No `NOT NULL DEFAULT`, for the same reason as migration 3. NULL here means
+-- "not a section node", which is most rows. It does not mean "not a leaf" --
+-- a section that is not a leaf stores 0, and a section with no text stores the
+-- digest of the empty string. Absent and false are different facts, and this
+-- package has been bitten by conflating them.
+ALTER TABLE nodes ADD COLUMN heading_path TEXT;
+ALTER TABLE nodes ADD COLUMN section_leaf INTEGER;
+CREATE INDEX idx_nodes_section_leaf ON nodes(section_leaf);
+"""),
 ]
 
 
@@ -330,6 +350,8 @@ class Store:
                     size: int | None = None, mtime: float | None = None,
                     content_hash: str | None = None,
                     title_method: str | None = None,
+                    heading_path: list[str] | None = None,
+                    section_leaf: bool | None = None,
                     as_of: str | None = None) -> int:
         as_of = as_of or today()
         # A title's provenance is optional (most nodes have none to record), but
@@ -342,6 +364,12 @@ class Store:
                 raise ValueError("unknown title method %r; known: %s"
                                  % (title_method, ", ".join(sorted(TITLE_METHODS))))
             title_confidence = TITLE_METHODS[title_method]
+        # Stored as JSON so the separator inside a heading stays inside it. The
+        # empty list is a real answer -- a heading with no ancestors is a `#`,
+        # not a missing path -- so only None becomes NULL.
+        path_json = None if heading_path is None else json.dumps(
+            list(heading_path), ensure_ascii=False)
+        leaf_int = None if section_leaf is None else int(section_leaf)
         row = self.db.execute("SELECT id FROM nodes WHERE node_key = ?",
                               (node_key,)).fetchone()
         if row is None:
@@ -349,10 +377,12 @@ class Store:
                 """INSERT INTO nodes(node_key, kind, subtype, path, title, body,
                                      size, mtime, content_hash,
                                      title_method, title_confidence,
+                                     heading_path, section_leaf,
                                      first_seen, last_seen)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (node_key, kind, subtype, path, title, body, size, mtime,
-                 content_hash, title_method, title_confidence, as_of, as_of))
+                 content_hash, title_method, title_confidence,
+                 path_json, leaf_int, as_of, as_of))
             if cur.lastrowid is None:
                 # Not defensive padding: sqlite3 genuinely returns None when a
                 # statement inserted no row, and every caller uses this id as
@@ -363,10 +393,12 @@ class Store:
         self.db.execute(
             """UPDATE nodes SET kind=?, subtype=?, path=?, title=?, body=?,
                                 size=?, mtime=?, content_hash=?,
-                                title_method=?, title_confidence=?, last_seen=?
+                                title_method=?, title_confidence=?,
+                                heading_path=?, section_leaf=?, last_seen=?
                WHERE id=?""",
             (kind, subtype, path, title, body, size, mtime, content_hash,
-             title_method, title_confidence, as_of, row["id"]))
+             title_method, title_confidence, path_json, leaf_int,
+             as_of, row["id"]))
         return int(row["id"])
 
     def restore_node_history(self, node_key: str, *, first_seen: str,

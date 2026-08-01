@@ -303,6 +303,14 @@ def _node(store: Store, row: dict[str, Any], root: str) -> None:
         title_method=row.get("title_method"), body=row.get("body"),
         size=row.get("size"), mtime=row.get("mtime"),
         content_hash=row.get("content_hash"),
+        # `upsert_node` takes the ancestor chain as a list and does the JSON
+        # itself, so the exported string is decoded here rather than passed
+        # through -- passing it through would double-encode it and a reimported
+        # graph would carry `"[\"a\"]"` where the original had `["a"]`.
+        heading_path=(json.loads(row["heading_path"])
+                      if row.get("heading_path") is not None else None),
+        section_leaf=(bool(row["section_leaf"])
+                      if row.get("section_leaf") is not None else None),
         as_of=row.get("first_seen"))
     store.restore_node_history(
         key, first_seen=row["first_seen"], last_seen=row["last_seen"],
