@@ -562,12 +562,15 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-three checkpoints plus a privacy check and a suite-completeness check.
-523 mutations across 25 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-07-31 on `c2038bd`
+535 mutations across 26 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-08-01 on `d3a5de5`
 by running every harness in one sweep rather than one at a time -- a harness
 that passes standalone can still survive in a full one. The whole sweep takes
-**1 334 seconds**, and four harnesses are 80 % of it: `mutate_gui` 493 s,
-`mutate_cp6` 236 s, `mutate_i1` 192 s, `mutate_cp13` 150 s.
+**1 492 seconds**, and four harnesses are 76 % of it: `mutate_gui` 481 s,
+`mutate_i1` 273 s, `mutate_cp6` 234 s, `mutate_cp13` 150 s.
+
+The 12 added since the 523 are `mutate_h3_para`'s 7 for the labelled paraphrase
+set and the 5 `mutate_i1` gained with CP-BATCH.
 
 **The first attempt at that sweep is the reason the sentence above can be
 trusted.** It reported one survivor: `mutate_cp2`'s *markdown files are read but
