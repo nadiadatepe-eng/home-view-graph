@@ -258,10 +258,20 @@ def t_every_model_parser_refuses_a_pathless_spec() -> None:
                   "%s: %s" % (type(exc).__name__, exc))
 
     # Positiv kontroll. Uten den passerer alt over på en parser som avviser ALT.
+    #
+    # `SystemExit` fanges for seg, og det er ikke pedanteri: `_models_from` avviser gjennom
+    # `SystemExit`, som er en `BaseException` og altså IKKE dekkes av `except Exception`.
+    # Med bare den grenen kunne denne kontrollen aldri bli rød -- en parser som avviser alt
+    # rev suiten ut av `main()` med kode 2 før rapporten ble skrevet, så sjekken forsvant i
+    # stedet for å feile. Funnet 2026-08-01 av `mutate_review_findings.py`, som meldte
+    # mutasjonen drept av en annen gate.
     try:
         got = cli._models_from(["m3=/tmp/x.db", "m1=/tmp/y.db"])
         check("spec: en gyldig spec slipper fortsatt gjennom",
               got == {"m3": "/tmp/x.db", "m1": "/tmp/y.db"}, repr(got))
+    except SystemExit as exc:
+        check("spec: en gyldig spec slipper fortsatt gjennom", False,
+              "avvist med SystemExit(%r)" % (exc.code,))
     except Exception as exc:                                 # noqa: BLE001
         check("spec: en gyldig spec slipper fortsatt gjennom", False,
               "%s: %s" % (type(exc).__name__, exc))
