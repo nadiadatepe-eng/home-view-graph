@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import sys
 import tomllib
 
@@ -45,6 +46,23 @@ def collectable_patterns() -> list[str]:
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
         cfg = tomllib.load(fh)
     return cfg["tool"]["pytest"]["ini_options"]["python_files"]
+
+
+def documented_harnesses() -> set[str]:
+    """The harness names in the `for h in ...; do` loop in CONTRIBUTING.md.
+
+    The same hardcoded-list failure as everything else in this file, one level
+    out: the loop is the only place that says which harnesses a sweep runs, and
+    it is maintained by hand. It already narrowed once -- it said `for t in
+    0..13`, so it ran the fourteen `mutate_cp*` files and none of the ten
+    others, and a reader following the README exercised 14 of 24 without a way
+    to notice. `mutate_review_findings` was added to it by hand on 2026-08-01,
+    which is the same edit that could have been forgotten.
+    """
+    with open(os.path.join(ROOT, "CONTRIBUTING.md"), encoding="utf-8") as fh:
+        text = fh.read().replace("\\\n", " ")
+    found = re.search(r"for h in (.+?); do", text, re.S)
+    return set(found.group(1).split()) if found else set()
 
 
 def main() -> int:
@@ -68,6 +86,24 @@ def main() -> int:
     stale = [p for p in literal if not os.path.exists(os.path.join(HERE, p))]
     check("and every file named in pyproject.toml still exists",
           not stale, "stale entries: %s" % ", ".join(stale) if stale else "")
+
+    # The mutation harnesses, and the loop that is the only thing saying which
+    # of them a sweep runs. `mutate.py` is the shared driver, not a harness --
+    # it has no MUTATIONS list of its own.
+    harnesses = {f[len("mutate_"):-len(".py")] for f in os.listdir(HERE)
+                 if f.startswith("mutate_") and f.endswith(".py")}
+    documented = documented_harnesses()
+    check("there are mutation harnesses to check at all", bool(harnesses),
+          "%d found" % len(harnesses))
+    missing = sorted(harnesses - documented)
+    check("every mutation harness is named in the CONTRIBUTING loop",
+          not missing, "never run by the loop: %s" % ", ".join(missing))
+    # The other direction, for the same reason as the pyproject one above: a
+    # name that no longer resolves is the residue of a rename, and the loop
+    # would exit non-zero on it rather than skip it.
+    phantom = sorted(documented - harnesses)
+    check("and the loop names no harness that does not exist",
+          not phantom, "no such harness: %s" % ", ".join(phantom))
 
     bad = [r for r in results if not r[1]]
     print("\nsuite completeness: %d/%d" % (len(results) - len(bad), len(results)))

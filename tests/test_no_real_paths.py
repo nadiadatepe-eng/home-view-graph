@@ -303,6 +303,18 @@ def t_no_personal_identifiers(files):
                           CANARY_DIGEST)
     check("the digest band can fire", len(canary) == 1,
           "canary produced %d hit(s)" % len(canary))
+    # The generic band needs the same proof, and did not have it. `_hits`
+    # returning nothing makes every file below clean -- the identical
+    # always-green failure the digest band has guarded against since it was
+    # written, on the band that carries `/home/`. Found 2026-08-01 by
+    # `mutate_noreal.py`: a `_hits` that never matches survived every check in
+    # this file. The needle is spelled out rather than hashed because this file
+    # is exempt from the generic band (see SELF), which is the same exemption
+    # that lets GENERIC itself be written above.
+    generic_canary = _hits("a line naming /home/ somewhere", GENERIC,
+                           "<canary>")
+    check("the generic band can fire", len(generic_canary) == 1,
+          "canary produced %d hit(s)" % len(generic_canary))
     # Status, not a check. This was written as `check(..., True, ...)`, which
     # reported PASS whether the optional band ran, was absent, or produced no
     # usable patterns -- a green line standing in for three different facts.

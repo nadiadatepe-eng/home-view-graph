@@ -562,29 +562,35 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-three checkpoints plus a privacy check and a suite-completeness check.
-546 mutations across 27 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-08-01 on `70924fe`
+560 mutations across 30 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-08-01 on `762a2a4`
 by running every harness in one sweep rather than one at a time -- a harness
 that passes standalone can still survive in a full one. The whole sweep takes
-**1 509 seconds**, and four harnesses are 76 % of it: `mutate_gui` 492 s,
+**1 483 seconds**, and four harnesses are 76 % of it: `mutate_gui` 466 s,
 `mutate_i1` 274 s, `mutate_cp6` 234 s, `mutate_cp13` 150 s.
 
-The 23 added since the 523 are `mutate_h3_para`'s 7 for the labelled paraphrase
-set, the 5 `mutate_i1` gained with CP-BATCH, and `mutate_review_findings`'s 11.
+**Every suite in `tests/` now has a mutation harness.** Four did not until
+2026-08-01, and they were not the small ones: the review-findings suite (the
+five defects a rule set found that pyright, mypy, ruff and codex all passed),
+the privacy gate, the type-regression pair, and the suite-completeness guard
+itself -- 58 checks between them at 0 % coverage, which is to say nobody had
+put any of those defects back to see whether the checks still said no.
 
-**The review-findings suite had no harness at all until then.** It is the five
-defects a rule set found that pyright, mypy, ruff and codex all passed, and it
-was the largest uncovered surface in the repo: 30 checks, 0 % mutation
-coverage, which is to say nobody had put any of the five defects back to see
-whether the checks still said no. Five of its eleven mutations aim at the
-negative controls rather than the defects, because a guard that fires on
-everything passes every positive check in that suite. One of those five found
-a real hole: the control proving the model-spec parser does not refuse
-*everything* caught `Exception`, while the parser refuses through `SystemExit`
--- a `BaseException`. A parser that refused everything tore the suite out of
-`main()` before the report was written, so that check could not go red at all.
-Three suites still have no harness: `NO-REAL-PATHS`, `TYPE-REGRESSIONS` and
-`SUITE-IS-COMPLETE`.
+Roughly half of the 25 mutations aim at the **negative controls** rather than
+the defects, because a guard that fires on everything passes every positive
+check in the suite it guards. That half found two real holes. The control
+proving the model-spec parser does not refuse *everything* caught `Exception`,
+while the parser refuses through `SystemExit` -- a `BaseException` -- so a
+parser that refused everything tore the suite out of `main()` before the report
+was written, and the check could not go red at all. And the privacy gate's
+generic band had no canary: a `_hits` that matched nothing passed every check
+in the file, on the band that carries the absolute-path pattern. The digest
+band had been guarded that way since it was written; its neighbour had not.
+
+The loop above is itself checked now. `test_suite_is_complete.py` asserts that
+every `mutate_*.py` on disk is named in it and that it names no harness that
+does not exist -- the same hardcoded-list failure as everything else in that
+file, one level out. It already narrowed once, to 14 of 24.
 
 **The first attempt at that sweep is the reason the sentence above can be
 trusted.** It reported one survivor: `mutate_cp2`'s *markdown files are read but
