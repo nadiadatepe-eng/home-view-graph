@@ -109,12 +109,19 @@ KIND_TO_FILE_TYPE = {
 #   * `mention` (0.5) -- prose names a file and it resolved. Deduced from text
 #     rather than declared as a link. INFERRED.
 #   * `cohort` (0.4) -- two nodes changed on the same days. INFERRED.
+#   * `co-change` (0.45) -- two files an author committed together at least
+#     three times. INFERRED, not AMBIGUOUS: nothing chose between candidates,
+#     and nothing in either file states the relation. It is read out of the
+#     history, which is a deduction about the author's habits rather than a
+#     fact the documents assert. The threshold makes it a stronger deduction
+#     than `cohort`, not a different kind of one.
 METHOD_TO_CONFIDENCE = {
     "exact": "EXTRACTED",
     "path_prefix": "AMBIGUOUS",
     "basename": "AMBIGUOUS",
     "mention": "INFERRED",
     "cohort": "INFERRED",
+    "co-change": "INFERRED",
 }
 
 

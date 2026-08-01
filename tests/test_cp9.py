@@ -73,7 +73,10 @@ def t_methods_are_a_closed_set():
           "%s" % {m: c for m, c in EDGE_METHODS.items() if c >= 1.0})
     check("every other method is strictly below 1.0",
           all(0.0 < c < 1.0 for m, c in EDGE_METHODS.items() if m != "exact"),
-          " ".join("%s=%.1f" % kv for kv in sorted(EDGE_METHODS.items())))
+          # `%.2f`, not `%.1f`: one decimal printed `co-change=0.5` beside
+          # `mention=0.5` for two values that differ, and the detail line is
+          # what a reader quotes.
+          " ".join("%s=%.2f" % kv for kv in sorted(EDGE_METHODS.items())))
 
     # An unknown method must be refused where it is written, not stored and
     # discovered later as a NULL confidence.
@@ -360,8 +363,49 @@ def _build(db, mesh_db, syn):
     with Store(m2, model="m2") as s:
         m2_build(s, sorted(img), as_of)
         s.rebuild_fts()
+    # The synthetic corpus is not a git repository, so `CO_CHANGED_WITH` had
+    # nothing to be produced from and `co-change` was a registered method no
+    # build reached -- which `t_each_method_is_reachable` caught the day the
+    # method was added. Its own docstring says what to do about a fixture that
+    # cannot see a rule: plant a case that reaches it. Two of the corpus's own
+    # markdown files, committed together three times in a throwaway repository
+    # beside it, is the smallest thing that does.
+    repo = _co_change_repo(os.path.dirname(db), sorted(md)[:2])
     with Mesh({"m2": m2, "m3": db}, mesh_db=mesh_db) as mesh:
-        mesh.build_edges(as_of)
+        mesh.build_edges(as_of, repo_root=repo)
+
+
+def _co_change_repo(where, sources):
+    """A git repository whose two files are the corpus's own paths.
+
+    The nodes have to be the ones M3 already wrote, or the edge is dropped by
+    the membership rule and the fixture proves nothing. So the repository is
+    created AT the corpus paths' directory rather than copying them: `git init`
+    in a directory that already holds the files, three commits touching both.
+    """
+    import subprocess
+    if len(sources) < 2:
+        return None
+    repo = os.path.dirname(os.path.commonprefix(sources)) or os.sep
+
+    def git(*args):
+        return subprocess.run(["git", "-C", repo, *args],
+                              capture_output=True, text=True)
+
+    if git("init", "-q", ".").returncode != 0:
+        return None
+    git("config", "user.email", "cp9@example.invalid")
+    git("config", "user.name", "cp9")
+    rel = [os.path.relpath(p, repo) for p in sources]
+    for i in range(3):
+        git("add", "--", *rel)
+        git("commit", "-q", "--allow-empty-message", "-m", "c%d" % i, "--", *rel)
+        for p in sources:
+            with open(p, "a", encoding="utf-8") as fh:
+                fh.write("\n<!-- co-change %d -->\n" % i)
+    git("add", "--", *rel)
+    git("commit", "-q", "-m", "c3", "--", *rel)
+    return repo
 
 
 def t_the_picture_carries_provenance(tmp, db):

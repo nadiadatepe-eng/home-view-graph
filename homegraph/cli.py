@@ -1368,7 +1368,8 @@ def cmd_mesh_build(args):
             try:
                 report = mesh.build_edges(
                     args.as_of or date.today().isoformat(),
-                    code_paths=code_paths)
+                    code_paths=code_paths,
+                    repo_root=getattr(args, "repo_root", None))
             except ModelUnavailable as exc:
                 # Exit 2, like every other refusal in this CLI. It came out as
                 # an uncaught traceback and exit 1 for a day, which reads as a
@@ -1492,6 +1493,11 @@ def main(argv=None):
                            help="walk DIR for the code inventory CITES_CODE "
                                 "points at; without it that relation is not "
                                 "computed, and the report says so")
+            q.add_argument("--repo-root", dest="repo_root", default=None,
+                           metavar="DIR",
+                           help="read DIR's git history for CO_CHANGED_WITH; "
+                                "without it that relation is not computed, "
+                                "and the report says absent rather than 0")
             q.add_argument("--config", default=None)
         if name == "neighbors":
             q.add_argument("node")

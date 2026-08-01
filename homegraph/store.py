@@ -81,6 +81,12 @@ EDGE_METHODS: dict[str, float] = {
     # Two nodes changed on the same days. The weakest evidence here, and the
     # one most likely to be coincidence on a busy day.
     "cohort": 0.4,
+    # Two files an author committed together at least three times. Stronger
+    # than `cohort`, which only knows that two things moved on one day: a
+    # commit is a statement that these changes belong to one another. Weaker
+    # than `mention`, because nothing in either file names the other -- the
+    # coupling is in the history, not in the text.
+    "co-change": 0.45,
 }
 
 # The node-label analogue of EDGE_METHODS: how a title was arrived at, and how

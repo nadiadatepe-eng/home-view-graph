@@ -188,8 +188,14 @@ code was not consulted rather than returning zero hits and calling itself
 complete.
 
 Every edge carries the method it was derived by -- `exact` 1.0, `path_prefix`
-0.7, `basename` 0.6, `mention` 0.5, `cohort` 0.4 -- and any answer containing
-one below 1.0 comes back labelled. See `DECISIONS.md` section 24.
+0.7, `basename` 0.6, `mention` 0.5, `co-change` 0.45, `cohort` 0.4 -- and any
+answer containing one below 1.0 comes back labelled. See `DECISIONS.md`
+section 24.
+
+This sentence enumerates a table and nothing keeps it in step. `co-change` was
+missing from it for as long as the method existed, found by review rather than
+by a red test: `EDGE_METHODS` and Graphify's mapping are held together by
+`test_i4.py`, and this paragraph is held together by whoever remembers it.
 
 The last three in that table were listed in the plan and were **not built**
 until 2026-07-23, which is worth saying out loud: a documented relation nobody
@@ -561,13 +567,22 @@ material it proves is not published is gitignored and therefore absent, so the
 gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
-**Twenty-four checkpoints plus a privacy check and a suite-completeness check.
-574 mutations across 31 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-08-01 on `b0697b6`
-plus CP-H4 by running every harness in one sweep rather than one at a time --
+**Twenty-five checkpoints plus a privacy check and a suite-completeness check.
+585 mutations across 32 harnesses, 0 survived, 0 detected only by a crash, 2
+killed by a gate other than the one named**, measured 2026-08-01 on `ae1f276`
+plus CP-H5 by running every harness in one sweep rather than one at a time --
 a harness that passes standalone can still survive in a full one. The whole
-sweep takes **1 502 seconds**, and four harnesses are 76 % of it:
-`mutate_gui` 478 s, `mutate_i1` 278 s, `mutate_cp6` 229 s, `mutate_cp13` 150 s.
+sweep takes **1 516 seconds**, and four harnesses are 76 % of it:
+`mutate_gui` 478 s, `mutate_i1` 276 s, `mutate_cp6` 234 s, `mutate_cp13` 150 s.
+
+The second misattribution is **not stable**, and that is worth more than the
+number. `mutate_gui`'s *layout takes a fresh random seed* was killed by the
+gate it names in six sweeps on the same day and by a different one in the
+seventh, on a tree where `gui.py` had not been touched. The mutation is still
+detected every time; which check reports it depends on run order, because the
+HTTP check runs a hundred lines before the determinism check it competes with.
+A verdict that varies across runs of identical code is the same family as a
+mutation that passes standalone and survives in a sweep.
 
 **The sweep before this one was red, and every harness in it passed
 standalone.** CP-H4 edited three lines that three older mutations were

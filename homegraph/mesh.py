@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import collections
 import functools
+import itertools
 import os
 import re
+import subprocess
 import typing
 import sqlite3
 
@@ -371,7 +373,156 @@ class Mesh:
 
     # -- cross-model graph -------------------------------------------------
 
-    def build_edges(self, as_of, prune=False, code_paths=None):
+    CO_CHANGE_MIN = 3
+
+    @staticmethod
+    def repo_top(repo_root):
+        """The repository's top level, or a refusal naming which case failed.
+
+        `git log` writes paths relative to the TOP of the repository, never to
+        the directory `-C` was given. Joining them onto the directory the user
+        named produces paths that do not exist the moment that directory is not
+        the top -- no error, no warning, every co-change edge silently not
+        drawn, and a report saying the repository was read. A vault inside a
+        monorepo is the ordinary case, not a corner one.
+
+        "Not a git repository" and "a git repository with no commits" are also
+        different facts, and only this call can tell them apart.
+        """
+        top = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=60)
+        if top.returncode != 0:
+            raise ModelUnavailable(
+                "not a git repository: %s"
+                % (top.stderr.strip().splitlines() or [""])[-1])
+        return os.path.realpath(top.stdout.strip())
+
+    @staticmethod
+    def co_change_pairs(repo_root):
+        """`{(a, b): (shared, union)}` over one repository's history.
+
+        Repo-relative paths, sorted within each pair. Counted over COMMITS, not
+        over lines: `--numstat` reports line counts, and a one-character fix
+        committed together is the same evidence of coupling as a rewrite.
+
+        **`-z`, and it is not a preference.** Without it `core.quotepath` -- on
+        by default -- returns a quoted, octal-escaped name for `hoest.md` with
+        a Norwegian vowel in it, which matches no node, so every file with a
+        non-ASCII name silently leaves the graph. Without it a rename prints as
+        the single field `sub/{old.md => new.md}`: a third name that is neither
+        half and exists nowhere. With `-z` the rename arrives as three
+        NUL-separated fields and the NEW name is taken -- older commits already
+        counted the old one under its own name, which is the honest reading of
+        a history nobody asked `--follow` about.
+
+        Merge commits contribute nothing -- `--numstat` prints no file lines for
+        them without `-m`. A merge touches files because two branches did, not
+        because anyone changed them together.
+        """
+        # `timeout=` is not padding. `mutate_cp1` was once the only harness in
+        # this repo without one, and a subprocess that never returns takes the
+        # caller with it -- here that caller is `mesh build`, which a user runs
+        # and waits on. Ten minutes is far above any real history and far below
+        # forever.
+        top = Mesh.repo_top(repo_root)
+        out = subprocess.run(
+            ["git", "-C", top, "log", "-z", "--numstat", "--format=%H"],
+            capture_output=True, text=True, timeout=600)
+        if out.returncode != 0:
+            # An empty repository is not a broken one. This is the last of five
+            # relations `build_edges` computes, so raising would throw away four
+            # that succeeded because an optional source had no commits yet.
+            if "does not have any commits" in out.stderr:
+                return {}
+            raise ModelUnavailable(
+                "git log failed in %s: %s"
+                % (top, (out.stderr.strip().splitlines() or [""])[-1]))
+        pairs: dict = collections.Counter()
+        touched: dict = collections.defaultdict(set)
+        sha, files = None, set()
+
+        def flush():
+            for a, b in itertools.combinations(sorted(files), 2):
+                pairs[(a, b)] += 1
+            for name in files:
+                touched[name].add(sha)
+            files.clear()
+
+        fields = out.stdout.split("\0")
+        i = 0
+        while i < len(fields):
+            field = fields[i]
+            if "\t" not in field:
+                # A commit hash. A rename's two path fields carry no tab
+                # either, which is why they are consumed below rather than
+                # reaching this branch and being read as commits.
+                if field.strip():
+                    flush()
+                    sha = field.strip()
+                i += 1
+                continue
+            path = field.split("\t")[-1]
+            if path == "":
+                # `add\tdel\t` with an empty path is a rename: the next two
+                # fields are the old and the new name.
+                if i + 2 < len(fields):
+                    files.add(fields[i + 2])
+                i += 3
+                continue
+            files.add(path.lstrip("\n"))
+            i += 1
+        flush()
+        return {p: (n, len(touched[p[0]] | touched[p[1]]))
+                for p, n in pairs.items()}
+
+    def _co_changed(self, mesh, loaded, as_of, report, repo_root):
+        """Files committed together become one edge, when both are nodes.
+
+        The "when both are nodes" half is the one worth guarding. Dropping it
+        produces MORE edges and leaves every count looking healthy -- and in
+        the answer key's fixture the two edges it would wrongly add outrank the
+        one real edge, because a file committed only alongside one other has a
+        higher ratio than two files with lives of their own.
+        """
+        by_path = {}
+        for model, s in loaded.items():
+            for row in s.db.execute(
+                    "SELECT node_key, path FROM nodes WHERE path IS NOT NULL "
+                    "AND kind IN ('file','document','image')"):
+                # `realpath`, not `abspath`, on BOTH sides. `abspath` normalises
+                # `..` and makes a path absolute; it does not resolve symlinks.
+                # A repository reached through a symlink -- or a store whose
+                # paths were recorded through one -- then produces two spellings
+                # of one file, the lookup misses, and every co-change edge for
+                # that tree silently fails to be drawn. No error, no zero worth
+                # noticing: just fewer edges than there should be.
+                by_path[os.path.realpath(row["path"])] = "%s::%s" % (
+                    model, row["node_key"])
+        # The TOP of the repository, not the directory the caller named --
+        # `git log` writes its paths relative to the top. See `repo_top`.
+        root = self.repo_top(repo_root)
+        for (a, b), (shared, union) in self.co_change_pairs(root).items():
+            if shared < self.CO_CHANGE_MIN:
+                continue
+            src = by_path.get(os.path.realpath(os.path.join(root, a)))
+            dst = by_path.get(os.path.realpath(os.path.join(root, b)))
+            if src is None or dst is None:
+                continue
+            # Sorted endpoints, one row. The relation is symmetric, and two
+            # rows for one fact would double the pair's weight in any traversal
+            # that counts edges.
+            lo, hi = sorted((src, dst))
+            # `confidence` is NOT passed: `upsert_edge` looks it up from the
+            # method so it cannot drift from what it describes. The ratio is
+            # computed and reported, not stored -- see the correction in
+            # `tests/gold/FASIT-h5.md`.
+            mesh.upsert_edge(lo, hi, "CO_CHANGED_WITH", as_of,
+                             method="co-change")
+            report["CO_CHANGED_WITH"] += 1
+
+    def build_edges(self, as_of, prune=False, code_paths=None,
+                    repo_root=None):
         """Compute cross-model edges into mesh.db. Never touches model stores.
 
         `prune` drops every stub the mirror below did not just write. It is off
@@ -456,10 +607,19 @@ class Mesh:
         self._mentions_file(mesh, loaded, as_of, report)
         self._cites_code(mesh, loaded, code_index, as_of, report)
         self._temporal_cohort(mesh, loaded, as_of, report)
+        # Named in the report whether it ran or not. "0 edges" and "no
+        # repository was given" are different facts, and CITES_CODE learned
+        # that the hard way -- see `code_inventory` below.
+        if repo_root:
+            self._co_changed(mesh, loaded, as_of, report, repo_root)
         mesh.rebuild_fts()
         mesh.close()
         return {"edges": dict(report), "models": sorted(loaded),
                 "missing": sorted(missing), "stubs_removed": removed,
+                # The path actually read, not the one passed: a caller who
+                # names a subdirectory should see which repository answered.
+                "co_change": ("absent" if not repo_root
+                              else self.repo_top(repo_root)),
                 "code_inventory": ("absent" if code_index is None
                                    else len(code_index))}
 
