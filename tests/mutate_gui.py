@@ -18,6 +18,16 @@ two mutations that would naturally have lived there (M2's random seed, M10's
 `gui.py` instead, since that call site is this module's business and the
 functions it calls are not.
 
+M2 counts rather than randomises, and the difference was measured. It used
+`random.randrange(99)`, and `_layout` is pure in its seed -- so the two builds
+the determinism gate compares came out IDENTICAL whenever the two draws
+collided, once in 99 runs. The mutation was still detected, by the HTTP gate
+that compares an in-process payload against the server's, so it read as a
+misattribution rather than as a survivor: named correctly in six full sweeps on
+2026-08-01 and differently in the seventh, on an untouched file. A mutation has
+to exercise the defect it names EVERY time, or its verdict is a coin. An
+incrementing counter cannot collide.
+
 Run:
     python3 tests/mutate_gui.py
 """
@@ -105,10 +115,15 @@ MUTATIONS = [
      "homegraph/gui.py",
      "    laid = _layout([out_nodes[i] for i in order],\n"
      "                   [(slot[a], slot[b]) for a, b, *_ in out_edges])",
-     "    import random as _random  # mutated: M2, a fresh seed every call\n"
+     "    import itertools as _it  # mutated: M2, a fresh seed every call\n"
+     "    global _MUT_SEED\n"
+     "    try:\n"
+     "        _MUT_SEED\n"
+     "    except NameError:\n"
+     "        _MUT_SEED = _it.count()\n"
      "    laid = _layout([out_nodes[i] for i in order],\n"
      "                   [(slot[a], slot[b]) for a, b, *_ in out_edges],\n"
-     "                   seed=_random.randrange(99))",
+     "                   seed=next(_MUT_SEED))",
      "two builds of the same corpus place every node identically"),
 
     ("isolated_share hardcoded to 0.0",

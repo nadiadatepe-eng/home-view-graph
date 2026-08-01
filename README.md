@@ -568,21 +568,25 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-five checkpoints plus a privacy check and a suite-completeness check.
-585 mutations across 32 harnesses, 0 survived, 0 detected only by a crash, 2
-killed by a gate other than the one named**, measured 2026-08-01 on `ae1f276`
-plus CP-H5 by running every harness in one sweep rather than one at a time --
-a harness that passes standalone can still survive in a full one. The whole
-sweep takes **1 516 seconds**, and four harnesses are 76 % of it:
-`mutate_gui` 478 s, `mutate_i1` 276 s, `mutate_cp6` 234 s, `mutate_cp13` 150 s.
+585 mutations across 32 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-08-01 on `f3ea1b3`
+by running every harness in one sweep rather than one at a time -- a harness
+that passes standalone can still survive in a full one. The whole sweep takes
+**1 512 seconds**, and four harnesses are 76 % of it: `mutate_gui` 483 s,
+`mutate_i1` 272 s, `mutate_cp6` 229 s, `mutate_cp13` 150 s.
 
-The second misattribution is **not stable**, and that is worth more than the
-number. `mutate_gui`'s *layout takes a fresh random seed* was killed by the
-gate it names in six sweeps on the same day and by a different one in the
-seventh, on a tree where `gui.py` had not been touched. The mutation is still
-detected every time; which check reports it depends on run order, because the
-HTTP check runs a hundred lines before the determinism check it competes with.
-A verdict that varies across runs of identical code is the same family as a
-mutation that passes standalone and survives in a sweep.
+**A sweep before this one reported two, and the second was a coin.**
+`mutate_gui`'s *layout takes a fresh random seed* drew its seed with
+`random.randrange(99)`, and `_layout` is pure in its seed -- so whenever the
+two draws collided, the two builds the determinism gate compares came out
+identical and that gate stayed green. The mutation was still caught, by the
+HTTP gate comparing an in-process payload against the server's, so it surfaced
+as a misattribution rather than as a survivor: named correctly in six sweeps
+that day and differently in the seventh, on an untouched file. One in 99 per
+run, 6.9 % over seven, observed once. It counts now instead of drawing, because
+**a mutation has to exercise the defect it names every time or its verdict is a
+coin** -- and a verdict that varies across runs of identical code is the same
+family as a mutation that passes standalone and survives in a sweep.
 
 **The sweep before this one was red, and every harness in it passed
 standalone.** CP-H4 edited three lines that three older mutations were
