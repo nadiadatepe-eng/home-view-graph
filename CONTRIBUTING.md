@@ -35,6 +35,7 @@ for h in cp0 cp1 cp2 cp3 cp4 cp5 cp6 cp7 cp8 cp9 cp10 cp11 cp12 cp13 \
     python3 tests/mutate_$h.py     # every harness: the cp* loop was 14 of 25
 done
 python3 tests/mutation_coverage.py          # which checks no mutation aims at
+python3 tests/condition_coverage.py         # which NEW conditions none aims at
 ```
 
 Every checkpoint also runs standalone with no test runner:
@@ -97,6 +98,16 @@ already made at least once, written down so it is not made again.
 7. **Recount before you cite a number.** Two of the mutation counts in this
    repo drifted between measurements. After touching a checkpoint, re-run the
    harness rather than carrying a number forward.
+
+8. **Vary one axis at a time in a fixture.** Three checkpoints in a row shipped
+   green and then had a reviewer find the same defect: every drifted file in
+   the fixture changed size *and* mtime, every tied pair had one member at
+   zero, every result set held both kinds of trouble. A compound condition
+   whose operands the fixture never separates cannot fail, and no amount of
+   care spots that by reading. `tests/condition_coverage.py` names the ones a
+   change added that no mutation aims at; run it before the sweep. A condition
+   that genuinely cannot be wrong takes a `# condition-coverage: <reason>`
+   line, which is a claim someone can disagree with rather than a silence.
 
 `ruff`, `mypy` and `pyright` are expected to stay clean:
 

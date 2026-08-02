@@ -272,6 +272,11 @@ def reconcile(store: "Store", *, mtime_tolerance: float = 1e-6) -> dict[str, str
     by_path: dict[str, str] = {}
     deferred = []
     for row in rows:
+        # No writer produces a half stat: `size` and `mtime` are set together
+        # or not at all, so `or` and `and` are the same function on every row
+        # that exists. The day a writer sets one alone, a section carrying it
+        # stops inheriting, and this needs a needle.
+        # condition-coverage: no writer produces a half stat
         if row["size"] is None or row["mtime"] is None:
             deferred.append(row)
             continue

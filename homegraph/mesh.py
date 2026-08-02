@@ -416,6 +416,10 @@ class Mesh:
         # same node. Two halves of one feature disagreeing about one node is
         # worse than either answer; found by codex 2026-08-02. One extra query,
         # bounded by the window, buys the agreement.
+        # A section with a stat of its own cannot be written today: every
+        # writer of `kind="section"` omits size and mtime, so the two operands
+        # cannot be varied apart. Aim a mutation here the day one does.
+        # condition-coverage: no writer produces a stat-bearing section
         orphans = [r["path"] for r in rows.values()
                    if r["kind"] == "section" and r["size"] is None
                    and r["path"]]
@@ -434,7 +438,7 @@ class Mesh:
             "SELECT 1 FROM embeddings LIMIT 1").fetchone() is not None
         ids = [r["id"] for r in rows.values()]
         embedded = set()
-        if any_vectors and ids:
+        if any_vectors:
             for i in range(0, len(ids), self._CHUNK):
                 block = ids[i:i + self._CHUNK]
                 embedded |= {r["node_id"] for r in store.db.execute(
@@ -464,6 +468,10 @@ class Mesh:
         time, unreachable from `close()` because it was never registered.
         Found by codex 2026-08-02.
         """
+        # Inverting this raises KeyError on the first call, so a mutation
+        # could only ever be crash-only -- the weakest verdict this project
+        # accepts, and not worth a needle.
+        # condition-coverage: inverting it is crash-only, not a gate finding
         if self.CODE_MODEL not in self._open:
             self._open[self.CODE_MODEL] = self._read_mesh()
         return self._open[self.CODE_MODEL]

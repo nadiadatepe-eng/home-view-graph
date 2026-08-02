@@ -151,6 +151,15 @@ MUTATIONS = [
      "    hurt = [(state, counts[state]) for state in inc.AFFECTED]",
      "R6: and says nothing at all when nothing drifted"),
 
+    # Medlemskapstesten som avgjor om en node HAR en vektor, invertert. Funnet av
+    # `condition_coverage.py` 2026-08-02: den var den eneste sammensatte betingelsen
+    # H7 la til som ingen nal pekte pa.
+    ("a node counts as embedded when it has no vector",
+     "homegraph/mesh.py",
+     '                state, any_vectors, row["id"] in embedded)',
+     '                state, any_vectors, row["id"] not in embedded)',
+     "R5: the embedded node whose file is current reports current"),
+
     # --- funnene fra revisjonen 2026-08-02 ---
     # Alle elleve under OVERLEVDE den grønne 32-sjekks-gaten. Ti av dem fordi
     # fiksturet ikke kunne skille; den første fordi instrumentet var feil.
