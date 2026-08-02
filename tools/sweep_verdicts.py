@@ -58,18 +58,23 @@ def main(argv):
     ha, hb = set(a), set(b)
     rc = 0
     if ha - hb:
-        print("HARNESSER BORTE: %s" % sorted(ha - hb)); rc = 1
+        print("HARNESSER BORTE: %s" % sorted(ha - hb))
+        rc = 1
     if hb - ha:
-        print("HARNESSER NYE:   %s" % sorted(hb - ha)); rc = 1
+        print("HARNESSER NYE:   %s" % sorted(hb - ha))
+        rc = 1
     for h in sorted(ha & hb):
         da, db = dict((n, k) for k, n in a[h]), dict((n, k) for k, n in b[h])
         for n in sorted(set(da) | set(db)):
             if n not in db:
-                print("%s: MUTASJON BORTE  %s (var %s)" % (h, n, da[n])); rc = 1
+                print("%s: MUTASJON BORTE  %s (var %s)" % (h, n, da[n]))
+                rc = 1
             elif n not in da:
-                print("%s: MUTASJON NY     %s (%s)" % (h, n, db[n])); rc = 1
+                print("%s: MUTASJON NY     %s (%s)" % (h, n, db[n]))
+                rc = 1
             elif da[n] != db[n]:
-                print("%s: DOM ENDRET      %s: %s -> %s" % (h, n, da[n], db[n])); rc = 1
+                print("%s: DOM ENDRET      %s: %s -> %s" % (h, n, da[n], db[n]))
+                rc = 1
     na = sum(len(r) for r in a.values())
     nb = sum(len(r) for r in b.values())
     print("\n%d -> %d mutasjoner, %d -> %d harnesser: %s"
