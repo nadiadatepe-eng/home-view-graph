@@ -89,11 +89,18 @@ class Neighbour(typing.NamedTuple):
 
 
 class MeshResult:
-    def __init__(self, hits, models_queried, models_missing, warnings):
+    def __init__(self, hits, models_queried, models_missing, warnings,
+                 centrality: int | str = "absent"):
         self.hits = hits
         self.models_queried = models_queried
         self.models_missing = models_missing
         self.warnings = warnings
+        # How many positions in the returned window the centrality tie-break
+        # actually moved, or "absent" when there was no mesh to count edges in.
+        # Not 0: a fusion that ran without a tie-break and one where every tie
+        # already sat in degree order are different answers, and
+        # `code_inventory` learned that distinction first.
+        self.centrality = centrality
 
     @property
     def partial(self):
@@ -181,12 +188,26 @@ class Mesh:
             self._search_code(expr, limit, as_of, include_all,
                               rankings, queried, warnings)
 
-        hits = self._rrf(rankings, limit)
+        # CP-H6. Centrality is the TIE-BREAK, not a fourth list. Fed as a list
+        # it would decide everything: with RRF_K = 60 one contribution at
+        # position 1 is worth 1/61 = 0.016393 while two adjacent positions are
+        # 0.000264 apart, so a single extra entry outweighs some 63 places.
+        # Measured 2026-08-02 over 20 real queries, that design left 1 of 20
+        # unchanged and introduced hits that had been below the cut in 7.
+        # tests/gold/FASIT-h6.md has the numbers and the revision.
+        degrees = self.centrality_degrees(rankings)
+
+        hits = self._rrf(rankings, limit, degrees)
+        moved = "absent"
+        if degrees is not None:
+            plain = self._rrf(rankings, limit)
+            moved = sum(1 for a, b in zip(plain, hits) if a["key"] != b["key"])
         if missing:
             warnings.insert(0, "PARTIAL RESULT -- %s did not answer. Counts "
                                 "and ranking are incomplete."
                             % ", ".join(sorted(set(missing))))
-        return MeshResult(hits, queried, sorted(set(missing)), warnings)
+        return MeshResult(hits, queried, sorted(set(missing)), warnings,
+                          centrality=moved)
 
     @staticmethod
     def _fts_rows(store, expr, limit, as_of, include_all, kind=None):
@@ -329,13 +350,94 @@ class Mesh:
         return "key:%s:%s" % (row.get("model"), row["node_key"])
 
     @staticmethod
-    def _rrf(rankings, limit):
+    def _mesh_node_key(model, node_key):
+        """The key a candidate has in `mesh.db`, which is not always qualified.
+
+        A model's rows carry that model's own key and are qualified here. Code
+        rows are different: `_search_code` reads the stubs out of `mesh.db`
+        itself, so their `node_key` is ALREADY `code::<path>` -- the form
+        `_code_index` wrote -- and qualifying it again asks for
+        `code::code::<path>`, a node that has never existed.
+
+        Measured 2026-08-02, found by codex: every code candidate scored 0,
+        including `main.py` at degree 69, the highest in the store. The lookup
+        failed silently because a missing row is a legitimate zero.
+        """
+        if model == Mesh.CODE_MODEL:
+            return node_key
+        return "%s::%s" % (model, node_key)
+
+    def centrality_degrees(self, rankings) -> dict[str, int] | None:
+        """`fanIn + fanOut` for the candidates already found, by fusion key.
+
+        **Only the candidates.** Scoring every node instead would make a
+        globally central file a peer of the query's own best match in every
+        search: on the real mesh 8 621 of 9 125 nodes have no edge at all, so
+        94.5 % of such a ranking is tied at zero behind a handful of popular
+        files. That is a fixed result injected into every query, not a signal.
+
+        Keyed by FUSION key, because that is what the sort orders. One
+        document can reach the fusion through several models, and each of those
+        is its own node in the mesh with its own edges; the **highest** of them
+        is used rather than the sum, so a document found three times does not
+        collect three degrees on top of the three RRF contributions it already
+        has.
+
+        Returns `None` when there is no mesh to count edges in -- "no mesh" and
+        "everything scored zero" are different facts, and only one is worth
+        telling anyone about.
+        """
+        if not self.mesh_db or not os.path.exists(self.mesh_db):
+            return None
+        wanted: dict[str, str] = {}
+        for model, rows in rankings.items():
+            for row in rows:
+                wanted.setdefault(self._mesh_node_key(model, row["node_key"]),
+                                  self._fusion_key(row))
+        if not wanted:
+            return {}
+        degrees: dict[str, int] = {}
+        try:
+            mesh = Store(self.mesh_db)
+        except (sqlite3.Error, OSError):
+            # An unreadable mesh must not take federated search down with it.
+            # `_search_code` already catches this one and continues with a
+            # warning; opening it again here and raising would turn an
+            # optional reordering into a failed query.
+            return None
+        try:
+            for mesh_key, fusion_key in wanted.items():
+                row = mesh.db.execute(
+                    "SELECT (SELECT COUNT(*) FROM edges WHERE dst = n.id) "
+                    "     + (SELECT COUNT(*) FROM edges WHERE src = n.id) d "
+                    "FROM nodes n WHERE n.node_key = ?", (mesh_key,)).fetchone()
+                degree = row["d"] if row else 0
+                if degree > degrees.get(fusion_key, -1):
+                    degrees[fusion_key] = degree
+        finally:
+            mesh.close()
+        return degrees
+
+    @staticmethod
+    def _rrf(rankings, limit, degrees=None):
         """RRF across models. Ranks only -- never the BM25 scores.
 
         BM25 is index-relative: -99 in one model and -0.5 in another say
         nothing about each other. Ordering by raw score therefore ranks by
         which index happens to produce larger magnitudes, which looks like a
         relevance ordering and is not one.
+
+        `degrees` breaks ties between hits the fusion scored EQUALLY, and does
+        nothing else: it cannot move a hit past one that scored differently,
+        and it cannot make a candidate out of something no model returned.
+        CP-H6. `key` stays last in the sort so that equal score AND equal
+        degree still cannot swap between runs.
+
+        It CAN change which of two equally-scored hits falls inside `limit`
+        when the tie straddles the cutoff -- and from outside that looks like a
+        hit appearing. Not a defect: the alternative is a cutoff decided by
+        alphabet. Stated because "it cannot add or remove one" was written
+        here first and was too strong.
         """
         fused = {}
         for model, rows in rankings.items():
@@ -351,7 +453,13 @@ class Mesh:
                 slot["sources"].append("%s#%d" % (model, rank))
                 if model not in slot["models"]:
                     slot["models"].append(model)
-        out = sorted(fused.values(), key=lambda h: (-h["score"], h["key"]))
+        # Reported per hit, not only used: a reordering nobody can see is worse
+        # than one nobody asked for.
+        for key, slot in fused.items():
+            slot["degree"] = None if degrees is None else degrees.get(key, 0)
+        out = sorted(fused.values(),
+                     key=lambda h: (-h["score"],
+                                    -(h["degree"] or 0), h["key"]))
         for i, hit in enumerate(out[:limit], start=1):
             hit["rank"] = i
         return out[:limit]
@@ -359,6 +467,11 @@ class Mesh:
     def explain(self, query, limit=20):
         """Per-model breakdown of who answered and at what rank."""
         result = self.search(query, limit=limit)
+        # Centrality is not a store and is not counted here. It orders hits the
+        # fusion scored equally; it answers no query and finds no document, so
+        # a per-model breakdown that named it would report a source that has
+        # nothing in it. It is reported on its own line instead, because a
+        # reordering nobody can see is worse than one nobody asked for.
         by_model = collections.Counter(h["model"] for h in result.hits)
         return {
             "query": query,
@@ -366,8 +479,10 @@ class Mesh:
             "models_queried": result.models_queried,
             "models_missing": result.models_missing,
             "hits_per_model": dict(by_model),
+            "centrality": result.centrality,
             "fusion": "reciprocal rank fusion, k=%d; BM25 scores are never "
-                      "compared across models" % RRF_K,
+                      "compared across models; equal scores are ordered by "
+                      "fanIn+fanOut, then by key" % RRF_K,
             "warnings": result.warnings,
         }
 
