@@ -30,6 +30,34 @@ if TYPE_CHECKING:
 CHUNK = 1 << 20
 
 
+# The four states of a stored node against the filesystem. CP-H7.
+#
+# `ABSENT` is not `CURRENT`, for the reason `code_inventory` and the H6
+# centrality report already give: "we did not look" and "we looked and found
+# nothing wrong" are different answers, and collapsing them is how a
+# reconciliation reports a clean corpus it never checked.
+CURRENT = "current"
+STALE = "stale"
+MISSING = "missing"
+ABSENT = "absent"
+
+# Only these count as trouble. `ABSENT` deliberately does not: a node written
+# without a stat is not evidence of drift, and counting it would make the
+# warning permanent furniture the first time one appears.
+AFFECTED = (STALE, MISSING)
+
+# Worst-first, so two answers about the same path resolve the same way every
+# time and in the direction that cannot flatter the corpus.
+_SEVERITY = {MISSING: 3, STALE: 2, ABSENT: 1, CURRENT: 0}
+
+
+def worst(a: str | None, b: str) -> str:
+    """The more serious of two states. `None` means "nothing said yet"."""
+    if a is None:
+        return b
+    return a if _SEVERITY[a] >= _SEVERITY[b] else b
+
+
 @dataclass(frozen=True)
 class FileState:
     path: str
@@ -187,3 +215,89 @@ def _safe_hash(path: str) -> str | None:
         return hash_file(path)
     except OSError:
         return None
+
+
+def node_state(path: str | None, size: int | None,
+               mtime: float | None, *,
+               mtime_tolerance: float = 1e-6) -> str:
+    """One node's state against the filesystem. CP-H7, rule R1.
+
+    Never raises. A `stat` that fails for any reason other than the file being
+    gone is `ABSENT`, not `STALE`: an unreadable directory says nothing about
+    whether the content drifted, and reporting drift on a permissions problem
+    sends the reader to the wrong repair.
+    """
+    if not path:
+        # A node with no path at all -- an author, a tag, a wikilink. The
+        # filesystem has no opinion about it, and `os.stat(None)` raises
+        # TypeError, which R4 forbids reaching the caller. Found 2026-08-02 by
+        # CP-6's MCP gate, which searches a corpus that has such nodes.
+        return ABSENT
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        # Answerable for ANY path, stat or no stat. Reporting `ABSENT` for a
+        # file that is demonstrably gone would hide the one fact a stub-only
+        # node exists to carry -- measured 2026-08-02, that was all 9 125 mesh
+        # stubs at once.
+        return MISSING
+    except OSError:
+        return ABSENT
+    if size is None or mtime is None:
+        return ABSENT
+    if st.st_size == size and abs(st.st_mtime - mtime) <= mtime_tolerance:
+        return CURRENT
+    return STALE
+
+
+def reconcile(store: "Store", *, mtime_tolerance: float = 1e-6) -> dict[str, str]:
+    """{node_key: state} for every node the store holds a path for. CP-H7.
+
+    **File-level nodes are the only ones asked.** A `section` carries its
+    parent's path and no stat of its own -- measured 2026-08-02, that is 6 035
+    of m3's 6 928 nodes and 618 of m1's 885 -- so asking it directly answers
+    `ABSENT` for most of the corpus, which is true and useless. It inherits its
+    file's state instead, which is rule R2 and the only way a section is ever
+    `STALE`.
+
+    Cheap on purpose: one `stat` per file-level node, no hashing. Measured over
+    8 564 stored paths, 0.01 s. Whether the bytes really differ when `size` and
+    `mtime` do is `diff()`'s second stage, and H7 reports rather than
+    re-deriving it.
+    """
+    rows = list(store.db.execute(
+        "SELECT node_key, kind, path, size, mtime FROM nodes "
+        "WHERE path IS NOT NULL"))
+    states: dict[str, str] = {}
+    by_path: dict[str, str] = {}
+    deferred = []
+    for row in rows:
+        if row["size"] is None or row["mtime"] is None:
+            deferred.append(row)
+            continue
+        state = node_state(row["path"], row["size"], row["mtime"],
+                           mtime_tolerance=mtime_tolerance)
+        states[row["node_key"]] = state
+        # Two stat-bearing nodes CAN share a path with different stored stats --
+        # one indexed before an edit and one after -- and then the two states
+        # disagree. The worst wins, deterministically, rather than whichever row
+        # SQLite happened to return last: a section inheriting "current" from a
+        # stale sibling is the confident-wrong answer this whole checkpoint is
+        # about. An earlier comment here claimed the states always agree; codex
+        # showed they need not, 2026-08-02.
+        by_path[row["path"]] = worst(by_path.get(row["path"]), state)
+    for row in deferred:
+        if row["kind"] == "section":
+            # R2: a section is not a file, so the filesystem is the wrong place
+            # to ask whether it DRIFTED. Whether its path still exists is a
+            # different question and is answerable -- an orphan section whose
+            # file the store never held would otherwise report `ABSENT` for a
+            # file that is demonstrably gone.
+            inherited = by_path.get(row["path"])
+            states[row["node_key"]] = (
+                inherited if inherited is not None
+                else node_state(row["path"], None, None))
+        else:
+            # A stub with no stat can still be asked whether its path is there.
+            states[row["node_key"]] = node_state(row["path"], None, None)
+    return states

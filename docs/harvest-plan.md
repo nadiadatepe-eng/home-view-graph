@@ -24,10 +24,10 @@ Et checkpoint er ikke ferdig før alle seks holder:
 | **H1** | Eval-først retrieval-scoreboard | codegraph-ai | ✅ instrument (baseline på ekte korpus → H3-tid) | 4 funn, alle lukket |
 | **H2** | Inferert-etikett bærer konfidens | Cirilcetra · colby | ✅ ferdig (skrive + lese-side) | 5 funn: 3 lukket, 2 backlog |
 | **H3** | Statiske embeddings + hybrid semantisk søk | codegraph-ai | ✅ mekanisme bevist + ekte matrise (potion-multilingual) kjørt mot stopp-regel: embeddings forblir opt-in (default-søk regredierer), semantisk verdi bekreftet kvalitativt | 6 funn: F1/F4 lukket, F5/F6 herdet, F2/F3 rammet inn |
-| H4 | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ☐ backlog | — |
-| H5 | git co-change-kant + churn | Cirilcetra | ☐ backlog | — |
-| H6 | fanIn/fanOut-sentralitet som 3. RRF-liste | Cirilcetra | ☐ backlog | — |
-| H7 | Connect-time catch-up + staleness-banner | colby · codegraph-ai | ☐ backlog | — |
+| **H4** | Markdown heading-tre for m3 | Cirilcetra · codegraph-ai | ✅ ferdig (`ae1f276`) | kjørt |
+| **H5** | git co-change-kant + churn | Cirilcetra | ✅ ferdig (`f3ea1b3`) | kjørt |
+| **H6** | fanIn/fanOut-sentralitet som **uavgjort-bryter** | Cirilcetra | ✅ ferdig (`0f9dcb7`) | 4 funn, alle lukket |
+| **H7** | Connect-time catch-up + per-treff staleness | colby · codegraph-ai | ✅ ferdig | 11 funn, alle lukket |
 | H8 | Kryss-modell konsistens-query | codegraph-ai · Cirilcetra | ☐ backlog | — |
 | H9 | Intent-MCP-verktøy m/ budsjett→item-tak | colby · Cirilcetra · codegraph-ai | ☐ backlog | — |
 | H10 | Prompt-injeksjons-flagg på dok-chunks | codegraph-ai | ☐ backlog | — |
@@ -176,8 +176,8 @@ Hvert får full CP-form (fasit→checks→mutasjon→ekte data→sim-auditor) n�
 
 - **H4 · Markdown heading-tre (m3):** node per løv-overskrift, brødsmule `heading_path` (H1>H2>H3), per-seksjon `content_hash` for inkrementell re-index. (Cirilcetra④, codegraph-ai#5.)
 - **H5 · git co-change-kant:** `CO_CHANGED_WITH` fra `git log --numstat`, styrke = felles commits ≥3, churn som node-egenskap. Mekanisk kohort-proveniens uten embeddings. (Cirilcetra⑤.)
-- **H6 · Sentralitet i RRF:** deterministisk fanIn/fanOut som node-egenskap, mates som tredje liste i fusjonen. (Cirilcetra⑦.)
-- **H7 · Connect-time catch-up:** avstem `(size, mtime, hash)` ved MCP-/watch-oppstart — dekker vinduet daemonen var av; per-fil staleness-banner + `embedding_status`. (colby#1#3, codegraph-ai#12.)
+- **H6 · Sentralitet i RRF:** deterministisk fanIn/fanOut, telt ved spørringstid. **Ikke** som node-egenskap og **ikke** som tredje liste — begge deler ble målt og forkastet 2026-08-02; se `tests/gold/FASIT-h6.md`. Den bryter uavgjort. (Cirilcetra⑦.)
+- **H7 · Connect-time catch-up:** avstem `(size, mtime)` ved MCP-/watch-oppstart. Banneret er **per treff, ikke per korpus** — et korpusbanner ville fyrt på hver spørring for alltid (2 628 borte stier i m3 alene). `embedding_status` utledes av fila, fordi `embeddings` ikke har noen `content_hash`; se `tests/gold/FASIT-h7.md` R5 for de tre blindsonene. (colby#1#3, codegraph-ai#12.)
 - **H8 · Kryss-modell konsistens:** «notat nevner fil som ikke finnes» / «fil aldri nevnt» som spørring i det lukkede språket. (codegraph-ai#9, Cirilcetra⑩.)
 - **H9 · Intent-MCP-verktøy:** et par intent-formede verktøy over de atomære, budsjett `small|medium|large` → hardt item-tak; kant-`confidence` som traverseringsvekt; `graphStats`-transparens. (colby, Cirilcetra⑥, codegraph-ai#8.)
 - **H10 · Injeksjons-flagg:** `suspicious`-egenskap på dok-noder (needle-liste), flagg-ikke-blokkér, eksponer til konsument. (codegraph-ai#6.)

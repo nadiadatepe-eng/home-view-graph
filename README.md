@@ -568,11 +568,11 @@ gate refuses to pass rather than report "nothing leaked" when there was nothing
 present to leak.
 
 **Twenty-five checkpoints plus a privacy check and a suite-completeness check.
-602 mutations across 33 harnesses, 0 survived, 0 detected only by a crash, 1
-killed by a gate other than the one named**, measured 2026-08-02 on the CP-H6
+624 mutations across 34 harnesses, 0 survived, 0 detected only by a crash, 1
+killed by a gate other than the one named**, measured 2026-08-02 on the CP-H7
 working tree by running every harness in one sweep rather than one at a time --
 a harness that passes standalone can still survive in a full one. The whole
-sweep takes **1 554 seconds**. The single misattribution is `mutate_i3`'s *a
+sweep takes **1 546 seconds**. The single misattribution is `mutate_i3`'s *a
 tool is implemented but never advertised*, caught by the round-trip gate rather
 than by the advertisement gate it names.
 

@@ -171,7 +171,11 @@ class Server:
                           "title": h.get("title"),
                           "title_confidence": h.get("title_confidence"),
                           "node_key": h["node_key"],
-                          "path": h.get("path"), "sources": h["sources"]}
+                          "path": h.get("path"), "sources": h["sources"],
+                          # CP-H7: per hit, not per corpus. The reader is about
+                          # to use these, not the other 8 500 rows.
+                          "staleness": h.get("staleness"),
+                          "embedding_status": h.get("embedding_status")}
                          for h in res.hits],
             }
 

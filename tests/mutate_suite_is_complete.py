@@ -49,8 +49,8 @@ MUTATIONS = [
     # feilkode på et manglende filnavn i stedet for å hoppe over det.
     ("the loop names a harness that is not on disk",
      "CONTRIBUTING.md",
-     "         h4 h5 h6; do",
-     "         h4 h5 h6 renamed_away; do",
+     "         h4 h5 h6 h7; do",
+     "         h4 h5 h6 h7 renamed_away; do",
      "and the loop names no harness that does not exist"),
 ]
 

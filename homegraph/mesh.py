@@ -44,6 +44,7 @@ import subprocess
 import typing
 import sqlite3
 
+from . import incremental
 from .config import home_root
 from .search import RRF_K, fts_query
 from .store import Store
@@ -202,6 +203,21 @@ class Mesh:
         if degrees is not None:
             plain = self._rrf(rankings, limit)
             moved = sum(1 for a, b in zip(plain, hits) if a["key"] != b["key"])
+        # CP-H7. Counts the RETURNED WINDOW, never the corpus: the stores here
+        # hold 3 207 paths that are gone, so a corpus banner would fire on every
+        # query forever, and a warning that always fires is one nobody reads.
+        # Zero affected hits produce zero warnings -- that is what lets this
+        # gate say no.
+        self._annotate_status(hits)
+        affected = collections.Counter(
+            h["staleness"] for h in hits
+            if h["staleness"] in incremental.AFFECTED)
+        if affected:
+            warnings.append(
+                "%s among %d hit(s) -- reindex to refresh"
+                % (", ".join("%d %s" % (affected[s], s)
+                             for s in incremental.AFFECTED if affected[s]),
+                   len(hits)))
         if missing:
             warnings.insert(0, "PARTIAL RESULT -- %s did not answer. Counts "
                                 "and ranking are incomplete."
@@ -349,6 +365,141 @@ class Mesh:
             return "path:%s" % os.path.normpath(row["path"])
         return "key:%s:%s" % (row.get("model"), row["node_key"])
 
+    def _annotate_status(self, hits):
+        """Per-hit `staleness` and `embedding_status`. CP-H7, rules R4 and R5.
+
+        Only the returned window is stated. A corpus-wide pass costs 0.01 s and
+        would still be the wrong thing on a search: the reader is about to use
+        these hits, not the other 8 500 rows. `mesh_explain` carries the
+        corpus numbers, where someone has asked for them.
+
+        Never raises. `stat` failures become `absent` inside `node_state`, and a
+        store that cannot be opened leaves its hits `absent` rather than taking
+        the search down -- a status line is not worth a failed query.
+        """
+        by_model = {}
+        for hit in hits:
+            hit["staleness"] = incremental.ABSENT
+            hit["embedding_status"] = "unknown"
+            by_model.setdefault(hit["model"], []).append(hit)
+        for model, group in by_model.items():
+            try:
+                store = (self._code_store() if model == self.CODE_MODEL
+                         else self.store(model))
+                self._annotate_group(store, group)
+            except (ModelUnavailable, sqlite3.Error, OSError, ValueError):
+                # The whole per-model body, not only the open. The SQL used to
+                # sit outside this and a store without an `embeddings` table
+                # took the search down for a status line. CP-H7 R4 says the
+                # search never raises because of this feature; it now does not.
+                continue
+
+    # SQLite's default parameter ceiling is 999. The window is normally ten, so
+    # this is a bound rather than a limit anyone will feel -- but `limit` comes
+    # from the caller, and an unbounded IN-list is how a status line turns into
+    # `too many SQL variables` on someone else's query.
+    _CHUNK = 400
+
+    def _annotate_group(self, store, group):
+        """One model's hits, annotated in place. CP-H7."""
+        rows = {}
+        keys = [h["node_key"] for h in group]
+        for i in range(0, len(keys), self._CHUNK):
+            block = keys[i:i + self._CHUNK]
+            rows.update({r["node_key"]: r for r in store.db.execute(
+                "SELECT node_key, kind, id, path, size, mtime FROM nodes "
+                "WHERE node_key IN (%s)" % ",".join("?" * len(block)), block)})
+
+        # Sections carry their parent's path and no stat of their own, so
+        # asking the filesystem about them directly answers `ABSENT` -- which
+        # is what `search` did while `reconcile` said `STALE` about the very
+        # same node. Two halves of one feature disagreeing about one node is
+        # worse than either answer; found by codex 2026-08-02. One extra query,
+        # bounded by the window, buys the agreement.
+        orphans = [r["path"] for r in rows.values()
+                   if r["kind"] == "section" and r["size"] is None
+                   and r["path"]]
+        parents = {}
+        for i in range(0, len(orphans), self._CHUNK):
+            block = orphans[i:i + self._CHUNK]
+            for r in store.db.execute(
+                    "SELECT path, size, mtime FROM nodes WHERE path IN (%s) "
+                    "AND size IS NOT NULL AND mtime IS NOT NULL"
+                    % ",".join("?" * len(block)), block):
+                parents[r["path"]] = incremental.worst(
+                    parents.get(r["path"]),
+                    incremental.node_state(r["path"], r["size"], r["mtime"]))
+
+        any_vectors = store.db.execute(
+            "SELECT 1 FROM embeddings LIMIT 1").fetchone() is not None
+        ids = [r["id"] for r in rows.values()]
+        embedded = set()
+        if any_vectors and ids:
+            for i in range(0, len(ids), self._CHUNK):
+                block = ids[i:i + self._CHUNK]
+                embedded |= {r["node_id"] for r in store.db.execute(
+                    "SELECT node_id FROM embeddings WHERE node_id IN (%s)"
+                    % ",".join("?" * len(block)), block)}
+
+        for hit in group:
+            row = rows.get(hit["node_key"])
+            if row is None:
+                continue
+            if row["kind"] == "section" and row["size"] is None:
+                state = parents.get(
+                    row["path"],
+                    incremental.node_state(row["path"], None, None))
+            else:
+                state = incremental.node_state(row["path"], row["size"],
+                                               row["mtime"])
+            hit["staleness"] = state
+            hit["embedding_status"] = self._embedding_status(
+                state, any_vectors, row["id"] in embedded)
+
+    def _code_store(self):
+        """The mesh, opened once and closed with everything else.
+
+        `_read_mesh()` hands back a NEW connection on every call, and the
+        annotation path calls it per search -- one leaked SQLite handle each
+        time, unreachable from `close()` because it was never registered.
+        Found by codex 2026-08-02.
+        """
+        if self.CODE_MODEL not in self._open:
+            self._open[self.CODE_MODEL] = self._read_mesh()
+        return self._open[self.CODE_MODEL]
+
+    @staticmethod
+    def _embedding_status(state, any_vectors, has_vector):
+        """Derived from the FILE, because the vector cannot answer. CP-H7 R5.
+
+        `embeddings` is `(node_id, provider, model, dim, vec)` -- no content
+        hash -- so a vector written before an edit is indistinguishable from one
+        written after. What the file says is therefore the only evidence there
+        is. Adding the hash is a migration, and this package spent 2026-08-01
+        learning what a newly filled column does to whoever keys on it.
+
+        **Existence, not usability, and the two differ after a model switch.**
+        This asks whether a vector exists at all; it does not filter on the
+        `(provider, model, dim)` namespace every other vector read filters on
+        (`store.py`, "-- embeddings"). So a node whose vector was written under
+        an abandoned namespace reports `current` here while `vector_search`
+        finds nothing for it. That is not a guess this method may make:
+        `embedding_coverage` faced the same question and refused it in the same
+        words -- the store is opened without a namespace, so reporting each one
+        is the honest shape and the caller decides which line matters. The
+        per-namespace picture is therefore published beside the corpus counts
+        in `mesh_explain`, not folded into this one word. Found by audit
+        2026-08-02; the key says so under R5.
+        """
+        if not any_vectors:
+            return "off"
+        if not has_vector:
+            return "none"
+        if state == incremental.ABSENT:
+            return "unknown"
+        return incremental.CURRENT if state == incremental.CURRENT \
+            else incremental.STALE
+
     @staticmethod
     def _mesh_node_key(model, node_key):
         """The key a candidate has in `mesh.db`, which is not always qualified.
@@ -464,6 +615,43 @@ class Mesh:
             hit["rank"] = i
         return out[:limit]
 
+    def corpus_staleness(self):
+        """{model: {state: count}} over every stored path. CP-H7.
+
+        The whole-corpus pass the search deliberately does not do. Measured
+        2026-08-02 it costs 0.01 s over 8 564 paths, so the reason it is not on
+        the search path is not cost -- it is that a number about 8 500 rows is
+        not an answer to a query that returned ten.
+
+        A model that cannot be opened is omitted rather than reported as zero:
+        an empty count and an unread store are the same shape and different
+        facts.
+        """
+        out = {}
+        for model in list(self.model_paths) + [self.CODE_MODEL]:
+            try:
+                store = (self._code_store() if model == self.CODE_MODEL
+                         else self.store(model))
+            except (ModelUnavailable, sqlite3.Error, OSError, ValueError):
+                continue
+            counts = collections.Counter(
+                incremental.reconcile(store).values())
+            if counts:
+                entry: dict[str, object] = dict(counts)
+                # Per namespace, because `embedding_status` on a hit cannot
+                # name one: a node with a vector under an abandoned namespace
+                # reports `current` there while `vector_search` finds nothing.
+                # The store already answers this shape; reuse it rather than
+                # guess a current namespace here.
+                try:
+                    coverage = store.embedding_coverage()
+                except (sqlite3.Error, AttributeError):
+                    coverage = []
+                if coverage:
+                    entry["embeddings"] = coverage
+                out[model] = entry
+        return out
+
     def explain(self, query, limit=20):
         """Per-model breakdown of who answered and at what rank."""
         result = self.search(query, limit=limit)
@@ -480,6 +668,10 @@ class Mesh:
             "models_missing": result.models_missing,
             "hits_per_model": dict(by_model),
             "centrality": result.centrality,
+            # CP-H7: the corpus-wide numbers live HERE, not in the search
+            # warning, because this is where someone has asked why the answer
+            # looks the way it does.
+            "staleness": self.corpus_staleness(),
             "fusion": "reciprocal rank fusion, k=%d; BM25 scores are never "
                       "compared across models; equal scores are ordered by "
                       "fanIn+fanOut, then by key" % RRF_K,

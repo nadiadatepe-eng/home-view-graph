@@ -513,6 +513,62 @@ def cmd_update(args):
     return 0
 
 
+def watch_catch_up(args):
+    """What drifted while the watcher was off. CP-H7, rule R6.
+
+    Returns a one-line summary, or "" when every stored path is `current`.
+    It writes no nodes -- the caller decides what to do about the finding, and
+    on the watch side that is `trigger()`, the update path this command already
+    has. The MCP side runs the same `reconcile` and reports instead, because
+    `mcp_server.py` states it only ever issues SELECTs.
+
+    **Not read-only in the SQLite sense**, and the docstring used to claim it
+    was: `Store()` sets WAL, runs pending migrations and commits. That is fine
+    for the watcher, which is about to write anyway; it is why the MCP side
+    does not call this. Corrected 2026-08-02 after codex read the constructor.
+
+    A store that cannot be opened is skipped and SAID SO -- an unreadable model
+    and a model with nothing wrong are the same empty string otherwise, which
+    is the failure this whole checkpoint is about.
+    """
+    import sqlite3
+
+    from . import incremental as inc
+    from .store import Store
+
+    counts = collections.Counter()
+    asked = skipped = 0
+    for spec in args.model:
+        _, _, path = spec.partition("=")
+        if not path or not os.path.exists(path):
+            skipped += 1
+            continue
+        asked += 1
+        try:
+            with Store(path) as store:
+                # NOT `counts.update(...)`: CP-11's structural gate flags any
+                # call named `update` in a `cli.py` function as a write that
+                # must sit inside the barrier, and it cannot tell a Counter
+                # from a store. Appeasing it here costs one line; loosening it
+                # would cost the gate.
+                counts += collections.Counter(inc.reconcile(store).values())
+        except (sqlite3.Error, OSError):
+            asked -= 1
+            skipped += 1
+            continue
+    hurt = [(state, counts[state]) for state in inc.AFFECTED if counts[state]]
+    line = ", ".join("%d %s" % (n, state) for state, n in hurt)
+    if not skipped:
+        return line
+    # An unreadable store is reported whether or not the others were clean.
+    # Guarding this on `not asked` -- every store unreadable -- left the
+    # partial case silent: one good store and one missing produced exactly the
+    # same summary as the good store alone, which is the failure this line
+    # exists to prevent. Found by audit 2026-08-02.
+    skip = "%d store(s) could not be read" % skipped
+    return "%s; %s" % (line, skip) if line else skip
+
+
 def cmd_watch(args):
     """Foreground: re-run `update` whenever the corpus changes on disk.
 
@@ -597,6 +653,21 @@ def cmd_watch(args):
     def keep(path):
         return wat.relevant_to_corpus(
             path, ignore, lambda p: clf.explain(p).label == EXCLUDED)
+
+    # CP-H7. inotify is non-persistent: nothing queues while the watcher is
+    # off, so everything that changed in that window is invisible to it
+    # forever. Reconciling once at startup is what covers the gap -- and it is
+    # the same reconciliation the MCP side runs, with the other answer. There
+    # it reports; here it updates, because updating is what this command is
+    # for. Measured 2026-08-02: 0.04 s over 8 564 stored paths, so this is not
+    # a cost worth a flag.
+    caught = watch_catch_up(args)
+    if caught:
+        print("catch-up: %s -- running update" % caught, flush=True)
+        trigger()
+    else:
+        print("catch-up: nothing changed while the watcher was off",
+              flush=True)
 
     print("watching %s (inotify) -- Ctrl-C to stop" % root, flush=True)
     try:
